@@ -341,10 +341,10 @@ static int gp_hook_panel(uintptr_t panel)
         return -1;
     if (mod_safe_read(vt + JUCE_VT_SETVISIBLE, &setvis, sizeof(setvis)) != 0 || !setvis)
         return -1;
-    if (mod_patch_slot("gridPanelPaint", vt + JUCE_VT_PAINT, paint, NULL, 0,
+    if (mod_patch_slot("gridPanelPaint", vt + JUCE_VT_PAINT, paint,
                        (void *)gp_panel_paint, &gp_g_orig_panel_paint) != 0)
         return -1;
-    if (mod_patch_slot("gridPanelVisible", vt + JUCE_VT_SETVISIBLE, setvis, NULL, 0,
+    if (mod_patch_slot("gridPanelVisible", vt + JUCE_VT_SETVISIBLE, setvis,
                        (void *)gp_panel_setvisible, &gp_g_orig_panel_setvis) != 0)
         return -1;
     return 0;
@@ -363,7 +363,7 @@ static void gp_hook_reset(uintptr_t reset)
     if (mod_safe_read(reset, &vt, sizeof(vt)) != 0 || !vt ||
         mod_safe_read(vt + JUCE_VT_PAINT, &paint, sizeof(paint)) != 0 || !paint)
         return;
-    if (mod_patch_slot("gridResetPaint", vt + JUCE_VT_PAINT, paint, NULL, 0,
+    if (mod_patch_slot("gridResetPaint", vt + JUCE_VT_PAINT, paint,
                        (void *)gp_reset_paint, &gp_g_orig_reset_paint) != 0)
         MDBG("gpanel: could not take the RESET's paint -> two shapes of RESET\n");
 }
@@ -437,7 +437,6 @@ static void gp_build(uintptr_t panel)
             MDBG("gpanel: no room around the strip -> plate ends at the buttons\n");
         }
     }
-    gp_hook_reset(gp_g_stock[GP_RESET]);
 
     gp_g_vptr = juce_label_vt_clone(gp_g_vt, ov, (int)(sizeof(ov) / sizeof(ov[0])));
     if (!gp_g_vptr) {

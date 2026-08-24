@@ -572,7 +572,7 @@ static void stem_set_source(void *self, void *readable)
          * cost questions are closed it goes, and this becomes a single hook. */
         if (mod_safe_read(vt + VT_SLOT_READ, &fn, sizeof(fn)) != 0)
             return;
-        if (mod_patch_slot("stemSource", vt + VT_SLOT_READ, fn, NULL, 0,
+        if (mod_patch_slot("stemSource", vt + VT_SLOT_READ, fn,
                            (void *)stem_source_read, &g_src.orig) != 0)
             return;
         g_src.vt = vt;

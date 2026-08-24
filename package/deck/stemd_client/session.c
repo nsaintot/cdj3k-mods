@@ -18,6 +18,7 @@
  * should read as a failure anyway.
  */
 #include "stemd_client.h"
+#include "json.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -129,43 +130,6 @@ static void report_failed(int fd, int http_status)
     memset(&f, 0, sizeof(f));
     f.http_status = (uint32_t)(http_status > 0 ? http_status : 0);
     send_frame(fd, STEM_MSG_JOB_FAILED, &f, sizeof(f));
-}
-
-/* ---- tiny JSON scanning --------------------------------------------------- */
-
-/* Value of "key":"..." into `out`. Returns 0 on success. */
-static int json_str(const char *doc, const char *key, char *out, size_t cap)
-{
-    char pat[64];
-    const char *p, *end;
-    size_t n;
-
-    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    p = strstr(doc, pat);
-    if (!p)
-        return -1;
-    p += strlen(pat);
-    end = strchr(p, '"');
-    if (!end)
-        return -1;
-    n = (size_t)(end - p);
-    if (n >= cap)
-        return -1;
-    memcpy(out, p, n);
-    out[n] = '\0';
-    return 0;
-}
-
-static double json_num(const char *doc, const char *key, double dflt)
-{
-    char pat[64];
-    const char *p;
-
-    snprintf(pat, sizeof(pat), "\"%s\":", key);
-    p = strstr(doc, pat);
-    if (!p)
-        return dflt;
-    return strtod(p + strlen(pat), NULL);
 }
 
 /* stemd's Stage is serialised snake_case. Mapped onto our wire enum, which the

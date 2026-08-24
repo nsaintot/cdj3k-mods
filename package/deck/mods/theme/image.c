@@ -470,7 +470,7 @@ static void theme_hook_wavelistener(void *reqptr)
     MDBG("theme: waveform listener vt=%#lx slot holds %#lx\n",
          (unsigned long)vt, (unsigned long)fn);
 
-    mod_patch_slot("waveform image listener", vt + WAVELISTENER_SLOT, fn, NULL, 0,
+    mod_patch_slot("waveform image listener", vt + WAVELISTENER_SLOT, fn,
                    (void *)wrap_wavelistener, &g_orig_wavelistener);
 }
 

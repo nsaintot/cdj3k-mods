@@ -25,6 +25,7 @@
  *    0  1     2    3      4         5        6            7          8      9
  */
 #include "stemd_client.h"
+#include "json.h"
 
 #define AVAHI_CMD "avahi-browse -rtp _stemd._tcp 2>/dev/null"
 
@@ -221,44 +222,6 @@ static int health_sink(const void *buf, size_t len, void *user)
     memcpy(h->data + h->len, buf, len);
     h->len += len;
     h->data[h->len] = '\0';
-    return 0;
-}
-
-/* Integer value of "key": in a JSON object, or -1 if absent. */
-static long json_int(const char *doc, const char *key)
-{
-    char pat[64];
-    const char *p;
-
-    snprintf(pat, sizeof(pat), "\"%s\":", key);
-    p = strstr(doc, pat);
-    if (!p)
-        return -1;
-    return strtol(p + strlen(pat), NULL, 10);
-}
-
-/* String value of "key": in a JSON object. Returns 0 and NUL-terminates `out`.
- * No escape handling: these are identifiers from a server whose shape we
- * control, and a value containing a backslash would be a bug there, not here. */
-static int json_str(const char *doc, const char *key, char *out, size_t cap)
-{
-    char pat[64];
-    const char *p, *end;
-    size_t n;
-
-    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    p = strstr(doc, pat);
-    if (!p)
-        return -1;
-    p += strlen(pat);
-    end = strchr(p, '"');
-    if (!end)
-        return -1;
-    n = (size_t)(end - p);
-    if (n >= cap)
-        n = cap - 1;
-    memcpy(out, p, n);
-    out[n] = '\0';
     return 0;
 }
 

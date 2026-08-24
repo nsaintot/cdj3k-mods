@@ -97,21 +97,18 @@ int  mod_safe_read(uintptr_t addr, void *buf, size_t len);
  * live pointer/flag pokes into JUCE view state. 0 on success, -1 else. */
 int  mod_safe_write(uintptr_t addr, const void *buf, size_t len);
 
-/* True iff `fn`'s first `n` bytes match `guard` (probed safely). n <= 64. */
-int  mod_prologue_ok(uintptr_t fn, const uint8_t *guard, size_t n);
-
 /* mprotect the page(s) spanning [addr, addr+len). 0 on success, -1 on error. */
 int  mod_prot(uintptr_t addr, size_t len, int flags);
 
 /* ---- slot patching ---- */
 
 /* Repoint one pointer slot (vtable/.rodata) at `wrapper`, saving the previous
- * target in *saved. Verifies the slot holds `expect_fn` and that its `guard`
- * prologue matches; a mismatch or unreadable address returns -1 without
- * touching memory. guard may be NULL. */
+ * target in *saved. Verifies the slot holds `expect_fn`; a mismatch or
+ * unreadable address returns -1 without touching memory. `expect_fn` is
+ * normally read from the same slot a moment earlier (see mod_patch_vslot), so
+ * the check is a guard against a slot that moved out from under that read. */
 int  mod_patch_slot(const char *name, uintptr_t slot, uintptr_t expect_fn,
-                    const uint8_t *guard, size_t guard_n, void *wrapper,
-                    uintptr_t *saved);
+                    void *wrapper, uintptr_t *saved);
 
 /* Patch a virtual named by (resolved vtable symbol, byte offset from the address
  * point). Preferred: the stock function comes out of the slot itself, so there

@@ -162,17 +162,12 @@ static void unity_is_identity(void)
 {
     static uint8_t src[COLS * MOD_WAVE_STRIDE], dst[COLS * MOD_WAVE_STRIDE];
     static float ratio[COLS][MOD_WAVE_BANDS];
-    uint32_t q16[MOD_WAVE_BANDS] = { 0x10000, 0x10000, 0x10000 };
     size_t i;
 
     T_CASE("unity ratio is identity");
     fill_track(src, COLS);
     for (i = 0; i < COLS; i++)
         ratio[i][0] = ratio[i][1] = ratio[i][2] = 1.0f;
-
-    memset(dst, 0xa5, sizeof dst);
-    mod_wave_scale(src, dst, COLS, q16);
-    CHECK(memcmp(src, dst, sizeof src) == 0);
 
     memset(dst, 0xa5, sizeof dst);
     mod_wave_scale_ratios(src, dst, COLS, (const float (*)[MOD_WAVE_BANDS])ratio);
@@ -265,11 +260,11 @@ static void scale_saturates(void)
 {
     uint8_t bands[3] = { 100, 100, 100 }, got[3];
     uint8_t in[MOD_WAVE_STRIDE], out[MOD_WAVE_STRIDE];
-    uint32_t q16[MOD_WAVE_BANDS] = { 16 << 16, 16 << 16, 16 << 16 };
+    float ratio[1][MOD_WAVE_BANDS] = { { 16.0f, 16.0f, 16.0f } };
 
     T_CASE("scale saturates");
     col_encode(in, bands, 0x5a);
-    mod_wave_scale(in, out, 1, q16);
+    mod_wave_scale_ratios(in, out, 1, (const float (*)[MOD_WAVE_BANDS])ratio);
     col_decode(out, got);
     CHECK_INT(got[0], 127);
     CHECK_INT(got[1], 127);
@@ -280,12 +275,18 @@ static void scale_saturates(void)
 static void scale_in_place(void)
 {
     static uint8_t src[COLS * MOD_WAVE_STRIDE], apart[COLS * MOD_WAVE_STRIDE];
-    uint32_t q16[MOD_WAVE_BANDS] = { 0x8000, 0x14000, 0x10000 };
+    static float ratio[COLS][MOD_WAVE_BANDS];
+    size_t i;
 
     T_CASE("scale in place");
     fill_track(src, COLS);
-    mod_wave_scale(src, apart, COLS, q16);
-    mod_wave_scale(src, src, COLS, q16);
+    for (i = 0; i < COLS; i++) {
+        ratio[i][0] = 0.5f;
+        ratio[i][1] = 1.25f;
+        ratio[i][2] = 1.0f;
+    }
+    mod_wave_scale_ratios(src, apart, COLS, (const float (*)[MOD_WAVE_BANDS])ratio);
+    mod_wave_scale_ratios(src, src, COLS, (const float (*)[MOD_WAVE_BANDS])ratio);
     CHECK(memcmp(src, apart, sizeof src) == 0);
 }
 

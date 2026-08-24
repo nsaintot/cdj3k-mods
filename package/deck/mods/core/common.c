@@ -53,13 +53,6 @@ int mod_safe_write(uintptr_t addr, const void *buf, size_t len)
     return (n == (long)len) ? 0 : -1;
 }
 
-int mod_prologue_ok(uintptr_t fn, const uint8_t *guard, size_t n)
-{
-    uint8_t p[64];
-    if (n > sizeof(p)) n = sizeof(p);
-    return mod_safe_read(fn, p, n) == 0 && memcmp(p, guard, n) == 0;
-}
-
 /* ================================================================== */
 /* Patch journal                                                      */
 /* ================================================================== */
@@ -147,7 +140,7 @@ int mod_prot(uintptr_t addr, size_t len, int flags)
 }
 
 int mod_patch_slot(const char *name, uintptr_t slot, uintptr_t expect_fn,
-                   const uint8_t *guard, size_t guard_n, void *wrapper, uintptr_t *saved)
+                   void *wrapper, uintptr_t *saved)
 {
     uintptr_t cur = 0;
     if (mod_safe_read(slot, &cur, sizeof(cur)) != 0) {
@@ -157,10 +150,6 @@ int mod_patch_slot(const char *name, uintptr_t slot, uintptr_t expect_fn,
     if (cur != expect_fn) {
         MDBG("%s: slot %#lx holds %#lx, expected %#lx -> skip\n",
              name, slot, (unsigned long)cur, (unsigned long)expect_fn);
-        return -1;
-    }
-    if (guard && !mod_prologue_ok(expect_fn, guard, guard_n)) {
-        MDBG("%s: guard mismatch/unreadable at %#lx -> skip\n", name, (unsigned long)expect_fn);
         return -1;
     }
     /* Checked before the write: an unjournalable slot is not patched. */
@@ -210,7 +199,7 @@ int mod_patch_vslot(const char *name, int vt_sym, unsigned off,
              name, ep122_sym_name(vt_sym), off);
         return -1;
     }
-    return mod_patch_slot(name, vt + off, fn, NULL, 0, wrapper, saved);
+    return mod_patch_slot(name, vt + off, fn, wrapper, saved);
 }
 
 void mod_restore_slot(uintptr_t slot, uintptr_t val)

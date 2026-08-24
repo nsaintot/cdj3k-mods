@@ -53,14 +53,10 @@ void mod_wave_codec_init(void);
 void mod_wave_decode(uint16_t hdr, const uint8_t *h, uint8_t *out);
 void mod_wave_encode(const uint8_t *bands, uint16_t *hdr_out, uint8_t *h);
 
-/* Rewrite `columns` columns, scaling each band by its Q16 ratio (0x10000 =
- * unity). dst may alias src, so a whole track can be scaled in place. */
-void mod_wave_scale(const uint8_t *src, uint8_t *dst, size_t columns,
-                    const uint32_t *ratio_q16);
-
-/* The same, with a ratio PER COLUMN per band -- which is what a fader move
- * actually needs, since each stem's share of a band varies along the track.
- * Low and mid scale linearly; high goes through the measured curve. */
+/* Rewrite `columns` columns, scaling with a ratio PER COLUMN per band -- which
+ * is what a fader move actually needs, since each stem's share of a band varies
+ * along the track. Low and mid scale linearly; high goes through the measured
+ * curve. dst may alias src, so a whole track can be scaled in place. */
 void mod_wave_scale_ratios(const uint8_t *src, uint8_t *dst, size_t columns,
                            const float (*ratio)[MOD_WAVE_BANDS]);
 

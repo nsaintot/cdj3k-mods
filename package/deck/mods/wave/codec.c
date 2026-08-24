@@ -312,37 +312,3 @@ void mod_wave_scale_rgb(const uint8_t *src, uint8_t *dst, size_t columns,
         dst[2*i + 1] = (uint8_t)(out >> 8);
     }
 }
-
-void mod_wave_scale(const uint8_t *src, uint8_t *dst, size_t columns,
-                    const uint32_t *ratio_q16)
-{
-    size_t i;
-
-    for (i = 0; i < columns; i++) {
-        const uint8_t *s = src + i * MOD_WAVE_STRIDE;
-        uint8_t *d = dst + i * MOD_WAVE_STRIDE;
-        uint8_t h[3], bands[3];
-        uint16_t hdr;
-        int b;
-
-        hdr = (uint16_t)(s[0] | ((uint16_t)s[1] << 8));
-        h[0] = s[2];
-        h[1] = s[3];
-        h[2] = s[4];
-
-        mod_wave_decode(hdr, h, bands);
-        for (b = 0; b < 3; b++) {
-            uint32_t v = ((uint32_t)bands[b] * ratio_q16[b] + 0x8000) >> 16;
-
-            bands[b] = v > BAND_MAX ? BAND_MAX : (uint8_t)v;
-        }
-        mod_wave_encode(bands, &hdr, h);
-
-        d[0] = (uint8_t)(hdr & 0xff);
-        d[1] = (uint8_t)(hdr >> 8);
-        d[2] = h[0];
-        d[3] = h[1];
-        d[4] = h[2];
-        d[5] = s[5];        /* the spare byte is the parser's, not ours */
-    }
-}
