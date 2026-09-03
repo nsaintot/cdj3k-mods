@@ -180,6 +180,10 @@ static struct reader_vt g_reader[] = {
     { "Mp4",  EP122_READER_MP4,  0, 0 },
     { "Aiff", EP122_READER_AIFF, 0, 0 },
     { "Wav",  EP122_READER_WAV,  0, 0 },
+    /* The factory's fallback for what the seven refuse -- a 32-bit float WAV
+     * among them. The deck plays those through it, so this is the open that
+     * succeeds for such a track, and the only one that names its path. */
+    { "Juce", EP122_READER_JUCE, 0, 0 },
 };
 #define N_READER_VT ((int)(sizeof(g_reader) / sizeof(g_reader[0])))
 
@@ -228,6 +232,16 @@ static unsigned g_open_calls;
  * g_cap.path, which the reporter consumes and clears; the decode worker needs
  * the path to stay valid for as long as the track is loaded. */
 static char g_track_path[PATH_MAX_CAP];
+
+/* Set the instant a SUCCESSFUL deck open refreshes g_track_path, cleared the
+ * first time a new sourceId consumes it. A track whose OWN open failed never
+ * sets it, so g_track_path still points at the previous, successfully-opened
+ * track -- and a new id must NOT bind to that stale path. Consume-once is what
+ * tells "the deck just opened this track" apart from "g_track_path is left over
+ * from a different song": only the former is fresh. Written from the page-filler
+ * thread with RELEASE after the memcpy, read from the message thread with
+ * ACQUIRE, so a reader that sees fresh=1 also sees the path bytes. */
+static int g_track_fresh;
 
 /* Set while THIS thread is inside stem_decode_pull.
  *
@@ -380,7 +394,11 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
     if (!g_decode_self)
         __atomic_store_n(&g_deck_open_ms, decode_now_ms(), __ATOMIC_RELEASE);
 
-    if (!g_cap.pending) {
+    /* A failed open holds the capture only until one succeeds. The factory
+     * falls through its readers -- FileReadWav refuses a float WAV and the JUCE
+     * wrapper takes it -- and the open that succeeded is the one that names the
+     * track; keeping the first would report the refusal and lose the path. */
+    if (!g_cap.pending || (!g_cap.ret && ret)) {
         uintptr_t rate_fn = 0;
 
         g_cap.which = which;
@@ -397,8 +415,10 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
          * track. g_cap still records it, because seeing those opens in the log
          * is how the stem decode is debugged; only the thing that decides what
          * gets uploaded is protected. */
-        if (ret && g_cap.path[0] && !g_decode_self)
+        if (ret && g_cap.path[0] && !g_decode_self) {
             memcpy(g_track_path, g_cap.path, sizeof(g_track_path));
+            __atomic_store_n(&g_track_fresh, 1, __ATOMIC_RELEASE);
+        }
 
         /* Read the field the stock getter would have returned, but only once
          * the slot has confirmed it IS that getter -- an override would mean
@@ -568,8 +588,17 @@ const char *stem_decode_path_for_sid(uint64_t lo, uint64_t hi)
             return g_bind[i].path;
 
     /* Unseen id: it must be the track the deck just opened, because an open is
-     * the only way a new source enters the pool. */
-    if (!g_track_path[0])
+     * the only way a new source enters the pool -- but ONLY if that open
+     * succeeded and left a fresh path. A float WAV (or any format this reader
+     * cannot open) fails its open, so g_track_path still holds the PREVIOUS
+     * track; binding this id to it publishes that song's stems over the wrong
+     * one. Consume the freshness so a second new id in the same gap -- a
+     * re-served track has its own binding already and never reaches here --
+     * cannot inherit it either. No fresh path means no stems, and the caller
+     * dropping the resident set on a NULL is what stops the last song's faders
+     * from bleeding through. */
+    if (!g_track_path[0] ||
+        !__atomic_exchange_n(&g_track_fresh, 0, __ATOMIC_ACQ_REL))
         return NULL;
 
     i = g_bind_next++ % SID_BINDS;
