@@ -243,6 +243,17 @@ static char g_track_path[PATH_MAX_CAP];
  * ACQUIRE, so a reader that sees fresh=1 also sees the path bytes. */
 static int g_track_fresh;
 
+/* The SeekTable and FrameInfoList the deck built for g_track_path -- open()'s
+ * 2nd and 3rd arguments, which the worker cannot invent. Both are handed back
+ * to createReaderFor so our reader opens against the same analysis the deck's
+ * did -- for a VBR MP3 that is what lets setSource size it, since the reader
+ * alone carries no length. Captured on the SAME successful open as g_track_path
+ * so the three always describe one track, and only used when the probe's path
+ * still matches -- the deck keeps the loaded track's analysis alive, so the
+ * pointer is live for as long as that path is what is playing. */
+static uintptr_t g_track_seek;
+static uintptr_t g_track_frame;
+
 /* Set while THIS thread is inside stem_decode_pull.
  *
  * The open hook is global: it fires for every reader the factory builds, and we
@@ -417,6 +428,10 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
          * gets uploaded is protected. */
         if (ret && g_cap.path[0] && !g_decode_self) {
             memcpy(g_track_path, g_cap.path, sizeof(g_track_path));
+            /* Same open as the path: the analysis these describe is this
+             * track's, and the worker hands both back to createReaderFor. */
+            __atomic_store_n(&g_track_seek, (uintptr_t)seek_table, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_track_frame, (uintptr_t)frame_info, __ATOMIC_RELEASE);
             __atomic_store_n(&g_track_fresh, 1, __ATOMIC_RELEASE);
         }
 
@@ -631,10 +646,15 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     /* juce::String is a single pointer; the second word is slack so a wrong
      * guess about its size cannot scribble on the frame. */
     uintptr_t jstr[2] = { 0, 0 };
-    /* FileReadFlac ignores open()'s 2nd and 3rd arguments outright. Zeroed
-     * stand-ins keep the call well-formed for the formats that do read them,
-     * and this path is only claimed for FLAC until that is tested. */
+    /* FileReadFlac ignores open()'s 2nd and 3rd arguments outright, so zeroed
+     * stand-ins are enough for it. A VBR MP3 is not: its length comes out of the
+     * SeekTable/FrameInfoList, and with stubs setSource reports -1 frames and the
+     * job never starts. So when the deck has already opened THIS track we reuse
+     * the very tables it built (g_track_seek/g_track_frame); the stubs remain the
+     * fallback for a track the deck has not opened for us to observe. */
     uint8_t seek_stub[64], frame_stub[64];
+    const void *seek_arg, *frame_arg;
+    uintptr_t cap_seek, cap_frame;
     int32_t err = 0;
     void *reader = NULL, *src = NULL;
     float *buf = NULL;
@@ -655,6 +675,22 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     memset(seek_stub, 0, sizeof(seek_stub));
     memset(frame_stub, 0, sizeof(frame_stub));
 
+    /* Reuse the deck's own analysis for this track when we have it; the stubs
+     * otherwise. strcmp against g_track_path is what ties the tables to the file
+     * being decoded -- a mismatch (a re-served track the deck never re-opened,
+     * or our own stem files) falls back rather than handing MP3 a stranger's
+     * SeekTable. */
+    seek_arg = seek_stub;
+    frame_arg = frame_stub;
+    cap_seek = __atomic_load_n(&g_track_seek, __ATOMIC_ACQUIRE);
+    cap_frame = __atomic_load_n(&g_track_frame, __ATOMIC_ACQUIRE);
+    if (cap_seek && g_track_path[0] && strcmp(path, g_track_path) == 0) {
+        seek_arg = (const void *)cap_seek;
+        frame_arg = (const void *)cap_frame;
+        MDBG("stem_decode: reusing deck seekTable=%#lx frameInfo=%#lx\n",
+             (unsigned long)cap_seek, (unsigned long)cap_frame);
+    }
+
     if (sink)
         buf = malloc((size_t)DECODE_CHUNK * 2 * sizeof(float));
     src = malloc(SRC_SIZE);
@@ -669,7 +705,7 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     t0 = decode_cntvct();
     reader = ((create_reader_fn_t)FN_CREATE_READER)((void *)ADDR_READER_FACTORY,
                                                     jstr, &err, 1,
-                                                    seek_stub, frame_stub,
+                                                    seek_arg, frame_arg,
                                                     (uint64_t)g_factory_kind);
     dt = decode_cntvct() - t0;
     if (!reader) {
@@ -725,23 +761,8 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
          * path when they differ. */
         rc = ((fileread_fn_t)fn_fileread)(src, pos, buf, want);
         if (rc != 0) {
-            MDBG("stem_decode: fileRead rc=%d at frame %lld of %lld\n", rc,
-                 (long long)pos, (long long)out_len);
-            /* Stop and report what was actually delivered. NOT a judgement about
-             * whether that is enough -- this function cannot make it.
-             *
-             * out_len is the converter's ESTIMATE, derived from an in_len that
-             * includes the decoder's own pad (17538276 = 17534160 + 4116 here),
-             * so it always asks for a little more than the source can yield, by
-             * an amount that varies per track: 2816 frames on one, 7936 on the
-             * next. Every threshold guessed here was just a number wide enough
-             * for the tracks that had been tried.
-             *
-             * The caller knows the real frame count -- from the cache entry's
-             * meta, or from what JOB_BEGIN committed to -- so the caller does
-             * the checking, against a fact rather than an estimate. */
-            MDBG("stem_decode: stream ended at %lld of an estimated %lld\n",
-                 (long long)pos, (long long)out_len);
+            MDBG("stem_decode: fileRead rc=%d, stream ended at %lld of %lld\n",
+                 rc, (long long)pos, (long long)out_len);
             break;
         }
         if (sink(buf, want, user) != 0) {
