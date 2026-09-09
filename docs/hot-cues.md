@@ -40,10 +40,13 @@ GATE CUE also has a button on the play screen, in the gap between the time
 display and the tempo, so you can arm it mid-set without going into a settings
 screen.
 
-It reads **white on the accent colour** while gate cue is on, and as an outline
-while it is off, the same two states A.HOT CUE and MT already use beside it.
+It reads **white on the accent colour** while gate cue is on, and as a grey
+plate with dim lettering while it is off. The grey is the one the deck's own
+STEMS, BEAT LOOP and KEY SHIFT buttons wear, which is how the deck marks a thing
+you can press; A.HOT CUE and MT beside it are outlines because they are
+indicators, not buttons.
 
-![Gate cue off: the GATE CUE button is an outline.](img/gate-shortcut-off.png)
+![Gate cue off: the GATE CUE button is a grey plate.](img/gate-shortcut-off.png)
 ![Gate cue on: the same button filled with the accent colour.](img/gate-shortcut-on.png)
 
 The button and the [MOD SETTINGS](mod-settings.md) row are the same switch, and
