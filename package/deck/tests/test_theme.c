@@ -22,6 +22,7 @@ static const char *const k_role_name[] = {
     "xpad", "xpad_on",
     "stem[0]", "stem[1]", "stem[2]",
     "text", "text_deck", "text_dim", "text_value", "text_off", "text_on_accent",
+    "text_lit",
     "dead", "icon_disabled", "track", "tick", "mark", "warn", "refuse",
     "bar", "bar_on"
 };

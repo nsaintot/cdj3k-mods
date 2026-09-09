@@ -2,25 +2,16 @@
 /*
  * cue/shortcut.c - the GATE CUE shortcut on the play screen's bottom rack.
  *
- * The MOD SETTINGS row is three screens away from a deck that is playing, and
- * the gate is the one setting a DJ changes mid-set. This is the same flag with
- * a thumb on it: white on blue while the gate is armed, dim while it is not.
+ * The same flag as the MOD SETTINGS row, with a thumb on it: lettering on the
+ * accent while the gate is armed, dim lettering on the deck's unlit-button grey
+ * while it is not.
  *
- * Where it goes (RE-verified against EP122-3.19)
- * ----------------------------------------------
- * The rack is gui::NormalPlayerInfoWidget. It is NOT reachable by name: the
- * gui::PlayerInfo*Widget classes are UpdaterComponent models whose primary
- * vtable is nine slots of listener, and the juce::Component each of them also
- * IS lives at a secondary vtable. So the rack and its neighbours are found by
- * TYPEINFO, which every vtable in a class's group carries -- see juce.h.
- *
- * The button sits in the gap between the timer and the tempo, and the gap is
- * measured rather than written down: the timer's right edge and the tempo's
- * left edge come off the live components, so a firmware that moves either one
- * moves the button with it, and it is centred on the timer for the same reason.
- * Measured on 3.19, in rack coordinates, the timer is {395,13,327,80} and the
- * tempo {839,13,190,83} -- a 117px gap, with the SINGLE play-mode caption
- * {643,13,80,12} ending above it.
+ * The rack is gui::NormalPlayerInfoWidget. The gui::PlayerInfo*Widget classes
+ * are UpdaterComponent models whose juce::Component is a secondary subobject,
+ * so the rack and its neighbours are found by typeinfo (see juce.h). The plate
+ * sits in the gap between the timer and the tempo, both read off the live
+ * components so a firmware that moves them moves the plate. On 3.19, in rack
+ * coordinates: timer {395,13,327,80}, tempo {839,13,190,83}.
  */
 #include "cue/cue.h"
 #include "juce/juce.h"
@@ -28,35 +19,29 @@
 #include "theme/theme.h"
 #include "kit/mod.h"
 
-/* Identity of the three widgets this needs, as typeinfo. See juce.h for why the
- * vtable itself is the wrong handle for a model-first widget. */
+/* Typeinfo of the three widgets; see juce.h for why not the vtable. */
 #define RACK_TI   juce_class_of(ep122_sym(EP122_PLAYERINFO_RACK))
 #define TIME_TI   juce_class_of(ep122_sym(EP122_PLAYERINFO_TIME))
 #define TEMPO_TI  juce_class_of(ep122_sym(EP122_PLAYERINFO_TEMPO))
 
-/* The button, inside the measured gap. Insets keep it clear of both neighbours
- * rather than filling the space between them, which would read as a third
- * readout rather than as a control. */
-#define BTN_INSET_X   8
+/* Insets from the neighbours' boxes. Unequal because their ink is not at their
+ * box edges: the timer's last digit stops 1px short, the tempo's +/- sign (WIDE
+ * only) sits 5px inside. Gives 12px to the digits and 9px to the sign; on 3.19
+ * the plate lands at x=733, w=102. */
+#define BTN_INSET_L   11
+#define BTN_INSET_R   4
 
-/* Height is the plate's padding, and the rack's own badges set it: A.HOT CUE, MT
- * and +-10 are all 28px around lettering this size. A few px over that, because
- * unlike those three this one is pressed -- 28px is 4.4mm on the deck's glass,
- * which is under what a thumb hits reliably mid-set. Centred on the timer rather
- * than placed at a y of its own, so it sits on the row its neighbours sit on
- * whatever the firmware does with them. */
-#define BTN_H         32
+/* Plate 32px: the rack's badges are 28 but are read, not pressed. The label is
+ * BTN_HIT_H tall with the plate centred in it; the extra rows are transparent
+ * and only widen the touch target. Centred on the timer's box plus BTN_DROP,
+ * which puts the plate's centre on the badges' row (y=515 on 3.19). */
+#define BTN_PLATE_H   32
+#define BTN_HIT_H     36
+#define BTN_DROP      3
 #define BTN_MIN_W     70
 
-/* One line, at the size the rack sets its own captions in -- SINGLE and TEMPO on
- * either side, and A.HOT CUE, which fits nine characters in a box the same width
- * as this one.
- *
- * Sized with margin rather than to the edge: measured on the glass, "GATE CUE"
- * is 78px of the 91px juce::Label leaves inside a 101px box, so ~17.5 is where it
- * would start to squash. Label narrows text to its minimum horizontal scale
- * before it clips, so overshooting reads as a condensed font rather than as
- * something obviously wrong -- which is the failure worth leaving room against. */
+/* 15 draws 13px caps, AUTO CUE's height. "GATE CUE" is 76px of the 92px the
+ * Label leaves inside 102, and it starts to squash around 17.5. */
 #define BTN_FONT      15.0f
 #define BTN_TEXT      "GATE CUE"
 
@@ -65,32 +50,42 @@ static uintptr_t g_rack;
 static uintptr_t g_vptr;
 static uintptr_t g_vt[VT_CLONE_WORDS];
 static int       g_shown;               /* what the button is currently painted as */
+static unsigned  g_ink_gen;             /* the theme the label's lettering was set under */
 
-/* Lit is a filled accent plate with the deck's own lettering on it -- the same
- * shape as a selected DJ SETTING row, which is where a DJ has already learnt what
- * white-on-blue means here. Unlit is an outline and no fill, like A.HOT CUE and MT
- * two readouts away: an OFF shortcut belongs to the rack rather than sitting on it
- * as a second slab of grey.
- *
- * `text` rather than `text_on_accent` on the lit plate. That role is tuned for the
- * BYPASS amber, which is a light fill; the accent is the deck's blue and carries
- * white the way the deck's own does. A theme that made the accent light would want
- * the other role. */
+/* Fills: accent when lit, `surface` (the title-bar touch plates' grey) when
+ * not, both read from mod_ui() at paint time. Ink: `text_lit`, which follows
+ * the accent's polarity under a theme, or `text_dim`. The ink lives on the
+ * label and is restamped when the theme generation moves (cf. xpad_ink_sync). */
 static void cue_shortcut_paint_state(void)
 {
     const struct theme_ui *ui = mod_ui();
     int on = g_gate_on ? 1 : 0;
 
     if (!g_btn) return;
-    juce_comp_colour(g_btn, LBL_COL_BG,      on ? ui->accent : 0x00000000u);
-    juce_comp_colour(g_btn, LBL_COL_TEXT,    on ? ui->text   : ui->text_dim);
-    juce_comp_colour(g_btn, LBL_COL_OUTLINE, on ? 0x00000000u : ui->edge);
-    g_shown = on;
+    juce_comp_colour(g_btn, LBL_COL_TEXT, on ? ui->text_lit : ui->text_dim);
+    g_shown   = on;
+    g_ink_gen = mod_ui_gen();
 }
 
-/* The press. Toggles the same flag the MOD SETTINGS row owns, and persists it
- * for the same reason that row does -- a shortcut a restart silently undoes is
- * worse than no shortcut. */
+/* The plate first, then Label::paint for the lettering (the label's own
+ * background is transparent). Bracketed so the stored ink is not re-themed. */
+static void cue_shortcut_paint(void *self, void *g)
+{
+    const struct theme_ui *ui = mod_ui();
+    int32_t b[4];
+
+    if (mod_ui_gen() != g_ink_gen)
+        cue_shortcut_paint_state();
+    if (juce_comp_bounds((uintptr_t)self, b) == 0) {
+        mod_gfx_colour(g, g_gate_on ? ui->accent : ui->surface);
+        mod_gfx_fill(g, 0, (b[3] - BTN_PLATE_H) / 2, b[2], BTN_PLATE_H);
+    }
+    mod_draw_enter();
+    ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
+    mod_draw_leave();
+}
+
+/* Toggles the flag the MOD SETTINGS row owns, and persists it. */
 static void cue_shortcut_mousedown(void *self, void *event)
 {
     (void)self; (void)event;
@@ -100,12 +95,12 @@ static void cue_shortcut_mousedown(void *self, void *event)
     MDBG("cue_shortcut: GATE CUE -> %s (shortcut)\n", g_gate_on ? "ON" : "OFF");
 }
 
-/* Build once, when the rack has both neighbours attached. A rack that is still
- * being wired up is simply not ready yet, and the next repaint tries again. */
+/* Built once the rack has both neighbours; until then the next repaint retries. */
 static void cue_shortcut_build(uintptr_t rack)
 {
     static const struct juce_vt_override ov[] = {
         { JUCE_VT_MOUSEDOWN, (void *)cue_shortcut_mousedown, NULL },
+        { JUCE_VT_PAINT,     (void *)cue_shortcut_paint,     NULL },
     };
     uintptr_t time_w, tempo_w;
     int32_t tb[4], pb[4];
@@ -121,9 +116,9 @@ static void cue_shortcut_build(uintptr_t rack)
     if (juce_comp_bounds(time_w, tb) != 0 || juce_comp_bounds(tempo_w, pb) != 0)
         return;
 
-    x = tb[0] + tb[2] + BTN_INSET_X;
-    w = pb[0] - x - BTN_INSET_X;
-    y = tb[1] + (tb[3] - BTN_H) / 2;
+    x = tb[0] + tb[2] + BTN_INSET_L;
+    w = pb[0] - x - BTN_INSET_R;
+    y = tb[1] + (tb[3] - BTN_PLATE_H) / 2 + BTN_DROP - (BTN_HIT_H - BTN_PLATE_H) / 2;
     if (w < BTN_MIN_W) {
         MDBG("cue_shortcut: only %dpx between the timer and the tempo -> no shortcut\n", w);
         g_rack = rack;                  /* remembered, so this is not retried per frame */
@@ -135,21 +130,17 @@ static void cue_shortcut_build(uintptr_t rack)
         if (!g_vptr) return;
     }
     g_btn = juce_label(rack, BTN_TEXT, BTN_FONT, 0x00000000u, mod_ui()->text_dim,
-                       g_vptr, x, y, w, BTN_H);
+                       g_vptr, x, y, w, BTN_HIT_H);
     if (!g_btn) return;
     g_rack = rack;
     cue_shortcut_paint_state();
-    MDBG("cue_shortcut: GATE CUE shortcut at {%d,%d,%d,%d} in rack %#lx\n",
-         x, y, w, BTN_H, (unsigned long)rack);
+    MDBG("cue_shortcut: GATE CUE shortcut at {%d,%d,%d,%d} in rack %#lx, plate %dpx\n",
+         x, y, w, BTN_HIT_H, (unsigned long)rack, BTN_PLATE_H);
 }
 
-/* Anchored on the waveform title bar's TouchAria, the same component the STEMS
- * row builds from and for the same reason: its paint fires once the play screen
- * is wired up, and the rack is a walk away from the root.
- *
- * Not the rack's own paint. The rack's juce::Component is a secondary subobject,
- * so there is no vtable in the spec that can be patched at the Component slot
- * numbering without writing over the listener vtable that shares its group. */
+/* Anchored on the waveform title bar's TouchAria paint, like the STEMS row: it
+ * fires once the play screen is wired up. The rack's own paint is unusable
+ * because its Component vtable shares a group with the listener vtable. */
 static uintptr_t g_orig_ta_paint;
 
 static void cue_shortcut_ta_paint(void *self, void *g)
@@ -164,8 +155,7 @@ static void cue_shortcut_ta_paint(void *self, void *g)
     }
 }
 
-/* The MOD SETTINGS row and the shortcut are two thumbs on one flag, so whichever
- * moves it tells the other. gate_cue.c hands this to its row as `changed`. */
+/* Called by the MOD SETTINGS row's `changed`, so both views of the flag agree. */
 void cue_shortcut_refresh(void)
 {
     if (g_btn && g_shown != (g_gate_on ? 1 : 0))

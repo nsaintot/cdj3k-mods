@@ -35,6 +35,10 @@
  *            white on it is the one combination on this deck that does not hold at arm's
  *            length. A theme with a dark accent should raise this.
  *
+ *   text_lit   White, for lettering on the ACCENT: the deck's selected DJ SETTING row is
+ *            white on its blue. Not text_on_accent, whose fills (amber, yellow, a stem)
+ *            are the bright ones -- opposite polarity on this deck, see draw.h.
+ *
  *   dead vs text_off   Two different absences. text_off is "switched off", dead is
  *            "nothing here yet", and dead is the darker of the two so the two states do
  *            not read alike.
@@ -71,6 +75,7 @@ const struct theme_ui k_ui_original = {
     .text_value     = 0xff7d7d7du,   /* a DJ SETTING row's value, measured off the list */
     .text_off       = 0xff6e6e6eu,
     .text_on_accent = 0xff1a1a1au,
+    .text_lit       = 0xffffffffu,   /* the deck's own lettering on its selected row */
     .dead           = 0xff3a3a3au,
     .icon_disabled  = 0xffb7b7b7u,
     .track          = 0xff3c3c3cu,
@@ -109,17 +114,30 @@ const struct theme_ui *mod_ui_stock(void)
     return &k_ui_original;
 }
 
+static uint32_t lum_gap(uint32_t a, uint32_t b);
+
 static void derive(struct theme_ui *out, const struct theme_palette *pal)
 {
     const uint32_t *src = (const uint32_t *)&k_ui_original;
     uint32_t *dst = (uint32_t *)out;
     unsigned i, n = sizeof(k_ui_original) / sizeof(uint32_t);
+    uint32_t w, k;
 
     /* Walked as a flat array of ARGB words on purpose. Every member is one, and naming
      * each of the eighteen here would be a list to forget to extend -- a role added to
      * the struct and not to this loop would silently come out black. */
     for (i = 0; i < n; i++)
         dst[i] = theme_palette_argb(pal, src[i], ROLE_IS_FILL);
+
+    /* The one role a palette cannot carry through: text_lit follows the ACCENT's
+     * polarity, and WHITE turns the deck's white lettering black while its blue plate,
+     * carved out, stays a blue -- black on blue, measured on the GATE CUE plate. The
+     * deck's own +-10 badge under the same palette darkens its fill and turns its
+     * lettering white, which is the rule: of the deck's white and black through this
+     * palette, the one further from the accent goes on it. */
+    w = theme_palette_argb(pal, 0xffffffffu, ROLE_IS_FILL);
+    k = theme_palette_argb(pal, 0xff000000u, ROLE_IS_FILL);
+    out->text_lit = lum_gap(out->accent, w) >= lum_gap(out->accent, k) ? w : k;
 }
 
 /* ================================================================== */
@@ -300,6 +318,10 @@ void theme_ui_expand(struct theme_ui *out, const struct theme_palette *pal,
      * subtractions and cannot be wrong. */
     out->text_on_accent = lum_gap(out->accent, sd->ink) > lum_gap(out->accent, sd->ground)
                           ? sd->ink : sd->ground;
+    /* The same measurement, kept as its own role because on ORIGINAL the two fills it
+     * and text_on_accent sit on have opposite polarity (see draw.h). Here the accent is
+     * the only fill measured, so the two agree -- by construction, not by accident. */
+    out->text_lit       = out->text_on_accent;
     (void)light;
     out->dead           = toward(out->surface, down, 96);  /* "nothing here yet": below the plate */
     out->icon_disabled  = toward(sd->ink, down, 110);

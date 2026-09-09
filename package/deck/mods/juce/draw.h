@@ -163,6 +163,18 @@ struct theme_ui {
     uint32_t text_value;
     uint32_t text_off;        /* disabled lettering, greyed stems              */
     uint32_t text_on_accent;  /* near-black: white does not hold on a light fill */
+    /* Lettering on the ACCENT plate specifically. text_on_accent is not that, despite
+     * its name: every user puts it on one of the deck's BRIGHT chromatic fills (the
+     * BYPASS amber, the edit yellow, a stem colour), where the deck's own answer is
+     * near-black. The accent is the deck's blue, and on the deck's own selected row
+     * the lettering on it is white. The two fills have opposite polarity on ORIGINAL,
+     * so one role cannot serve both.
+     *
+     * Follows the fill's polarity, which is what the deck's own badges do under a
+     * theme: on WHITE the +-10 plate darkens and its black lettering turns white, so
+     * whichever of the theme's ink and ground is further from the accent is the one
+     * that goes on it. */
+    uint32_t text_lit;
     uint32_t dead;            /* "nothing here yet", darker than disabled      */
     uint32_t icon_disabled;
     uint32_t track;           /* progress rail, unfilled                       */

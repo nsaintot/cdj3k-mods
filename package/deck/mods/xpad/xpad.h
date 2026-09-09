@@ -143,8 +143,8 @@ extern "C" {
  * a steady one reads as a control mid-change, not as a recorder. */
 #define XP_FLAG_W       132     /* OVERDUB / HOLD, stacked                      */
 #define XP_FLAG_GAP     8
-/* One pixel, which is what juce::Label's own drawRect gives GATE CUE and every
- * other outlined plate on the rack. */
+/* One pixel, which is what juce::Label's own drawRect gives every outlined plate
+ * on the rack. */
 #define XP_FLAG_EDGE    1
 #define XP_LAMP_PAD     4       /* the lamp's inset within the row              */
 #define XP_LAMP_GAP     9       /* ...and the air between it and the word       */
