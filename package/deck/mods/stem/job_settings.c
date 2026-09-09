@@ -11,10 +11,10 @@ static const char *const k_addr_error[] = {
 };
 
 static const char *const k_stems_notice[] = {
-    "A stemd app must be reachable from the LAN",
+    "The stemd app must be reachable from the LAN",
     "",
     "setup instructions:",
-    "cdj3k-mods.com/manual/stems",
+    "cdj3k-mods.com/docs/stems",
 };
 #include "core/mod_settings.h"
 #include "wave/wave.h"
