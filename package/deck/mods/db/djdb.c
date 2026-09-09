@@ -579,7 +579,7 @@ static uint32_t djdb_cache_playlist(uintptr_t cache, uint32_t *serial)
     return id;
 }
 
-/* The newest playlist list-cache SOMEONE ELSE STILL HOLDS.
+/* The newest playlist list-cache, preferring one SOMEONE ELSE STILL HOLDS.
  *
  * Both halves are the collector's own vocabulary. The serial at +0x28 counts up
  * once per cached list, so the largest is the most recently opened. And the deck
@@ -587,14 +587,14 @@ static uint32_t djdb_cache_playlist(uintptr_t cache, uint32_t *serial)
  * because a use count of 1 means nobody but the collector is looking at it; the
  * list on screen is by definition held by something else.
  *
- * Reported rather than assumed: every candidate is logged, so a wrong pick is
- * visible in the log rather than only in the DJ's playlist. */
-uint32_t djdb_playlist_from_caches(void)
+ * `*held`: the pick is a held one. `verbose`: log every candidate. */
+static uint32_t djdb_scan_caches(int verbose, int *held)
 {
     uintptr_t p, end;
     uint32_t  best = 0, best_serial = 0;
     int       best_held = 0, seen = 0;
 
+    *held = 0;
     if (!djdb_g_collector)
         return 0;
     if (mod_safe_read(djdb_g_collector + LCC_CACHES, &p, sizeof p) != 0 ||
@@ -606,7 +606,7 @@ uint32_t djdb_playlist_from_caches(void)
     for (; p < end; p += 16) {
         uintptr_t cache, ctrl;
         uint32_t  serial = 0, use = 0, id;
-        int       held;
+        int       is_held;
 
         if (mod_safe_read(p, &cache, sizeof cache) != 0 || !cache)
             continue;
@@ -615,22 +615,39 @@ uint32_t djdb_playlist_from_caches(void)
             continue;
         if (mod_safe_read(p + 8, &ctrl, sizeof ctrl) == 0 && ctrl)
             mod_safe_read(ctrl + 8, &use, sizeof use);
-        held = use > 1;
+        is_held = use > 1;
         seen++;
-        MDBG("djdb: cached list #%u is playlist %u, %s (use %u)\n",
-             (unsigned)serial, (unsigned)id, held ? "held" : "loose",
-             (unsigned)use);
-        if (held < best_held)
+        if (verbose)
+            MDBG("djdb: cached list #%u is playlist %u, %s (use %u)\n",
+                 (unsigned)serial, (unsigned)id, is_held ? "held" : "loose",
+                 (unsigned)use);
+        if (is_held < best_held)
             continue;
-        if (held > best_held || serial >= best_serial) {
+        if (is_held > best_held || serial >= best_serial) {
             best = id;
             best_serial = serial;
-            best_held = held;
+            best_held = is_held;
         }
     }
-    if (!seen)
+    if (verbose && !seen)
         MDBG("djdb: the collector holds no playlist list-cache\n");
+    *held = best_held;
     return best;
+}
+
+uint32_t djdb_playlist_from_caches(void)
+{
+    int held;
+
+    return djdb_scan_caches(1, &held);
+}
+
+uint32_t mod_djdb_playlist_shown(void)
+{
+    int held;
+    uint32_t id = djdb_scan_caches(0, &held);
+
+    return held ? id : 0;
 }
 
 void mod_djdb_drop_list_cache(uint32_t playlist_id)

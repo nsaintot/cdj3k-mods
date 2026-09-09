@@ -227,10 +227,14 @@ int mod_djdb_move_track_async(uint32_t playlist_id, int32_t from_no,
  * across playlists -- the held one follows the screen, and the newest one does
  * not, so the serial only ever breaks a tie.
  *
- * It is also the PLAYLIST-ONLY GATE: a list whose cache was not asked for with a
- * playlist hierarchy is not a playlist, and reordering one would be rewriting a
- * track's album number. [any] */
+ * Falls back, before a collector is seen, to the last playlist a query named
+ * and then to the medium's only playlist. Both outlive the list they were true
+ * for: this names a WRITE's target and does not say what is on screen. [any] */
 uint32_t mod_djdb_playlist_now(void);
+
+/* The playlist whose list is on screen, or 0 -- the PLAYLIST-ONLY GATE. Only a
+ * held cache counts, none of the fallbacks above. Quiet: polled. [any] */
+uint32_t mod_djdb_playlist_shown(void);
 
 /* "The deck is inside a djdb operation right now, called from `where`" -- so the
  * table registry can be read at a moment its context is certainly live, which is
