@@ -15,9 +15,10 @@
 static int32_t mod_numrows(void *self)
 {
     /* Collapse to just the mod rows in mod mode: JUCE then clamps the selection
-     * to those rows (no plugging), and the count change (8->N) is what makes
-     * updateContent actually re-layout + repaint. */
-    if (menu_g_mod_mode) return MOD_ROWS_VISIBLE;
+     * to those rows (no plugging), and the count change is what makes
+     * updateContent actually re-layout + repaint. The count is whatever
+     * menu_list_fit made room for, so the list never scrolls. */
+    if (menu_g_mod_mode) return menu_g_list_rows;
     return ((numrows_t)menu_g_orig_numrows)(self);
 }
 

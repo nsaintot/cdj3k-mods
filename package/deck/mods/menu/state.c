@@ -14,6 +14,7 @@ uintptr_t menu_g_orig_numrows, menu_g_orig_paintcell, menu_g_orig_mousedown, men
                  menu_g_orig_rnumrows;
 int       menu_g_render_ok;   /* JUCE render primitives verified at install */
 int       menu_g_mod_mode;    /* 1 while the mod overlay is drawing over DJ SETTING */
+int       menu_g_list_rows = MOD_LIST_ROWS_STOCK;
 uintptr_t menu_g_model;       /* DJSettingTableModel, captured in paintCell */
 uintptr_t menu_g_view;        /* UTILITY view, captured from the hooks that get it */
 int       menu_g_bouncing;    /* re-entry guard for the title-row bounce */

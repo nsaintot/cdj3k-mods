@@ -27,10 +27,14 @@ void menu_refresh_djlist(void *view)
             mod_safe_read(list, &vt, sizeof(vt));
             MDBG("djlist=%#lx vt=%#lx model@+%#lx\n",
                  (unsigned long)list, (unsigned long)vt, (unsigned long)off);
+            /* Size first: updateContent lays the rows out against the bounds the
+             * list has at that moment. */
+            menu_list_fit(list, menu_g_mod_mode);
             ((void (*)(void *))FN_UPDATECONTENT)((void *)list);
-            /* updateContent only re-lays-out when the row COUNT changes, and we keep it
-             * equal to stock, so ask for the repaint outright: the row components call
-             * paintCell again and pick up the new mode. */
+            /* updateContent only re-lays-out when the row COUNT changes, which a
+             * dismiss that stays on DJ SETTING does not do, so ask for the repaint
+             * outright: the row components call paintCell again and pick up the
+             * new mode. */
             ((void (*)(void *))FN_REPAINT)((void *)list);
             return;
         }

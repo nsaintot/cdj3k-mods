@@ -140,6 +140,98 @@ void menu_pane_fit(uintptr_t rlist, int rows)
     }
 }
 
+/* Give the DJ SETTING list room for MOD_ROWS_VISIBLE rows while the overlay is
+ * armed, and stock's own height back when it is not.
+ *
+ * Stock builds this list eight rows tall and leaves the panel beneath it blank,
+ * so an overlay of more rows rendered inside that viewport and scrolled. As with
+ * the right pane, the row height is measured from the stock-built list, once,
+ * and the armed height is that unit times the row count. What the list is sized
+ * for is published in menu_g_list_rows, which is what getNumRows reports: a list
+ * that could not be grown is left at its stock height and reports the stock
+ * count, so it scrolls rather than clips. */
+static int32_t g_list_rowh;      /* measured once from the stock-built list */
+static int32_t g_list_stock_h;
+
+void menu_list_fit(uintptr_t list, int armed)
+{
+    int32_t b[4], want;
+    int rows;
+
+    if (!list || mod_safe_read(list + COMP_BOUNDS_OFF, b, sizeof(b)) != 0) return;
+
+    if (!g_list_rowh) {
+        if (b[3] <= 0 || (b[3] % MOD_LIST_ROWS_STOCK) != 0) {
+            MDBG("djlist: %dx%d is not a clean %d rows -> not resizing\n",
+                 b[2], b[3], MOD_LIST_ROWS_STOCK);
+            g_list_rowh = -1;
+        } else {
+            g_list_rowh = b[3] / MOD_LIST_ROWS_STOCK;
+            g_list_stock_h = b[3];
+            MDBG("djlist: %dx%d at (%d,%d) -> row height %d\n",
+                 b[2], b[3], b[0], b[1], g_list_rowh);
+        }
+    }
+    if (g_list_rowh <= 0) return;
+
+    rows = armed ? MOD_ROWS_VISIBLE : MOD_LIST_ROWS_STOCK;
+    want = armed ? g_list_rowh * rows : g_list_stock_h;
+    if (b[1] + want > MOD_LIST_BOTTOM) {
+        MDBG("djlist: %d rows would end at %d, past %d -> staying stock-sized\n",
+             rows, b[1] + want, MOD_LIST_BOTTOM);
+        rows = MOD_LIST_ROWS_STOCK;
+        want = g_list_stock_h;
+    }
+    menu_g_list_rows = rows;
+    if (want == b[3]) return;
+    /* Growing back from the keyboard's cut goes past the target first. The cut
+     * list is scrolled and overflowing, so both of JUCE's scrollbars are up, and
+     * each keeps the other alive: the horizontal one takes the height that makes
+     * the content overflow vertically, the vertical one takes the width that
+     * makes it overflow horizontally, and the content stays scrolled by one bar.
+     * A viewport taller than the content has no use for either, and once they
+     * are gone the content is back at the top and fits the real size exactly. */
+    if (want > b[3])
+        ((void (*)(void *, int, int, int, int))FN_SET_BOUNDS)
+            ((void *)list, b[0], b[1], b[2], want + MOD_LIST_GROW_SLACK);
+    ((void (*)(void *, int, int, int, int))FN_SET_BOUNDS)
+        ((void *)list, b[0], b[1], b[2], want);
+    MDBG("djlist: resized to %dx%d for %d rows\n", b[2], want, rows);
+}
+
+/* Bring `row` out from under the software keyboard: the list is cut down to the
+ * rows above it and scrolled so `row` is the last one showing. Returns the
+ * on-screen row the editor belongs on, which is `row` itself when it was already
+ * clear of the keyboard. menu_list_fit grows the list back when the keyboard
+ * closes, and JUCE returns it to the top by itself: every row fits again, so
+ * there is nothing left to scroll.
+ *
+ * selectRow only scrolls when the selection changes, and `row` is the selection
+ * that opened the keyboard, so it is stepped off and back on. The bounce guard is
+ * up for both steps: the stock handler still runs (and rebuilds the right pane,
+ * which the caller hides again), the overlay's own does not. */
+int menu_list_fit_above_kbd(uintptr_t list, int row)
+{
+    int32_t b[4];
+    int above;
+
+    if (!list || g_list_rowh <= 0 ||
+        mod_safe_read(list + COMP_BOUNDS_OFF, b, sizeof(b)) != 0)
+        return row;
+    above = (MOD_KBD_TOP - b[1]) / g_list_rowh;
+    if (above < 2 || row < above) return row;
+
+    ((void (*)(void *, int, int, int, int))FN_SET_BOUNDS)
+        ((void *)list, b[0], b[1], b[2], above * g_list_rowh);
+    menu_g_bouncing = 1;
+    ((selectrow_t)FN_SELECT_ROW)((void *)list, row - 1, 1, 1);
+    ((selectrow_t)FN_SELECT_ROW)((void *)list, row, 0, 1);
+    menu_g_bouncing = 0;
+    MDBG("djlist: cut to %d rows for the keyboard, row %d shown at %d\n",
+         above, row, above - 1);
+    return above - 1;
+}
+
 void menu_pane_labels(uintptr_t view, uintptr_t rmodel, const struct kit_row *r)
 {
     uint8_t sa[JUCE_STRARRAY_BYTES] __attribute__((aligned(8))) = { 0 };
