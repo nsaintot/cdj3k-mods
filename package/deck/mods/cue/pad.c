@@ -28,6 +28,11 @@
  * the strip's touch drives: slot +0x10 carries the touched point as a
  * normalised fraction and +0x18 clears it. Hooking the pair is how the layer
  * knows the zone is held without going anywhere near the strip's own drawing.
+ *
+ * Every input handler embeds a dj_player::PlayerState at +0x80, the deck's own
+ * snapshot of the player. Its flag bytes at +0x65..+0x67 read as one state --
+ * sub_11459f0: +0x65 -> 0, else +0x67 ? 2 : 1, +0x66 -> 3 -- and +0x67 is the
+ * one that says PLAYING. Read at the press, off the handler the closure names.
  */
 #include "cue/cue.h"
 #include "kit/mod.h"
@@ -39,6 +44,10 @@
 #define CUE_RUN_SLOT       0x10   /* AsyncTask::run, on every closure class */
 #define PREVIEW_SET_SLOT   0x10   /* PreviewController: the touched point   */
 #define PREVIEW_CLEAR_SLOT 0x18   /* ...and letting go                      */
+
+/* dj_player::PlayerState inside every input handler, and its play byte. */
+#define HANDLER_STATE_OFF  0x80
+#define STATE_PLAYING_OFF  0x67
 
 #define FN_LINK_DECK       ep122_sym(EP122_CUE_LINK_DECK)
 #define FN_LINK_FACADE     ep122_sym(EP122_CUE_LINK_FACADE)
@@ -106,6 +115,19 @@ static float cue_g_needle_at;
 
 int cue_pad_ready(void) { return cue_g_ready; }
 int cue_pads_held(void) { return __atomic_load_n(&cue_g_held, __ATOMIC_ACQUIRE); }
+
+int cue_deck_playing(const struct cue_event *ev)
+{
+    uintptr_t handler = 0;
+    uint8_t   st[4];
+
+    if (mod_safe_read((uintptr_t)ev->task + CLOSURE_HANDLER_OFF, &handler, sizeof(handler)) != 0 ||
+        !handler ||
+        mod_safe_read(handler + HANDLER_STATE_OFF + 0x64, st, sizeof(st)) != 0)
+        return 0;
+    MDBG("cue: player state %02x %02x %02x %02x\n", st[0], st[1], st[2], st[3]);
+    return st[STATE_PLAYING_OFF - 0x64] != 0;
+}
 
 /* ================================================================== */
 /* Decoding an event                                                  */

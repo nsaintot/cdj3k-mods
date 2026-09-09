@@ -5,16 +5,19 @@ of them off the pads behave exactly as they always did.
 
 ## GATE CUE
 
-Ships **OFF**. Makes the pads momentary.
+Ships **OFF**. Makes the pads momentary while the deck is paused.
 
 | | |
 | --- | --- |
-| Press a pad | Jumps to the cue and plays, as normal |
+| Press a pad **while paused** | Jumps to the cue and plays for as long as you hold it |
 | **Release the pad** | Returns to the cue and pauses |
 | Press **PLAY** while still holding | Latches, and the track keeps playing when you let go |
+| Press a pad **while playing** | A normal hot cue: jumps to the cue and keeps playing |
 
 So a short stab is a stab, and a press you decide to keep is a press you keep,
-without having to decide before you press.
+without having to decide before you press. Whether a press gates is decided
+when you press it, from whether the deck was playing at that moment; a second
+pad pressed during a hold joins the first.
 
 ![GATE CUE on: holding a pad plays from the cue, and releasing it returns there and pauses.](vid/gate-cue.mp4)
 
