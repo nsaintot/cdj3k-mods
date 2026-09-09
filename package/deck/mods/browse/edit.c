@@ -75,39 +75,8 @@ static void be_repaint(uintptr_t comp)
 
 /* ---- is the list on screen a PLAYLIST? ------------------------------------
  *
- * See browse.h for why the sidebar answers this and nothing else does. Found by
- * shape rather than by class name: the browse sidebar is the one
- * meow::TouchableViewport::ViewedComponent 90 wide, and its box is three up --
- * ViewedComponent, a plain juce::Component, ListViewport, then the box. */
-static uintptr_t be_side_box(uintptr_t comp, int depth)
-{
-    int32_t b[4];
-    int n, i;
-
-    if (!comp || depth > 8 || !juce_comp_visible(comp))
-        return 0;
-    if (juce_comp_class(comp) == juce_class_of(ep122_sym(EP122_VIEWED_COMP)) &&
-        juce_comp_bounds(comp, b) == 0 && b[2] == 90) {
-        uintptr_t c = comp;
-
-        for (i = 0; i < 3 && c; i++)
-            c = juce_comp_parent(c);
-        return c;
-    }
-    n = juce_comp_nchild(comp);
-    for (i = 0; i < n; i++) {
-        uintptr_t hit = be_side_box(juce_comp_child(comp, i), depth + 1);
-
-        if (hit)
-            return hit;
-    }
-    return 0;
-}
-
-/* Under gui::PlayListView -- the screen behind the deck's own PLAYLIST button.
- * That screen shows playlists and nothing else, so a track list inside one IS a
- * playlist and no other evidence is needed. It also has no sidebar, which is why
- * the sidebar alone left EDIT off the one screen a DJ reaches with a button. */
+ * See browse.h. Under gui::PlayListView -- the PLAYLIST button's screen -- a
+ * track list is a playlist by construction. */
 static int be_under_playlist_view(uintptr_t list)
 {
     uintptr_t ti = juce_class_of(ep122_sym(EP122_PLAYLIST_VIEW)), c = list;
@@ -121,20 +90,22 @@ static int be_under_playlist_view(uintptr_t list)
     return 0;
 }
 
+/* The browse screen's answer, polled every BE_GATE_TICKS. */
+static uint32_t be_shown_playlist(void)
+{
+    static uint32_t pid;
+    static int      ticks;
+
+    if (ticks-- <= 0) {
+        ticks = BE_GATE_TICKS - 1;
+        pid = mod_djdb_playlist_shown();
+    }
+    return pid;
+}
+
 static int be_on_playlist(uintptr_t list)
 {
-    uintptr_t box;
-    int32_t rows = 0, sel = -1;
-
-    if (be_under_playlist_view(list))
-        return 1;
-    box = be_side_box(juce_comp_root(be_g_bar), 0);
-    if (!box)
-        return 0;
-    if (mod_safe_read(box + SIDE_NROWS_OFF, &rows, sizeof(rows)) != 0 ||
-        mod_safe_read(box + SIDE_SELROW_OFF, &sel, sizeof(sel)) != 0)
-        return 0;
-    return rows == SIDE_NROWS && sel == SIDE_PLAYLIST;
+    return be_under_playlist_view(list) || be_shown_playlist() != 0;
 }
 
 /* ---- the mark -------------------------------------------------------------
@@ -424,8 +395,8 @@ static void be_attach(uintptr_t bar)
  *
  * The second half is the PLAYLIST-ONLY gate. An artist's or album's `#` is the
  * track's own album number out of its tags, so a reorder there would rewrite
- * metadata rather than move anything; mod_djdb_playlist_now is 0 unless the
- * list on screen came from the playlist table.
+ * metadata rather than move anything; be_on_playlist is 0 unless the list on
+ * screen is served from a playlist's cache or sits on the PLAYLIST screen.
  *
  * Turning the mode OFF on the way out, not just hiding the plate: coming back to
  * a browse screen with an invisible EDIT still latched would leave the list in a
@@ -462,9 +433,10 @@ static void be_sync(void)
     want = list != 0 && browse_sort_has_position(be_g_bar) && be_on_playlist(list);
     if (want == be_g_shown)
         return;
-    MDBG("browse: EDIT %s -- list %p, playlist %u\n",
+    MDBG("browse: EDIT %s -- list %p, playlist %u%s\n",
          want ? "shown" : "hidden", (void *)list,
-         (unsigned)mod_djdb_playlist_now());
+         (unsigned)be_shown_playlist(),
+         list && be_under_playlist_view(list) ? " (PLAYLIST screen)" : "");
     be_g_shown = want;
     juce_comp_set_visible(be_g_btn, want);
 }

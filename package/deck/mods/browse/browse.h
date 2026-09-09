@@ -29,26 +29,18 @@
  *
  * ---- and this is how it knows -----------------------------------------------
  *
- * THE LEFT SIDEBAR. It tracks the LEVEL, not the tab that was pressed: reaching
- * an album through ARTIST -> an artist -> an album leaves it highlighting ALBUM,
- * and a playlist leaves it on PLAYLIST. The deck is already drawing the answer;
- * the selected row of that list is it. See SIDE_SELROW_OFF below.
+ * THE LIST CACHE IT IS SERVED FROM. Every cached list keeps the condition it
+ * was asked for, a playlist's carries a playlist hierarchy, and the cache on
+ * screen is the one held by someone other than the collector.
+ * mod_djdb_playlist_shown is that walk, shared with the reorder's write.
  *
- * Two things had to be eliminated first, and both were eliminated by MEASURING
- * rather than by reasoning, because reasoning got the first one wrong twice:
+ * Under gui::PlayListView -- the PLAYLIST button's screen -- a track list is a
+ * playlist by construction.
  *
- *   - djdb cannot answer. The deck warms a list cache when the media is
- *     announced and browses out of it, so the playlist cursor runs once per
- *     MEDIA, not once per list. A whole session of navigating: two queries, both
- *     of them ours.
- *   - neither widget carries it. gui::TrackListWidget is byte-identical in its
- *     first 0x100 for a playlist and for an album -- one object serves both --
- *     and gui::BrowseTitleWidget holds only its title string and the icon
- *     BITMAP, at pointers into an image arena that differ between two visits to
- *     the same playlist. (The first attempt at that one read FORWARD from the
- *     juce::Component subobject, which for a virtual base is the wrong end of
- *     the object entirely, and concluded from 640 bytes of nothing that the
- *     header was empty. Walk back through offset-to-top at vptr[-2].)
+ * Nothing else answers. The browse sidebar's categories come off the stick
+ * (djdbMenuItems), so neither its row count nor PLAYLIST's index is a constant.
+ * gui::TrackListWidget serves a playlist and an album from one object, and
+ * gui::BrowseTitleWidget holds only a title and an icon bitmap.
  *
  * And the `#` column is a second, independent condition rather than a
  * replacement: it keeps EDIT off the split preview pane, where a playlist is
@@ -245,25 +237,9 @@ int browse_drag_install(void);
  * them at full strength and only dimmed the lettering. */
 #define DG_GHOST_ALPHA  0.55f
 
-/* ---- the category, which the deck draws in the sidebar -------------------
- *
- * THE LEFT SIDEBAR TRACKS THE LEVEL, NOT THE TAB THAT WAS PRESSED. Reaching an
- * album through ARTIST -> an artist -> an album leaves it highlighting ALBUM;
- * a playlist leaves it on PLAYLIST. So the deck is already showing what kind of
- * list is on screen, and its selected row IS that answer -- measured live, the
- * row moved 0 -> 4 walking into a playlist and 0 -> 1 walking into an album.
- *
- * The box is the one meow::TouchableTableListBox whose viewport is 90 wide.
- * Selected row at +0x108, row count at +0xf8.
- *
- * The ORDER is the deck's fixed browse-category list, and the count is checked
- * before the index is believed: a medium that offers a different set of
- * categories fails this CLOSED -- no EDIT -- rather than reordering whatever
- * happens to sit at index 4. */
-#define SIDE_NROWS_OFF   0xf8
-#define SIDE_SELROW_OFF  0x108
-#define SIDE_NROWS       9      /* ARTIST ALBUM TRACK KEY PLAYLIST HISTORY ... */
-#define SIDE_PLAYLIST    4
+/* Display ticks between polls of the list caches: a few dozen /proc/self/mem
+ * reads, not for 44 Hz. 11 ticks is 250 ms, inside the list's own transition. */
+#define BE_GATE_TICKS  11
 
 /* Row geometry and identity, read out of RowComp::paint (0x190f6a0), which
  * hands all three to the model:

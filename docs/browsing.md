@@ -9,7 +9,7 @@ The browse screen uses single-finger dragging to scroll through lists. To enable
 
 ## Reordering a playlist
 
-1. Open a **playlist**.
+1. Open a **playlist** (via **BROWSE** or **PLAYLIST** button).
 2. Tap **EDIT** in the browse header.
 3. **Drag a track** to where you want it.
 4. Tap **EDIT** again when you are done.
@@ -22,10 +22,4 @@ exactly as it always did.
 
 ## Playlists only
 
-A playlist's `#` is a stored position that belongs to that list, so moving a
-track in it changes that list.
-
-> **Known limitation.** EDIT currently appears on **any** track list, not only
-> on playlists. Dragging somewhere it cannot be saved is refused at the point
-> of writing, so nothing is corrupted. The move simply does not stick. The
-> work to hide the toggle where it does not apply is not finished.
+The EDIT button appears only on playlists views
