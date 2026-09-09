@@ -85,6 +85,7 @@ static void loader_take_delivery(void)
     static uint32_t seen;
     char track[STEM_CACHE_PATH_MAX], h[STEM_CACHE_PATH_MAX], v[STEM_CACHE_PATH_MAX];
     float hg, vg;
+    int tmpfs;
     uint32_t gen = __atomic_load_n(&g_delivery.gen, __ATOMIC_ACQUIRE);
 
     if (gen == seen || (gen & 1u))
@@ -95,6 +96,7 @@ static void loader_take_delivery(void)
     snprintf(v, sizeof(v), "%s", g_delivery.v);
     hg = g_delivery.hg;
     vg = g_delivery.vg;
+    tmpfs = g_delivery.tmpfs;
 
     if (track_is_current(track)) {
         ui_publish(STEM_STAGE_LOADING, 0, 0);
@@ -108,11 +110,13 @@ static void loader_take_delivery(void)
         MDBG("stem_job: %s finished separating, but is no longer loaded --"
              " it is in the cache for when it is\n", track);
     }
-    /* The tmpfs copies are pure duplication from here: the media cache has the
-     * durable pair and publish has them in RAM. /dev/shm is guest RAM on a
-     * 3 GiB ceiling at ~170 MB a track. */
-    unlink(h);
-    unlink(v);
+    /* A pair still on tmpfs -- one the media would not take -- is pure
+     * duplication from here: publish has it in RAM. The media's own copy is the
+     * cache entry and stays. */
+    if (tmpfs) {
+        unlink(h);
+        unlink(v);
+    }
 }
 
 void * loader_main(void *arg)

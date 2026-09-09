@@ -201,11 +201,33 @@ static int fill_chunk(const float *pcm, int64_t frames, void *user)
  * whole load over a tail nobody hears. decode.c logs where a stream ended; a
  * genuinely unreadable stem stops four orders of magnitude short and is obvious
  * in that one line. */
+/* What the deck keeps for itself while a pair is resident: its page pool,
+ * the waveforms, the browser. Measured on the emulator: EP122 idles at
+ * ~490 MB and the kernel killed it at 1020 MB with a 415 MB pair in. */
+#define LOAD_HEADROOM   (128u * 1024 * 1024)
+
+/* MemAvailable, or 0 when it cannot be read. */
+static uint64_t mem_available(void)
+{
+    char line[96];
+    uint64_t kb = 0;
+    FILE *fp = fopen("/proc/meminfo", "r");
+
+    if (!fp)
+        return 0;
+    while (fgets(line, sizeof(line), fp))
+        if (sscanf(line, "MemAvailable: %llu kB", (unsigned long long *)&kb) == 1)
+            break;
+    fclose(fp);
+    return kb * 1024;
+}
+
 static int64_t load_one(struct stem_buf *slot, const char *path, int rate,
                         float gain, int report)
 {
     struct fill_ctx ctx;
     int64_t len, got;
+    uint64_t need, avail;
 
     len = stem_decode_pull(path, rate, NULL, NULL);
     if (len <= 0) {
@@ -213,12 +235,28 @@ static int64_t load_one(struct stem_buf *slot, const char *path, int rate,
         MDBG("stem_store: %s: length probe failed (%lld)\n", path, (long long)len);
         return STEM_PUBLISH_BAD;
     }
+    /* THE PAIR, not this part: both load side by side, so each asks for both.
+     * Asked up front because a malloc that cannot be honoured does not fail on
+     * this kernel -- it overcommits, and kills EP122 when the pages are touched
+     * -- and a deck that restarts mid-set is worse than a track without stems.
+     * RETRY, like the malloc below: the shortage may be the deck's own load
+     * still settling. */
+    need = 2 * (uint64_t)len * 2 * sizeof(int16_t) + LOAD_HEADROOM;
+    avail = mem_available();
+    if (avail && need > avail) {
+        MDBG("stem_store: %s: the pair needs %llu MB with headroom, %llu MB"
+             " available -> not loading\n", path,
+             (unsigned long long)(need >> 20), (unsigned long long)(avail >> 20));
+        stem_progress_set(STEM_STAGE_IDLE, 0);
+        return STEM_PUBLISH_RETRY;
+    }
     slot->pcm = malloc((size_t)len * 2 * sizeof(int16_t));
     if (!slot->pcm) {
         /* Us, not the file. Saying BAD here would condemn a good cache entry
          * over a momentary shortage and re-separate the track. */
         MDBG("stem_store: %s: out of memory for %lld frames (%lld MB)\n",
              path, (long long)len, (long long)(len * 4 / (1024 * 1024)));
+        stem_progress_set(STEM_STAGE_IDLE, 0);
         return STEM_PUBLISH_RETRY;
     }
     ctx.pcm = slot->pcm;

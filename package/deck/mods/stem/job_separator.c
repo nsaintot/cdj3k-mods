@@ -13,7 +13,7 @@
 #include <pthread.h>
 
 static void sep_deliver(const char *track, const char *h, float hg,
-                        const char *v, float vg)
+                        const char *v, float vg, int tmpfs)
 {
     uint32_t gen = g_delivery.gen;
 
@@ -24,7 +24,7 @@ static void sep_deliver(const char *track, const char *h, float hg,
     snprintf(g_delivery.v, sizeof(g_delivery.v), "%s", v);
     g_delivery.hg = hg;
     g_delivery.vg = vg;
-    g_delivery.tmpfs = 1;
+    g_delivery.tmpfs = tmpfs;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     __atomic_store_n(&g_delivery.gen, gen + 2, __ATOMIC_RELAXED);
     MDBG("stem_job: separated %s -> handed to the loader\n", track);
@@ -101,7 +101,8 @@ int handle_frame(uint32_t type, const void *buf, uint32_t len)
     }
     case STEM_MSG_STEM_READY: {
         const struct stem_ready *r = buf;
-        int part;
+        struct stem_cache_entry e;
+        int part, stored;
 
         if (len < sizeof(*r) || len < sizeof(*r) + r->path_len)
             return 0;
@@ -126,19 +127,32 @@ int handle_frame(uint32_t type, const void *buf, uint32_t len)
          * what makes a separation the DJ switched away from still worth having:
          * the entry lands whether or not anyone is waiting for it. The store
          * rule decides whether this volume may hold it at all. */
-        stem_cache_store(g_job_path, g_job_frames,
-                         g_arrived[STEM_PART_HARMONICS].path,
-                         g_arrived[STEM_PART_HARMONICS].gain,
-                         g_arrived[STEM_PART_VOCALS].path,
-                         g_arrived[STEM_PART_VOCALS].gain);
+        stored = stem_cache_store(g_job_path, g_job_frames,
+                                  g_arrived[STEM_PART_HARMONICS].path,
+                                  g_arrived[STEM_PART_HARMONICS].gain,
+                                  g_arrived[STEM_PART_VOCALS].path,
+                                  g_arrived[STEM_PART_VOCALS].gain) == 0;
 
         /* Then hand the loader the paths and let it decide whether they are
-         * still wanted. Nothing here touches g_set. */
-        sep_deliver(g_job_path,
-                    g_arrived[STEM_PART_HARMONICS].path,
-                    g_arrived[STEM_PART_HARMONICS].gain,
-                    g_arrived[STEM_PART_VOCALS].path,
-                    g_arrived[STEM_PART_VOCALS].gain);
+         * still wanted. Nothing here touches g_set.
+         *
+         * THE MEDIA'S COPY, once there is one, and the tmpfs pair goes first.
+         * /dev/shm is RAM, and a 9-minute pair is 100 MB of it sitting there
+         * for the whole of a 415 MB load -- the difference between the pair
+         * fitting and the kernel killing EP122. The loader reads the media at
+         * the speed a cache hit already does. */
+        if (stored && stem_cache_lookup(g_job_path, g_job_frames, &e) == 0) {
+            unlink(g_arrived[STEM_PART_HARMONICS].path);
+            unlink(g_arrived[STEM_PART_VOCALS].path);
+            sep_deliver(g_job_path, e.harmonics_path, e.harmonics_gain,
+                        e.vocals_path, e.vocals_gain, 0);
+        } else {
+            sep_deliver(g_job_path,
+                        g_arrived[STEM_PART_HARMONICS].path,
+                        g_arrived[STEM_PART_HARMONICS].gain,
+                        g_arrived[STEM_PART_VOCALS].path,
+                        g_arrived[STEM_PART_VOCALS].gain, 1);
+        }
         return 1;
     }
     case STEM_MSG_JOB_FAILED: {

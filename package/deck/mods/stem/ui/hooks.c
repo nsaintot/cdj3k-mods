@@ -87,6 +87,12 @@ int stems_available(void)
         return 1;
     if (!stem_ui_read(&st) || !st.status_seen)
         return 1;                           /* nothing asked yet: say nothing */
+    /* A pair coming off the media needs no server: the stems are on the way
+     * whatever the sidecar thinks of the network, and for a long track that leg
+     * runs a minute. Only the OFF-MEDIA load; a separation's own LOADING leg
+     * belongs to the server test below. */
+    if (st.stage == STEM_STAGE_LOADING && !st.via_server)
+        return 1;
     /* A SERVER THE SIDECAR HAS CALLED UNUSABLE IS THE ANSWER, whatever stage a
      * job happens to be in. This test used to sit below the one after it, and
      * that ordering broke the moment failures started being retried: every five
