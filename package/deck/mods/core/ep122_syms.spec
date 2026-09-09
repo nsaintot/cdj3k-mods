@@ -138,6 +138,11 @@ vtable PCM_PAGEBUF        class=N6pcmbuf7pagebuf10PageBufferINS0_23DefaultPageSt
 vtable PCM_STRETCH        class=N11time_domain26ReadableTimeStretchAdapterE
 vtable PCM_PREVIEW        class=N14preview_player17RealtimeSRCBufferE
 vtable TSMGR              class=N11time_domain26CascadedTimeStretchManagerE
+# The deck's own "the track is in the pool" event: onLoadResult posts this task
+# with the load's SourceId at closure+0x18/+0x20 (the same 16 bytes the pool
+# reads carry) and its Result at +0x30. Fires whether or not anything plays,
+# which the reads do not on a deck loaded and left at 0:00.
+vtable PCM_LOADRESULT_TASK class=*N4meow16AsyncTaskBoxBase9AsyncTaskIZN9dj_player24PcmBufferFunctionHandler12onLoadResultEN6pcmbuf19ILoadResultListener6ResultERKN7trackid7TrackIDERKNS_18RefCountedObjExPtrINS4_10SourceInfoEEEN12audio_format15AudioFormatKindEEUlvE_EE
 
 # --- mods/stem/decode.c ---
 vtable SRC                class=N12audio_format19SampleRateConverterE
@@ -350,6 +355,7 @@ slot PCM_SEQ_READ           vtable=PCM_SEQ            off=0x10
 slot PCM_SIMPLE_READ        vtable=PCM_SIMPLE         off=0x10
 slot PCM_PAGEBUF_READ       vtable=PCM_PAGEBUF        off=0x10
 slot PCM_STRETCH_READ       vtable=PCM_STRETCH        off=0x10
+slot PCM_LOADRESULT_RUN     vtable=PCM_LOADRESULT_TASK off=0x10
 slot PCM_PREVIEW_READ       vtable=PCM_PREVIEW        off=0x10
 slot TSMGR_OPERATE          vtable=TSMGR              off=0x98
 slot TSMGR_SETSOURCE        vtable=TSMGR              off=0x38
