@@ -196,8 +196,10 @@ static void roles_stay_legible(void)
         CHECK(u->stem[0] != u->stem[1]);
         CHECK(u->stem[1] != u->stem[2]);
         CHECK(u->stem[0] != u->stem[2]);
-        /* Lettering has to stand off the plate it sits on. */
+        /* Lettering has to stand off the plate it sits on: dim ink on the
+         * surface, lit ink on the accent (GATE CUE's plate when it is on). */
         CHECK(distance(u->text, u->surface) >= 64);
+        CHECK(distance(u->text_lit, u->accent) >= 64);
         /* warn and refuse have to stay tellable apart. */
         CHECK(u->warn != u->refuse);
 
