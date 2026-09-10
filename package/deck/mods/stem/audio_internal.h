@@ -141,8 +141,7 @@ struct stem_src_state {
  * by the task's thread under a seqlock, read from the message thread. */
 struct stem_load_state {
     volatile uint32_t gen;
-    uint64_t   sid_lo, sid_hi;
-    int32_t    result;
+    uint64_t   sid_lo, sid_hi;          /* the id of a load that succeeded */
 };
 
 struct stem_xp_gate { uint64_t hit, miss, saw; };

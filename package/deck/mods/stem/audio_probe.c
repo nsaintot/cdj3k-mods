@@ -27,7 +27,9 @@ static void stem_track_act(const char *path, const char *why)
 {
     static char acted_on[STEM_CACHE_PATH_MAX];
 
-    if (path && acted_on[0] && strcmp(path, acted_on) == 0)
+    /* Once per track, and once per "no track": a load with no path tears the
+     * previous set down, and the read that follows it must not do so again. */
+    if (path ? (acted_on[0] && strcmp(path, acted_on) == 0) : !acted_on[0])
         return;
     snprintf(acted_on, sizeof(acted_on), "%s", path ? path : "");
 
@@ -65,17 +67,15 @@ static void stem_track_watch(void)
      * and stem_track_act sees the same path. */
     if (lgen != seen_load && !(lgen & 1u)) {
         uint64_t lo, hi;
-        int32_t result;
 
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         lo = g_load.sid_lo;
         hi = g_load.sid_hi;
-        result = g_load.result;
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&g_load.gen, __ATOMIC_RELAXED) == lgen) {
             seen_load = lgen;
-            snprintf(sid, sizeof(sid), "loaded sid %llx:%llx result %d",
-                     (unsigned long long)hi, (unsigned long long)lo, result);
+            snprintf(sid, sizeof(sid), "loaded sid %llx:%llx",
+                     (unsigned long long)hi, (unsigned long long)lo);
             stem_track_act(stem_decode_path_for_sid(lo, hi), sid);
         }
     }

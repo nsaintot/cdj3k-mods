@@ -56,6 +56,7 @@
 #include "wave/wave.h"
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -606,34 +607,55 @@ static void *const k_probe_wrapper[N_PROBE] = {
  * a predictable branch per block; the mix itself gets gated per call. */
 /* ---- the load event ------------------------------------------------------ */
 
-/* onLoadResult's closure: the SourceId at +0x18/+0x20 (sub_107ee20 stores the
- * two words of the id there) and the Result at +0x30. */
-#define LOAD_SID_OFF     0x18
-#define LOAD_RESULT_OFF  0x30
-#define VT_SLOT_RUN      0x10
+/* onLoadResult's closure: the PcmBufferFunctionHandler at +0x28, the SourceId
+ * at +0x18/+0x20 (sub_107ee20 stores the two words of the id there) and the
+ * Result at +0x30. The stock run (3.19 sub_107e3d8) takes the result only while
+ * the handler is loading (+0x110 == 1) and the id is its current load, then
+ * sets +0x110 to 2 for a good load and 3 for a failed one. */
+#define LOAD_HANDLER_OFF        0x28
+#define LOAD_SID_OFF            0x18
+#define HANDLER_LOAD_STATE_OFF  0x110
+#define LOAD_STATE_LOADED       2
+#define VT_SLOT_RUN             0x10
 
 struct stem_load_state g_load;
 static uintptr_t g_orig_loadresult;
+/* One writer at a time on the seqlock; the message-thread reader stays
+ * lock-free. Two task threads with the same base would leave gen even over a
+ * torn id. */
+static pthread_mutex_t g_load_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static void *stem_load_result(void *task)
+static void stem_load_result(void *task)
 {
     uint64_t lo = 0, hi = 0;
-    int32_t result = 0;
+    uintptr_t handler = 0;
+    int32_t state = 0;
+    int have = mod_safe_read((uintptr_t)task + LOAD_HANDLER_OFF, &handler, sizeof(handler)) == 0 &&
+               mod_safe_read((uintptr_t)task + LOAD_SID_OFF, &lo, sizeof(lo)) == 0 &&
+               mod_safe_read((uintptr_t)task + LOAD_SID_OFF + 8, &hi, sizeof(hi)) == 0;
 
-    if (mod_safe_read((uintptr_t)task + LOAD_SID_OFF, &lo, sizeof(lo)) == 0 &&
-        mod_safe_read((uintptr_t)task + LOAD_SID_OFF + 8, &hi, sizeof(hi)) == 0 &&
-        mod_safe_read((uintptr_t)task + LOAD_RESULT_OFF, &result, sizeof(result)) == 0) {
+    ((void (*)(void *))g_orig_loadresult)(task);
+
+    /* Judged AFTER the stock run, by the handler's own state: a failed or a
+     * superseded load leaves it anything but LOADED, and acting on that tore
+     * down the stems of the track that is actually playing. */
+    if (!have || !handler ||
+        mod_safe_read(handler + HANDLER_LOAD_STATE_OFF, &state, sizeof(state)) != 0 ||
+        state != LOAD_STATE_LOADED)
+        return;
+
+    pthread_mutex_lock(&g_load_mu);
+    {
         uint32_t gen = g_load.gen;
 
         __atomic_store_n(&g_load.gen, gen + 1, __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_RELEASE);
         g_load.sid_lo = lo;
         g_load.sid_hi = hi & 0xffffffffull;   /* masked as the reads mask it */
-        g_load.result = result;
         __atomic_thread_fence(__ATOMIC_RELEASE);
         __atomic_store_n(&g_load.gen, gen + 2, __ATOMIC_RELAXED);
     }
-    return ((void *(*)(void *))g_orig_loadresult)(task);
+    pthread_mutex_unlock(&g_load_mu);
 }
 
 static int stem_audio_install(void)
