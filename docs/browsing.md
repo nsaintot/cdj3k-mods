@@ -22,4 +22,7 @@ exactly as it always did.
 
 ## Playlists only
 
-The EDIT button appears only on playlists views
+A playlist's `#` is a stored position that belongs to that list, so moving a
+track in it changes that list. An album's or an artist's `#` is the track's
+own number out of its tags, and there is nothing a reorder could mean there.
+The EDIT button therefore appears only on playlist views.

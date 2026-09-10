@@ -30,9 +30,11 @@
  * ---- and this is how it knows -----------------------------------------------
  *
  * THE LIST CACHE IT IS SERVED FROM. Every cached list keeps the condition it
- * was asked for, a playlist's carries a playlist hierarchy, and the cache on
- * screen is the one held by someone other than the collector.
- * mod_djdb_playlist_shown is that walk, shared with the reorder's write.
+ * was asked for, a playlist's carries a playlist hierarchy, and the list on
+ * screen is served from the newest cache held by someone other than the
+ * collector. mod_djdb_playlist_shown answers from that cache and is asked
+ * again the moment the list on screen changes; the reorder's write asks the
+ * same scan through mod_djdb_playlist_now.
  *
  * Under gui::PlayListView -- the PLAYLIST button's screen -- a track list is a
  * playlist by construction.
@@ -192,6 +194,8 @@ int browse_sort_hold(void);
  * offered where there are tracks, and the gesture only runs on the list the
  * mode was entered on. [message] */
 uintptr_t browse_track_list(uintptr_t bar);
+/* The first VISIBLE component of the class at vtable `vt` under `comp`. */
+uintptr_t bs_find_visible_class(uintptr_t comp, uintptr_t vt);
 
 /* End a drag that stopped arriving. [message] */
 void browse_drag_tick(void);

@@ -90,22 +90,50 @@ static int be_under_playlist_view(uintptr_t list)
     return 0;
 }
 
-/* The browse screen's answer, polled every BE_GATE_TICKS. */
-static uint32_t be_shown_playlist(void)
+/* The model's row count, through the slot the deck reads it from: the list's
+ * visible row's owner is the box, and the box holds the model. */
+static int be_num_rows(uintptr_t list)
 {
-    static uint32_t pid;
-    static int      ticks;
+    uintptr_t rc = bs_find_visible_class(list, ep122_sym(EP122_ROWCOMP));
+    uintptr_t owner = 0, model = 0, vt = 0, fn = 0;
 
+    if (!rc || mod_safe_read(rc + RC_OWNER_OFF, &owner, sizeof(owner)) != 0 || !owner)
+        return -1;
+    if (mod_safe_read(owner + LB_MODEL_OFF, &model, sizeof(model)) != 0 || !model)
+        return -1;
+    if (mod_safe_read(model, &vt, sizeof(vt)) != 0 || !vt)
+        return -1;
+    if (mod_safe_read(vt + MODEL_NUMROWS, &fn, sizeof(fn)) != 0 || !fn)
+        return -1;
+    return (int)((int64_t (*)(void *))fn)((void *)model);
+}
+
+/* The browse screen's answer: the collector's newest held track-list cache,
+ * asked every BE_GATE_TICKS, and at once when the list on screen changes --
+ * the widget is reused between an album and a playlist, so the row count is
+ * the change that shows. Kept in be_g_pid so the log can quote it. */
+static uint32_t be_g_pid;
+
+static void be_poll_playlist(uintptr_t list)
+{
+    static uintptr_t last_list;
+    static int       last_rows, ticks;
+    int rows = list ? be_num_rows(list) : -1;
+
+    if (list != last_list || rows != last_rows) {
+        last_list = list;
+        last_rows = rows;
+        ticks = 0;
+    }
     if (ticks-- <= 0) {
         ticks = BE_GATE_TICKS - 1;
-        pid = mod_djdb_playlist_shown();
+        be_g_pid = mod_djdb_playlist_shown();
     }
-    return pid;
 }
 
 static int be_on_playlist(uintptr_t list)
 {
-    return be_under_playlist_view(list) || be_shown_playlist() != 0;
+    return be_under_playlist_view(list) || be_g_pid != 0;
 }
 
 /* ---- the mark -------------------------------------------------------------
@@ -430,12 +458,12 @@ static void be_sync(void)
      * reorder could mean. The deck clears the column's flags on those, so this
      * is one bit rather than a guess about which view is up. */
     list = browse_track_list(be_g_bar);
+    be_poll_playlist(list);
     want = list != 0 && browse_sort_has_position(be_g_bar) && be_on_playlist(list);
     if (want == be_g_shown)
         return;
     MDBG("browse: EDIT %s -- list %p, playlist %u%s\n",
-         want ? "shown" : "hidden", (void *)list,
-         (unsigned)be_shown_playlist(),
+         want ? "shown" : "hidden", (void *)list, (unsigned)be_g_pid,
          list && be_under_playlist_view(list) ? " (PLAYLIST screen)" : "");
     be_g_shown = want;
     juce_comp_set_visible(be_g_btn, want);

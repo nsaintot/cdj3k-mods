@@ -232,8 +232,11 @@ int mod_djdb_move_track_async(uint32_t playlist_id, int32_t from_no,
  * for: this names a WRITE's target and does not say what is on screen. [any] */
 uint32_t mod_djdb_playlist_now(void);
 
-/* The playlist whose list is on screen, or 0 -- the PLAYLIST-ONLY GATE. Only a
- * held cache counts, none of the fallbacks above. Quiet: polled. [any] */
+/* The PLAYLIST-ONLY GATE: the playlist the newest held track-list cache was
+ * asked for, 0 when that cache is another kind of list or none is held. One
+ * poll behind the screen, and the deck keeps the previous list's cache held
+ * for ~130 ms after replacing it, so the caller re-asks on a list change. None
+ * of the fallbacks above. Quiet: polled. [any] */
 uint32_t mod_djdb_playlist_shown(void);
 
 /* "The deck is inside a djdb operation right now, called from `where`" -- so the
