@@ -16,7 +16,7 @@ Ships **OFF**. Makes the pads momentary while the deck is paused.
 
 So a short stab is a stab, and a press you decide to keep is a press you keep,
 without having to decide before you press. Whether a press gates is decided
-when you press it, from whether the deck was playing at that moment; a second
+when you press it, from whether the deck was paused at that moment; a second
 pad pressed during a hold joins the first.
 
 ![GATE CUE on: holding a pad plays from the cue, and releasing it returns there and pauses.](vid/gate-cue.mp4)

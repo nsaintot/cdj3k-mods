@@ -79,15 +79,14 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
         /* First pad of a session decides it; a second pad joins the one
          * already running rather than starting a new one. */
         if (cue_pads_held() == 1) {
-            int playing = cue_deck_playing(ev);
+            int armed = g_gate_on && cue_deck_paused(ev);
 
             __atomic_store_n(&gate_g_latched, 0, __ATOMIC_RELAXED);
-            __atomic_store_n(&gate_g_armed, g_gate_on && !playing,
-                             __ATOMIC_RELAXED);
+            /* RELEASE: PLAY's task may already be running with held == 1. */
+            __atomic_store_n(&gate_g_armed, armed, __ATOMIC_RELEASE);
             if (g_gate_on)
-                MDBG("gate: pad %d down with the deck %s -> %s\n", ev->pad,
-                     playing ? "playing" : "paused",
-                     playing ? "the deck's own hot cue" : "gated");
+                MDBG("gate: pad %d down -> %s\n", ev->pad,
+                     armed ? "gated" : "the deck's own hot cue");
         }
         break;
 

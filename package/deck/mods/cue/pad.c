@@ -30,9 +30,13 @@
  * knows the zone is held without going anywhere near the strip's own drawing.
  *
  * Every input handler embeds a dj_player::PlayerState at +0x80, the deck's own
- * snapshot of the player. Its flag bytes at +0x65..+0x67 read as one state --
- * sub_11459f0: +0x65 -> 0, else +0x67 ? 2 : 1, +0x66 -> 3 -- and +0x67 is the
- * one that says PLAYING. Read at the press, off the handler the closure names.
+ * snapshot of the player. The deck's input-state snapshot (sub_138f5e8) derives
+ * its PAUSED bit from it as: load state +0x20 == 2, and sub_11459f0 == 1, where
+ * sub_11459f0 is
+ *     +0x65 ? 0 : (+0x66 && !+0x6b) ? 3 : +0x67 ? 2 : 1
+ * 2 is playing, 1 paused; 0 and 3 are modes the PLAY button and the load lock
+ * treat as not paused. cue_deck_paused evaluates the same expression, read at
+ * the press off the handler the closure names.
  */
 #include "cue/cue.h"
 #include "kit/mod.h"
@@ -45,9 +49,13 @@
 #define PREVIEW_SET_SLOT   0x10   /* PreviewController: the touched point   */
 #define PREVIEW_CLEAR_SLOT 0x18   /* ...and letting go                      */
 
-/* dj_player::PlayerState inside every input handler, and its play byte. */
+/* dj_player::PlayerState inside every input handler, and the bytes the deck's
+ * own paused predicate reads. */
 #define HANDLER_STATE_OFF  0x80
-#define STATE_PLAYING_OFF  0x67
+#define STATE_LOAD_OFF     0x20   /* int32; 2 = a track is loaded            */
+#define STATE_LOADED       2
+#define STATE_FLAGS_OFF    0x65   /* +0x65 +0x66 +0x67, and +0x6b, one byte each */
+#define STATE_FLAGS_LEN    7
 
 #define FN_LINK_DECK       ep122_sym(EP122_CUE_LINK_DECK)
 #define FN_LINK_FACADE     ep122_sym(EP122_CUE_LINK_FACADE)
@@ -116,17 +124,32 @@ static float cue_g_needle_at;
 int cue_pad_ready(void) { return cue_g_ready; }
 int cue_pads_held(void) { return __atomic_load_n(&cue_g_held, __ATOMIC_ACQUIRE); }
 
-int cue_deck_playing(const struct cue_event *ev)
+int cue_deck_paused(const struct cue_event *ev)
 {
-    uintptr_t handler = 0;
-    uint8_t   st[4];
+    static int broken;
+    uintptr_t handler = 0, state;
+    int32_t   load = 0;
+    uint8_t   f[STATE_FLAGS_LEN];   /* f[0..2] = +0x65..+0x67, f[6] = +0x6b */
 
-    if (mod_safe_read((uintptr_t)ev->task + CLOSURE_HANDLER_OFF, &handler, sizeof(handler)) != 0 ||
-        !handler ||
-        mod_safe_read(handler + HANDLER_STATE_OFF + 0x64, st, sizeof(st)) != 0)
+    if (broken)
         return 0;
-    MDBG("cue: player state %02x %02x %02x %02x\n", st[0], st[1], st[2], st[3]);
-    return st[STATE_PLAYING_OFF - 0x64] != 0;
+    if (mod_safe_read((uintptr_t)ev->task + CLOSURE_HANDLER_OFF, &handler, sizeof(handler)) != 0 ||
+        !handler)
+        return 0;
+    state = handler + HANDLER_STATE_OFF;
+    if (mod_safe_read(state + STATE_LOAD_OFF, &load, sizeof(load)) != 0 ||
+        mod_safe_read(state + STATE_FLAGS_OFF, f, sizeof(f)) != 0)
+        return 0;
+    /* The flags are bools. Anything else is not the layout this reads, and a
+     * misread must not gate: it would give every press the paused answer. */
+    if (f[0] > 1 || f[1] > 1 || f[2] > 1 || f[6] > 1) {
+        MERR("cue: handler+%#x is not a PlayerState (flags %02x %02x %02x .. %02x)"
+             " -> pads never gate\n", HANDLER_STATE_OFF, f[0], f[1], f[2], f[6]);
+        broken = 1;
+        return 0;
+    }
+    MDBG("cue: player load %d flags %02x %02x %02x .. %02x\n", load, f[0], f[1], f[2], f[6]);
+    return load == STATE_LOADED && !f[0] && !(f[1] && !f[6]) && !f[2];
 }
 
 /* ================================================================== */
