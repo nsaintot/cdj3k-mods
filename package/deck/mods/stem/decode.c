@@ -27,10 +27,9 @@
  * arguments - no analysis data synthesised, no reader shared with the player,
  * and no lifetime entanglement with the page filler's copy.
  *
- * This TU is currently an OBSERVATION PROBE: it records and chains, and creates
- * nothing. It exists to confirm what the arguments actually are, because
- * everything above is read off the decompiler and the argument identities in
- * particular are inference.
+ * The hook records what every open() was handed (the reporter prints it) and
+ * keeps, for the track the deck opened last, the path and those two tables;
+ * stem_decode_pull hands them back to createReaderFor for that path.
  *
  * Threading: `open` runs on the page-filler thread, which the track loader
  * blocks on - stall it and the load times out in
@@ -50,8 +49,8 @@
  *
  * Found by walking RTTI base arrays (scripts/ep122sym.py impls
  * audio_format::AbstractReader), which is also how we know the list is complete.
- * Every concrete reader inherits the same `open` - one function, nine vtables -
- * so the wrapper is shared and only the slots differ.
+ * The seven file readers share AbstractFileReader::open; the JUCE wrapper has
+ * its own. One wrapper serves all eight, telling them apart by vptr.
  *
  *   bool open(const juce::String &path, const audio_format::SeekTable &,
  *             const audio_format::FrameInfoList &)
@@ -248,9 +247,12 @@ static int g_track_fresh;
  * to createReaderFor so our reader opens against the same analysis the deck's
  * did -- for a VBR MP3 that is what lets setSource size it, since the reader
  * alone carries no length. Captured on the SAME successful open as g_track_path
- * so the three always describe one track, and only used when the probe's path
- * still matches -- the deck keeps the loaded track's analysis alive, so the
- * pointer is live for as long as that path is what is playing. */
+ * so the three always describe one track, and only used while the pull's path
+ * still matches, i.e. for the track the deck has loaded and whose analysis it
+ * is holding. They are read during createReaderFor only: the MP3 reader builds
+ * its own frame index from them at open (sub_a47b20), so the exposure is that
+ * call, not the decode that follows. Never used for a re-served track: nothing
+ * says the deck still holds the analysis it handed over the first time. */
 static uintptr_t g_track_seek;
 static uintptr_t g_track_frame;
 
@@ -599,8 +601,15 @@ const char *stem_decode_path_for_sid(uint64_t lo, uint64_t hi)
     int i;
 
     for (i = 0; i < SID_BINDS; i++)
-        if (g_bind[i].used && g_bind[i].lo == lo && g_bind[i].hi == hi)
+        if (g_bind[i].used && g_bind[i].lo == lo && g_bind[i].hi == hi) {
+            /* A reload of a track the pool had evicted opens it again, which
+             * set the flag; this binding is that open's, so spend it here or
+             * the next reader-less load inherits it and binds to this path. */
+            if (__atomic_load_n(&g_track_fresh, __ATOMIC_ACQUIRE) &&
+                strcmp(g_bind[i].path, g_track_path) == 0)
+                __atomic_store_n(&g_track_fresh, 0, __ATOMIC_RELEASE);
             return g_bind[i].path;
+        }
 
     /* Unseen id: it must be the track the deck just opened, because an open is
      * the only way a new source enters the pool -- but ONLY if that open
@@ -684,7 +693,8 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     frame_arg = frame_stub;
     cap_seek = __atomic_load_n(&g_track_seek, __ATOMIC_ACQUIRE);
     cap_frame = __atomic_load_n(&g_track_frame, __ATOMIC_ACQUIRE);
-    if (cap_seek && g_track_path[0] && strcmp(path, g_track_path) == 0) {
+    if (cap_seek && cap_frame && g_track_path[0] &&
+        strcmp(path, g_track_path) == 0) {
         seek_arg = (const void *)cap_seek;
         frame_arg = (const void *)cap_frame;
         MDBG("stem_decode: reusing deck seekTable=%#lx frameInfo=%#lx\n",

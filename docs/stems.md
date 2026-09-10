@@ -60,17 +60,19 @@ a stick prepared on one deck plays on another.
 
 ### The frame count, for anyone writing entries offline
 
-Half of an entry's key is the deck's own decode length in frames, and the stems
-inside it must be aligned to that length. It is not the length a tag or another
-decoder reports:
+Half of an entry's key is the deck's own decode length in frames **at
+44.1 kHz**, and the stems inside it must be aligned to that length. It is not
+the length a tag or another decoder reports. Take the container's count, then
+round it up:
 
-- **Every container:** the decoder's length rounded **up** to the next 1/75 s —
-  588 samples at 44.1 kHz.
 - **MP3:** Pioneer's parser frame count × 1152. A LAME/Xing tag frame counts as
   a frame of audio (one frame of silence first, the last frame dropped); an
   ffmpeg-written one does not. This is the same number rekordbox stores as the
   analysis's PVBR total.
 - **AAC:** packets × 1024, with the priming samples played.
+- **Then, every container:** rounded **up** to the next 1/75 s, which is 588
+  samples at 44.1 kHz. A 9190-frame MP3 is 10 586 880 samples, and the key is
+  18 005 × 588 = 10 586 940.
 
 Worked out on a CDJ-3000 from 16 loads and verified sample-for-sample against 4
 uploads; the MP3 rule checks against the PVBR totals on an exported stick. Write
