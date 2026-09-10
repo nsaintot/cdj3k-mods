@@ -49,6 +49,7 @@ enum ep122_sym {
     EP122_PCM_STRETCH,
     EP122_PCM_PREVIEW,
     EP122_TSMGR,
+    EP122_PCM_LOADRESULT_TASK,
     EP122_SRC,
     EP122_AUDIO_READER_FACTORY,
     EP122_READER_FLAC,
@@ -131,6 +132,7 @@ enum ep122_sym {
     EP122_PCM_SIMPLE_READ,
     EP122_PCM_PAGEBUF_READ,
     EP122_PCM_STRETCH_READ,
+    EP122_PCM_LOADRESULT_RUN,
     EP122_PCM_PREVIEW_READ,
     EP122_TSMGR_OPERATE,
     EP122_TSMGR_SETSOURCE,
@@ -286,6 +288,7 @@ static const struct ep122_vt_spec {
     { EP122_PCM_STRETCH, "N11time_domain26ReadableTimeStretchAdapterE", NULL },   /* 0x1f3c728 */
     { EP122_PCM_PREVIEW, "N14preview_player17RealtimeSRCBufferE", NULL },   /* 0x201b5e8 */
     { EP122_TSMGR, "N11time_domain26CascadedTimeStretchManagerE", NULL },   /* 0x1f3ce48 */
+    { EP122_PCM_LOADRESULT_TASK, "*N4meow16AsyncTaskBoxBase9AsyncTaskIZN9dj_player24PcmBufferFunctionHandler12onLoadResultEN6pcmbuf19ILoadResultListener6ResultERKN7trackid7TrackIDERKNS_18RefCountedObjExPtrINS4_10SourceInfoEEEN12audio_format15AudioFormatKindEEUlvE_EE", NULL },   /* 0x1ff7b30 */
     { EP122_SRC, "N12audio_format19SampleRateConverterE", NULL },   /* 0x1f159e0 */
     { EP122_AUDIO_READER_FACTORY, "N12audio_format18AudioReaderFactoryE", NULL },   /* 0x1f138d8 */
     { EP122_READER_FLAC, "N12audio_format12FileReadFlacE", NULL },   /* 0x1f14d18 */
@@ -337,7 +340,7 @@ static const struct ep122_vt_spec {
     { EP122_GRIDBTN_SHIFT, "N3gui18grid_adjust_button15ShiftGridButtonE", NULL },   /* 0x20f69d0 */
     { EP122_GRIDBTN_RESET, "N3gui18grid_adjust_button11ResetButtonE", NULL },   /* 0x20f7a30 */
 };
-#define EP122_N_VT 83
+#define EP122_N_VT 84
 
 /* ---- virtuals: whatever the slot holds IS the implementation ---- */
 static const struct ep122_slot_spec {
@@ -382,6 +385,7 @@ static const struct ep122_slot_spec {
     { EP122_PCM_SIMPLE_READ, EP122_PCM_SIMPLE, 0x10 },   /* 0xb12178 */
     { EP122_PCM_PAGEBUF_READ, EP122_PCM_PAGEBUF, 0x10 },   /* 0x6ab128 */
     { EP122_PCM_STRETCH_READ, EP122_PCM_STRETCH, 0x10 },   /* 0xaea7f8 */
+    { EP122_PCM_LOADRESULT_RUN, EP122_PCM_LOADRESULT_TASK, 0x10 },   /* 0x107e3d8 */
     { EP122_PCM_PREVIEW_READ, EP122_PCM_PREVIEW, 0x10 },   /* 0x11767f8 */
     { EP122_TSMGR_OPERATE, EP122_TSMGR, 0x98 },   /* 0xaecfc0 */
     { EP122_TSMGR_SETSOURCE, EP122_TSMGR, 0x38 },   /* 0xaec298 */
@@ -411,7 +415,7 @@ static const struct ep122_slot_spec {
     { EP122_HUI_MC_UPDATE, EP122_HUI_MULTICOLOR, 0x10 },   /* 0x1803ae0 */
     { EP122_SRV_MSG_RUN, EP122_SRV_MSG_TASK, 0x10 },   /* 0xb3c9d0 */
 };
-#define EP122_N_SLOT 65
+#define EP122_N_SLOT 66
 
 /* ---- free functions: masked aarch64 signatures ---- */
 #define EP122_SIG_INSNS_MAX 96
@@ -616,6 +620,7 @@ static const char *const k_ep122_sym_name[] = {
     "PCM_STRETCH",
     "PCM_PREVIEW",
     "TSMGR",
+    "PCM_LOADRESULT_TASK",
     "SRC",
     "AUDIO_READER_FACTORY",
     "READER_FLAC",
@@ -698,6 +703,7 @@ static const char *const k_ep122_sym_name[] = {
     "PCM_SIMPLE_READ",
     "PCM_PAGEBUF_READ",
     "PCM_STRETCH_READ",
+    "PCM_LOADRESULT_RUN",
     "PCM_PREVIEW_READ",
     "TSMGR_OPERATE",
     "TSMGR_SETSOURCE",

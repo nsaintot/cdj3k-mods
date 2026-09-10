@@ -327,6 +327,7 @@ extern uintptr_t menu_g_orig_numrows, menu_g_orig_paintcell, menu_g_orig_mousedo
                  menu_g_orig_rnumrows;
 extern int       menu_g_render_ok;   /* JUCE render primitives verified at install */
 extern int       menu_g_mod_mode;    /* 1 while the mod overlay is drawing over DJ SETTING */
+extern int       menu_g_list_rows;   /* rows the DJ SETTING list is currently sized for */
 extern uintptr_t menu_g_model;       /* DJSettingTableModel, captured in paintCell */
 extern uintptr_t menu_g_view;        /* UTILITY view, captured from the hooks that get it */
 extern int       menu_g_bouncing;    /* re-entry guard for the title-row bounce */
@@ -347,13 +348,33 @@ extern uintptr_t menu_g_orig_kbdkey; /* the view's own keyboard IListener callba
 #define MOD_ROW_TITLE  0
 #define MOD_ROW_FIRST  1                     /* first selectable row (title is a label) */
 
-/* Rows reported to JUCE while armed. Only the live ones carry content; the rest get
- * the stock row background + divider. Equal to the stock count, so the viewport
- * fills as DJ SETTING fills it and no scrollbar appears. The title takes one, which
- * is what leaves KIT_MENU_MAX_ROWS for settings. */
-#define MOD_ROWS_VISIBLE 8
+/* Rows reported to JUCE while armed, and the height the list is given to show
+ * them without a scrollbar. Stock sizes the DJ SETTING list for eight rows and
+ * leaves the panel below it blank; the overlay grows the list into that blank
+ * (menu_list_fit) and reports this many, the title taking one of them. Ten is
+ * what the panel has room for: its row area ends about 620 px down, and the
+ * list starts at 92, so a tenth 50 px row ends at 592. Only the live rows carry
+ * content; the rest get the stock row background + divider. */
+#define MOD_ROWS_VISIBLE 10
 _Static_assert(MOD_ROWS_VISIBLE - MOD_ROW_FIRST == KIT_MENU_MAX_ROWS,
                "the kit's row capacity must be what this list can show");
+
+/* Rows the stock DJ SETTING list is sized for: the unit menu_list_fit measures
+ * the row height from, and what is reported while the list is stock-sized. */
+#define MOD_LIST_ROWS_STOCK 8
+
+/* Where the panel's row area ends. Below it is the waveform strip, and a list
+ * that ran into that would be worse than one that scrolls. */
+#define MOD_LIST_BOTTOM 620
+
+/* More than a scrollbar's thickness: what the list is grown past its target by,
+ * for one call, so JUCE drops both scrollbars -- see menu_list_fit. */
+#define MOD_LIST_GROW_SLACK 24
+
+/* The software keyboard's top edge: it rises from the bottom of the screen to
+ * the divider under the seventh row, so a text row below that is edited out of
+ * sight unless the list is scrolled -- see menu_list_fit_above_kbd. */
+#define MOD_KBD_TOP 444
 
 /* Bounds the stack array that builds the value list. */
 #ifndef MOD_ROW_VALUES_MAX
@@ -403,6 +424,9 @@ void      menu_pane_show(uintptr_t view, int visible);
 
 void    menu_apply_value(int row, int focus_pane, const char *src);
 void    menu_pane_fit(uintptr_t rlist, int rows);
+void    menu_list_fit(uintptr_t list, int armed);
+int     menu_list_row_h(void);          /* measured, MOD_ROW_H until it is */
+int     menu_list_fit_above_kbd(uintptr_t list, int row);
 void    menu_pane_labels(uintptr_t view, uintptr_t rmodel, const struct kit_row *r);
 void    menu_force_right_pane_sel(uintptr_t view, int sel_row);
 void    menu_force_right_pane(uintptr_t view);

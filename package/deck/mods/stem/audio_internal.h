@@ -120,18 +120,28 @@ struct stem_src_state {
     /* Bumped by the audio thread whenever the sourceId changes, i.e. whenever a
      * different track starts being read.
      *
-     * This is the ONLY honest track-change signal available. setSource looked
-     * like the obvious one and is not: it fires twice at player construction
-     * and never again, because there is a single PageBuffer for the whole pool
-     * and tracks are switched by the sourceId inside each Position rather than
-     * by installing a new source. decode.c's `open` hook is not it either -- the
-     * preview player opens files too, so browsing would launch separations for
-     * tracks nobody loaded.
+     * One of the two honest track-change signals, with g_load below the other.
+     * setSource looked like the obvious one and is not: it fires twice at player
+     * construction and never again, because there is a single PageBuffer for the
+     * whole pool and tracks are switched by the sourceId inside each Position
+     * rather than by installing a new source. decode.c's `open` hook is not it
+     * either -- the preview player opens files too, so browsing would launch
+     * separations for tracks nobody loaded.
      *
      * A counter rather than a flag so the reader cannot miss two changes in one
      * window, and relaxed because a change is acted on from the message thread
      * where being one window late costs nothing. */
     uint32_t   track_gen;
+};
+
+/* The deck's own "the track is in the pool": PcmBufferFunctionHandler::
+ * onLoadResult's task, which carries the load's SourceId and Result. The reads
+ * above only move once the pool is read, and a deck loaded and left at 0:00
+ * with AUTO CUE off reads nothing -- this is what fires for that load. Written
+ * by the task's thread under a seqlock, read from the message thread. */
+struct stem_load_state {
+    volatile uint32_t gen;
+    uint64_t   sid_lo, sid_hi;          /* the id of a load that succeeded */
 };
 
 struct stem_xp_gate { uint64_t hit, miss, saw; };
@@ -144,6 +154,7 @@ struct stem_xp_lag {
 /* All defined in audio.c, which owns the hooks that write them. */
 extern struct stem_op_stats g_op;
 extern struct stem_src_state g_src;
+extern struct stem_load_state g_load;
 extern struct stem_xp_gate g_xp_gate;
 extern struct stem_xp_lag g_xp_lag;
 extern int g_engine_rate;

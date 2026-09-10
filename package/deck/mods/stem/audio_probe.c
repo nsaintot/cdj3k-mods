@@ -27,7 +27,9 @@ static void stem_track_act(const char *path, const char *why)
 {
     static char acted_on[STEM_CACHE_PATH_MAX];
 
-    if (path && acted_on[0] && strcmp(path, acted_on) == 0)
+    /* Once per track, and once per "no track": a load with no path tears the
+     * previous set down, and the read that follows it must not do so again. */
+    if (path ? (acted_on[0] && strcmp(path, acted_on) == 0) : !acted_on[0])
         return;
     snprintf(acted_on, sizeof(acted_on), "%s", path ? path : "");
 
@@ -55,9 +57,28 @@ static void stem_track_act(const char *path, const char *why)
 
 static void stem_track_watch(void)
 {
-    static uint32_t seen_track;
+    static uint32_t seen_track, seen_load;
     uint32_t gen = __atomic_load_n(&g_src.track_gen, __ATOMIC_RELAXED);
-    char sid[48];
+    uint32_t lgen = __atomic_load_n(&g_load.gen, __ATOMIC_RELAXED);
+    char sid[64];
+
+    /* The load event first: it is the earlier of the two on a deck that loads
+     * and does not play, and on one that does the reads follow with the same id
+     * and stem_track_act sees the same path. */
+    if (lgen != seen_load && !(lgen & 1u)) {
+        uint64_t lo, hi;
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        lo = g_load.sid_lo;
+        hi = g_load.sid_hi;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&g_load.gen, __ATOMIC_RELAXED) == lgen) {
+            seen_load = lgen;
+            snprintf(sid, sizeof(sid), "loaded sid %llx:%llx",
+                     (unsigned long long)hi, (unsigned long long)lo);
+            stem_track_act(stem_decode_path_for_sid(lo, hi), sid);
+        }
+    }
 
     if (gen == seen_track)
         return;

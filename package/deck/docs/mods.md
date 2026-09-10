@@ -713,8 +713,9 @@ rows below it down rather than renumbering anything.
 
 Both ways that can go wrong are a developer's, since the mods are statically linked:
 two siblings claiming one `idx` disables every row and the Ver-tap says so on the
-glass instead of arming, and more live rows than the eight-row list can show
-(`KIT_MENU_MAX_ROWS`) drops the surplus with a log line naming the first one. Neither
+glass instead of arming, and more live rows than the list can show (nine when the
+overlay could grow it to ten rows, seven when it could not; `KIT_MENU_MAX_ROWS` and
+`kit_menu_set_shown`) drops the surplus with a log line naming the first one. Neither
 is silent.
 
 The right pane is the deck's, borrowed. What the mod supplies is the answer to how

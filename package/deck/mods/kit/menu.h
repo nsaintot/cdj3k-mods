@@ -75,15 +75,22 @@ struct kit_row {
 #define KIT_IDX_STEMS  30
 
 /* How many rows can be SEEN at once, and therefore how many exist as far as a
- * DJ is concerned. The overlay reports a fixed 8 rows to JUCE -- the stock DJ
- * SETTING count, so the viewport fills exactly as stock fills it and no
- * scrollbar can appear -- and row 0 is the "MOD SETTINGS" title.
+ * DJ is concerned. The overlay sizes the list for MOD_ROWS_VISIBLE rows -- what
+ * the UTILITY panel has room for, with no scrollbar -- and row 0 is the
+ * "MOD SETTINGS" title, so this is one less. Every mod on with STEMS set to
+ * MANUAL is eight rows.
  *
  * The live count is dynamic (revealing children grows it), so this is enforced
  * when the list is flattened rather than at registration: the overflow is
  * logged and the surplus dropped. A row that is silently invisible and
- * unreachable is the failure this exists to prevent. */
-#define KIT_MENU_MAX_ROWS 7
+ * unreachable is the failure this exists to prevent. The ceiling in force is
+ * whatever the overlay could size the list for (kit_menu_set_shown): a list it
+ * could not grow shows seven, and the eighth is dropped with the same log line
+ * rather than drawn nowhere. */
+#define KIT_MENU_MAX_ROWS 9
+
+/* The rows the list can show right now, 1..KIT_MENU_MAX_ROWS. */
+void kit_menu_set_shown(int n);                         /* [message] */
 
 /* The longest buffer a TEXT row may hand over. The overlay keeps the pre-edit
  * value in a buffer of its own, which has to be sized for any row. */

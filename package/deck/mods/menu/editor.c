@@ -164,7 +164,7 @@ static void mod_kbd_move_editor(uintptr_t editor, int row)
     if (b[2] <= 0 || b[3] <= 0 || b[3] > 4 * MOD_ROW_H) return;   /* not a row-sized editor */
     if (stock_y < 0) stock_y = b[1];
     ((void (*)(void *, int, int))FN_SET_TOPLEFT)
-        ((void *)editor, b[0], stock_y + (row - KBD_STOCK_ROW) * MOD_ROW_H);
+        ((void *)editor, b[0], stock_y + (row - KBD_STOCK_ROW) * menu_list_row_h());
 }
 
 /* Clear the right pane for the duration of the edit, the way the stock text setting does:
@@ -202,7 +202,16 @@ void menu_kbd_open(const struct kit_row *r)
     g_kbd_up = 1;
     g_kbd_row = r;
     mod_editor_show_text(r->text);
-    mod_kbd_move_editor(ours, menu_g_setting_row);
+    {
+        /* A row under the keyboard is scrolled up first; the editor then sits on
+         * the slot it lands in. The scroll rebuilds the right pane, hence the
+         * second hide. */
+        int shown = menu_list_fit_above_kbd(
+            menu_view_ptr(menu_g_view, VIEW_DJLIST_OFF), menu_g_setting_row);
+
+        menu_pane_show(menu_g_view, 0);
+        mod_kbd_move_editor(ours, shown);
+    }
     juce_comp_set_visible(ours, 1);
     ((void (*)(void *))FN_EDITOR_FOCUS)((void *)ours);
 
@@ -230,6 +239,10 @@ void menu_kbd_close(void)
     juce_comp_set_visible(g_editor, 0);
     menu_pane_show(menu_g_view, 1);
     ((void (*)(void *))FN_KBD_HIDE)((void *)menu_g_view);
+    /* Back to full height if the open cut it down for the keyboard. The whole
+     * refresh, not just the resize: a list that was scrolled and overflowing
+     * keeps its scroll indicators and offset until updateContent re-lays it out. */
+    menu_refresh_djlist((void *)menu_g_view);
 
     if (!r || strcmp(g_kbd_orig, r->text) == 0) {
         MDBG("keyboard: closed, value unchanged\n");

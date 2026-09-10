@@ -56,6 +56,7 @@
 #include "wave/wave.h"
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -305,15 +306,17 @@ struct probe g_op_probe = { "operate", EP122_TSMGR, 0, 0 };
  *
  * What remains is the worker's usleep (<=100 ms) and the length probe (~0.5-2 s
  * for an 8-minute track), so a fast track change still cannot be instant. */
-/* ONE SIGNAL: the sourceId moving, resolved to a path and acted on HERE, on the
- * message thread -- the sequence below moves Sliders.
+/* ONE THING: the sourceId, resolved to a path and acted on HERE, on the message
+ * thread -- the sequence below moves Sliders. Two ways of learning it.
  *
- * The id is the only thing that names the track, and it comes off the page pool,
- * so for a while it looked like a signal a paused deck could not produce. It can:
- * a deck parked at the cue point still pre-buffers, and those reads carry the
- * track's id with a countdown in the top half. Masking that half rather than
- * rejecting it is what makes AUTO CUE work -- see the sourceId comment in the
- * page-read hook.
+ * The id is the only thing that names the track. It comes off the page pool's
+ * reads, and a deck parked at the cue point still pre-buffers, so those reads
+ * carry the track's id with a countdown in the top half -- masking that half
+ * rather than rejecting it is what makes AUTO CUE work (see the sourceId
+ * comment in the page-read hook). A deck loaded and left at 0:00 with AUTO CUE
+ * off reads nothing at all, and for that the id is taken from the deck's own
+ * load result, which names the same track whether or not it will ever be
+ * played. Both feed one act, deduplicated on the path.
  *
  * Deduplicated on the PATH, because the same track arriving twice is one track. */
 /* Called from the play-screen paint hook, i.e. the juce message thread, where
@@ -602,10 +605,70 @@ static void *const k_probe_wrapper[N_PROBE] = {
  * the audio path is not something to start patching once samples are flowing.
  * The wrapper chains straight to the stock call, so with STEMS off the cost is
  * a predictable branch per block; the mix itself gets gated per call. */
+/* ---- the load event ------------------------------------------------------ */
+
+/* onLoadResult's closure: the PcmBufferFunctionHandler at +0x28, the SourceId
+ * at +0x18/+0x20 (sub_107ee20 stores the two words of the id there) and the
+ * Result at +0x30. The stock run (3.19 sub_107e3d8) takes the result only while
+ * the handler is loading (+0x110 == 1) and the id is its current load, then
+ * sets +0x110 to 2 for a good load and 3 for a failed one. */
+#define LOAD_HANDLER_OFF        0x28
+#define LOAD_SID_OFF            0x18
+#define HANDLER_LOAD_STATE_OFF  0x110
+#define LOAD_STATE_LOADED       2
+#define VT_SLOT_RUN             0x10
+
+struct stem_load_state g_load;
+static uintptr_t g_orig_loadresult;
+/* One writer at a time on the seqlock; the message-thread reader stays
+ * lock-free. Two task threads with the same base would leave gen even over a
+ * torn id. */
+static pthread_mutex_t g_load_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void stem_load_result(void *task)
+{
+    uint64_t lo = 0, hi = 0;
+    uintptr_t handler = 0;
+    int32_t state = 0;
+    int have = mod_safe_read((uintptr_t)task + LOAD_HANDLER_OFF, &handler, sizeof(handler)) == 0 &&
+               mod_safe_read((uintptr_t)task + LOAD_SID_OFF, &lo, sizeof(lo)) == 0 &&
+               mod_safe_read((uintptr_t)task + LOAD_SID_OFF + 8, &hi, sizeof(hi)) == 0;
+
+    ((void (*)(void *))g_orig_loadresult)(task);
+
+    /* Judged AFTER the stock run, by the handler's own state: a failed or a
+     * superseded load leaves it anything but LOADED, and acting on that tore
+     * down the stems of the track that is actually playing. */
+    if (!have || !handler ||
+        mod_safe_read(handler + HANDLER_LOAD_STATE_OFF, &state, sizeof(state)) != 0 ||
+        state != LOAD_STATE_LOADED)
+        return;
+
+    pthread_mutex_lock(&g_load_mu);
+    {
+        uint32_t gen = g_load.gen;
+
+        __atomic_store_n(&g_load.gen, gen + 1, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        g_load.sid_lo = lo;
+        g_load.sid_hi = hi & 0xffffffffull;   /* masked as the reads mask it */
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        __atomic_store_n(&g_load.gen, gen + 2, __ATOMIC_RELAXED);
+    }
+    pthread_mutex_unlock(&g_load_mu);
+}
+
 static int stem_audio_install(void)
 {
     char name[64];
     int i;
+
+    /* Not fatal: without it a track loaded and left paused waits for its first
+     * read, which is how every build before this behaved. */
+    if (mod_patch_vslot("stemLoadResult", EP122_PCM_LOADRESULT_TASK, VT_SLOT_RUN,
+                        (void *)stem_load_result, &g_orig_loadresult) != 0)
+        g_orig_loadresult = 0;
+    MDBG("stem_audio: load result %s\n", g_orig_loadresult ? "armed" : "SKIPPED");
 
     for (i = 0; i < N_PROBE; i++) {
         struct probe *p = &g_probe[i];

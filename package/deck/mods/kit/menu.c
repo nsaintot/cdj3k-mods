@@ -18,6 +18,7 @@ static int                   g_ndef;
 static const struct kit_row *g_live[KIT_MENU_MAX_ROWS];
 static int                   g_nlive;
 static int                   g_overflow;      /* the flatten in progress hit the ceiling */
+static int                   g_shown = KIT_MENU_MAX_ROWS;   /* rows the list can show */
 
 static char g_problem[96];                    /* empty while the row list is usable */
 static int  g_checked = -1;                   /* the g_ndef g_problem was decided against */
@@ -146,7 +147,12 @@ static void dropped(const struct kit_row *r)
     if (told == r->label) return;
     told = r->label;
     KMSG("%d rows fit; \"%s\" and anything under or after it is not shown\n",
-         KIT_MENU_MAX_ROWS, r->label);
+         g_shown, r->label);
+}
+
+void kit_menu_set_shown(int n)
+{
+    g_shown = n < 1 ? 1 : n > KIT_MENU_MAX_ROWS ? KIT_MENU_MAX_ROWS : n;
 }
 
 /* One level, in idx order, recursing into each revealed row. A row's children
@@ -176,7 +182,7 @@ static void emit(const struct kit_row *parent)
         last = next->idx;
 
         if (!revealed(next)) continue;
-        if (g_nlive >= KIT_MENU_MAX_ROWS) {
+        if (g_nlive >= g_shown) {
             dropped(next);
             return;
         }
