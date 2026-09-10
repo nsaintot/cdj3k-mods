@@ -400,7 +400,16 @@ static int store_root(const char *track_path, char *out, size_t cap,
     return -1;
 }
 
-/* Where a track's entry sits under a given root. Creates nothing. */
+/* Where a key's entry sits under a root, for one separation id. */
+static int entry_dir(const char *root, const char *sep_id, const char *key,
+                     char *out, size_t cap)
+{
+    return (size_t)snprintf(out, cap, "%s/%s/%s/%c%c/%s", root, CACHE_ROOT,
+                            sep_id, key[0], key[1], key) < cap ? 0 : -1;
+}
+
+/* Where a track's entry sits under a given root, for the CURRENT separation
+ * id -- the store's question. Creates nothing. */
 static int entry_path(const char *root, const char *track_path, int64_t frames,
                       char *out, size_t cap)
 {
@@ -410,10 +419,7 @@ static int entry_path(const char *root, const char *track_path, int64_t frames,
         return -1;                    /* no server has ever identified itself */
     if (key_of(track_path, frames, key, sizeof(key)) != 0)
         return -1;
-    if ((size_t)snprintf(out, cap, "%s/%s/%s/%c%c/%s", root, CACHE_ROOT,
-                         g_stem_sep_id, key[0], key[1], key) >= cap)
-        return -1;
-    return 0;
+    return entry_dir(root, g_stem_sep_id, key, out, cap);
 }
 
 /* ---- meta ----------------------------------------------------------------- */
@@ -498,45 +504,78 @@ static int find_part(const char *dir, const char *stem, char *out, size_t cap)
     return -1;
 }
 
+/* One entry directory: 0 and `out` filled when it holds a usable pair. */
+static int try_entry(const char *dir, int64_t frames, struct stem_cache_entry *out)
+{
+    int64_t meta_frames = 0;
+
+    if (meta_read(dir, &meta_frames, &out->harmonics_gain,
+                  &out->vocals_gain) != 0)
+        return -1;
+    /* The key already covers the frame count, so a disagreement here means an
+     * entry written by something that did not agree with us about what the key
+     * means. Skip it rather than reason about it -- another may still be good. */
+    if (meta_frames != frames) {
+        MDBG("stem_cache: %s frames %lld != %lld, ignoring entry\n",
+             dir, (long long)meta_frames, (long long)frames);
+        return -1;
+    }
+    if (find_part(dir, "harmonics", out->harmonics_path,
+                  sizeof(out->harmonics_path)) != 0 ||
+        find_part(dir, "vocals", out->vocals_path,
+                  sizeof(out->vocals_path)) != 0)
+        return -1;
+    MDBG("stem_cache: HIT %s\n", dir);
+    return 0;
+}
+
 int stem_cache_lookup(const char *track_path, int64_t frames,
                       struct stem_cache_entry *out)
 {
     char roots[MAX_ROOTS][STEM_CACHE_PATH_MAX];
-    char dir[STEM_CACHE_PATH_MAX];
+    char dir[STEM_CACHE_PATH_MAX], base[STEM_CACHE_PATH_MAX];
+    char key[20];
     int n, i;
 
     if (!track_path || !track_path[0] || frames <= 0 || !out)
         return -1;
+    if (key_of(track_path, frames, key, sizeof(key)) != 0)
+        return -1;
 
     /* Every candidate, not the first volume that happens to hold a cache: the
      * local stick can be full of other tracks while the stems for the one now
-     * playing sit on a linked player's media. */
+     * playing sit on a linked player's media.
+     *
+     * And under each, EVERY separation id, the current one first. The id only
+     * says which model made the pair; the key is the track and the meta is the
+     * alignment, so a pair another model made is a pair this track can play.
+     * Without this a deck that last spoke to the server under one model could
+     * not read what its own stick holds under another, and two linked decks
+     * with different ids could not share a cache at all -- offline, that was
+     * the whole feature gone. */
     n = collect_roots(roots, MAX_ROOTS);
     for (i = 0; i < n; i++) {
-        int64_t meta_frames = 0;
+        struct dirent *de;
+        DIR *d;
 
-        if (entry_path(roots[i], track_path, frames, dir, sizeof(dir)) != 0)
+        if (g_stem_sep_id[0] &&
+            entry_dir(roots[i], g_stem_sep_id, key, dir, sizeof(dir)) == 0 &&
+            try_entry(dir, frames, out) == 0)
+            return 0;
+
+        if ((size_t)snprintf(base, sizeof(base), "%s/%s", roots[i], CACHE_ROOT)
+                >= sizeof(base) || !(d = opendir(base)))
             continue;
-        if (meta_read(dir, &meta_frames, &out->harmonics_gain,
-                      &out->vocals_gain) != 0)
-            continue;
-        /* The key already covers the frame count, so a disagreement here means
-         * an entry written by something that did not agree with us about what
-         * the key means. Skip it rather than reason about it -- another volume
-         * may still hold a good one. */
-        if (meta_frames != frames) {
-            MDBG("stem_cache: %s frames %lld != %lld, ignoring entry\n",
-                 dir, (long long)meta_frames, (long long)frames);
-            continue;
+        while ((de = readdir(d)) != NULL) {
+            if (de->d_name[0] == '.' || !strcmp(de->d_name, g_stem_sep_id))
+                continue;
+            if (entry_dir(roots[i], de->d_name, key, dir, sizeof(dir)) == 0 &&
+                try_entry(dir, frames, out) == 0) {
+                closedir(d);
+                return 0;
+            }
         }
-        if (find_part(dir, "harmonics", out->harmonics_path,
-                      sizeof(out->harmonics_path)) != 0 ||
-            find_part(dir, "vocals", out->vocals_path,
-                      sizeof(out->vocals_path)) != 0)
-            continue;
-
-        MDBG("stem_cache: HIT %s\n", dir);
-        return 0;
+        closedir(d);
     }
     return -1;
 }

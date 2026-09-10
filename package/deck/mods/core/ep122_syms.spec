@@ -163,6 +163,11 @@ vtable READER_ALAC        class=N12audio_format12FileReadAlacE
 vtable READER_MP4         class=N12audio_format11FileReadMp4E
 vtable READER_AIFF        class=N12audio_format12FileReadAiffE
 vtable READER_WAV         class=N12audio_format11FileReadWavE
+# The fallback behind the seven: what AudioReaderFactory builds when no native
+# factory takes a file -- a 32-bit float WAV, which FileReadWav refuses and the
+# deck still plays. Same AbstractReader interface, same open() slot, so the
+# capture sees the open the deck actually succeeded with.
+vtable READER_JUCE        class=N12audio_format22JuceAudioReaderWrapperE
 vtable FACTORY_FLAC       class=N12audio_format19FileReadFlacFactoryE
 vtable FACTORY_MP3        class=N12audio_format18FileReadMp3FactoryE
 vtable FACTORY_AAC        class=N12audio_format18FileReadAacFactoryE

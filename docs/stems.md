@@ -54,7 +54,31 @@ stems are on the stick, so it loads with no server on the network at all.
 **Stems live on the same volume as the track.** They are keyed by the track's
 own contents, not by its filename or its position in the browser, so renaming a
 file, reorganising folders or re-sorting the list all keep the cache valid, and
-pulling a stick takes its tracks and their stems away together.
+pulling a stick takes its tracks and their stems away together. A pair made by
+a different separation model than the one your deck last used is used too, so
+a stick prepared on one deck plays on another.
+
+### The frame count, for anyone writing entries offline
+
+Half of an entry's key is the deck's own decode length in frames **at
+44.1 kHz**, and the stems inside it must be aligned to that length. It is not
+the length a tag or another decoder reports. Take the container's count, then
+round it up:
+
+- **MP3:** Pioneer's parser frame count × 1152. A LAME/Xing tag frame counts as
+  a frame of audio (one frame of silence first, the last frame dropped); an
+  ffmpeg-written one does not. This is the same number rekordbox stores as the
+  analysis's PVBR total.
+- **AAC:** packets × 1024, with the priming samples played.
+- **Then, every container:** rounded **up** to the next 1/75 s, which is 588
+  samples at 44.1 kHz. A 9190-frame MP3 is 10 586 880 samples, and the key is
+  18 005 × 588 = 10 586 940.
+
+Worked out on a CDJ-3000 from 16 loads and verified sample-for-sample against 4
+uploads; the MP3 rule checks against the PVBR totals on an exported stick. Write
+the stems as **96 kHz FLAC**: a pair at the deck's own rate loads in a few
+seconds, where a pair the deck has to resample takes about a third of the
+track's length.
 
 ### Playing from another player's media
 

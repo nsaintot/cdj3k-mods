@@ -201,6 +201,27 @@ static int fill_chunk(const float *pcm, int64_t frames, void *user)
  * whole load over a tail nobody hears. decode.c logs where a stream ended; a
  * genuinely unreadable stem stops four orders of magnitude short and is obvious
  * in that one line. */
+/* What the deck keeps for itself while a pair is resident: its page pool,
+ * the waveforms, the browser. Measured on the emulator: EP122 idles at
+ * ~490 MB and the kernel killed it at 1020 MB with a 415 MB pair in. */
+#define LOAD_HEADROOM   (128u * 1024 * 1024)
+
+/* MemAvailable, or 0 when it cannot be read. */
+static uint64_t mem_available(void)
+{
+    char line[96];
+    unsigned long long kb = 0;
+    FILE *fp = fopen("/proc/meminfo", "r");
+
+    if (!fp)
+        return 0;
+    while (fgets(line, sizeof(line), fp))
+        if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1)
+            break;
+    fclose(fp);
+    return (uint64_t)kb * 1024;
+}
+
 static int64_t load_one(struct stem_buf *slot, const char *path, int rate,
                         float gain, int report)
 {
@@ -216,7 +237,9 @@ static int64_t load_one(struct stem_buf *slot, const char *path, int rate,
     slot->pcm = malloc((size_t)len * 2 * sizeof(int16_t));
     if (!slot->pcm) {
         /* Us, not the file. Saying BAD here would condemn a good cache entry
-         * over a momentary shortage and re-separate the track. */
+         * over a momentary shortage and re-separate the track. The stage stays
+         * LOADING through the retry: IDLE reads as "nothing asked", and offline
+         * that is the warning badge. */
         MDBG("stem_store: %s: out of memory for %lld frames (%lld MB)\n",
              path, (long long)len, (long long)(len * 4 / (1024 * 1024)));
         return STEM_PUBLISH_RETRY;
@@ -367,11 +390,32 @@ static void *load_thread_fn(void *p)
     return NULL;
 }
 
+/* Whether the deck can hold a pair of `len` frames at the pool rate, with
+ * LOAD_HEADROOM to spare. Asked before either part is allocated: a malloc that
+ * cannot be honoured does not fail on this kernel -- it overcommits, and kills
+ * EP122 when the pages are touched -- and a deck that restarts mid-set is worse
+ * than a track without stems. Once, for the pair: the two parts load side by
+ * side, and a part asking after its sibling has touched its buffer would refuse
+ * a pair that fits. */
+static int pair_fits(const char *path, int64_t len)
+{
+    uint64_t need = 2 * (uint64_t)len * 2 * sizeof(int16_t) + LOAD_HEADROOM;
+    uint64_t avail = mem_available();
+
+    if (!avail || need <= avail)
+        return 1;
+    MDBG("stem_store: %s: the pair needs %llu MB with headroom, %llu MB"
+         " available -> not loading\n", path,
+         (unsigned long long)(need >> 20), (unsigned long long)(avail >> 20));
+    return 0;
+}
+
 /* Build a set from two already-written files and publish it. Worker thread. */
 int stem_store_publish(const char *harmonics_path, float harmonics_gain,
                        const char *vocals_path, float vocals_gain)
 {
     int rate;
+    int64_t len;
     struct stem_set *set;
 
     /* Said before either wait, not after: both of them block, and a bar frozen on
@@ -392,6 +436,12 @@ int stem_store_publish(const char *harmonics_path, float harmonics_gain,
      * back in a few seconds, by which time the load it was racing is over. */
     if (!wait_for_deck())
         return stem_job_load_wanted() ? STEM_PUBLISH_RETRY : STEM_PUBLISH_ABORT;
+    /* The shortage may be the deck's own load still settling: RETRY, not BAD.
+     * A file the probe cannot size is left to load_one, which knows what to
+     * say about it. */
+    len = stem_decode_pull(harmonics_path, rate, NULL, NULL);
+    if (len > 0 && !pair_fits(harmonics_path, len))
+        return STEM_PUBLISH_RETRY;
     set = calloc(1, sizeof(*set));
     if (!set)
         return STEM_PUBLISH_RETRY;

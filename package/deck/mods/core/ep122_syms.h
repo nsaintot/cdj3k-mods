@@ -59,6 +59,7 @@ enum ep122_sym {
     EP122_READER_MP4,
     EP122_READER_AIFF,
     EP122_READER_WAV,
+    EP122_READER_JUCE,
     EP122_FACTORY_FLAC,
     EP122_FACTORY_MP3,
     EP122_FACTORY_AAC,
@@ -298,6 +299,7 @@ static const struct ep122_vt_spec {
     { EP122_READER_MP4, "N12audio_format11FileReadMp4E", NULL },   /* 0x1f14908 */
     { EP122_READER_AIFF, "N12audio_format12FileReadAiffE", NULL },   /* 0x1f13d78 */
     { EP122_READER_WAV, "N12audio_format11FileReadWavE", NULL },   /* 0x1f13b80 */
+    { EP122_READER_JUCE, "N12audio_format22JuceAudioReaderWrapperE", NULL },   /* 0x1f15318 */
     { EP122_FACTORY_FLAC, "N12audio_format19FileReadFlacFactoryE", NULL },   /* 0x1f139c0 */
     { EP122_FACTORY_MP3, "N12audio_format18FileReadMp3FactoryE", NULL },   /* 0x1f13948 */
     { EP122_FACTORY_AAC, "N12audio_format18FileReadAacFactoryE", NULL },   /* 0x1f13970 */
@@ -630,6 +632,7 @@ static const char *const k_ep122_sym_name[] = {
     "READER_MP4",
     "READER_AIFF",
     "READER_WAV",
+    "READER_JUCE",
     "FACTORY_FLAC",
     "FACTORY_MP3",
     "FACTORY_AAC",

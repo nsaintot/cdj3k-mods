@@ -12,6 +12,66 @@
 #include "kit/popup.h"
 #include <pthread.h>
 
+/* A RETRY from the store is re-run every JOB_RETRY_SEC, this many times, and
+ * then the track is given up as FAILED: a pair that does not fit the deck's
+ * memory is not going to start fitting, and a probe against a track the deck
+ * will not size for us is not going to start succeeding. Reset on a track
+ * change. Loader thread only. */
+#define LOAD_RETRY_MAX 12
+static int g_load_retries;
+
+static int load_retry(const char *why)
+{
+    if (++g_load_retries > LOAD_RETRY_MAX) {
+        MDBG("stem_job: %s after %d attempts -> giving up on this track\n",
+             why, LOAD_RETRY_MAX);
+        ui_publish(STEM_STAGE_FAILED, 0, 0);
+        g_retry_at = 0;             /* or the probe runs once more and gives up again */
+        return 0;
+    }
+    MDBG("stem_job: %s, retrying in %d s (%d/%d)\n", why, JOB_RETRY_SEC,
+         g_load_retries, LOAD_RETRY_MAX);
+    job_retry_later();
+    return 1;
+}
+
+/* The decoder's length for a track, from the last probe that succeeded.
+ *
+ * A VBR MP3 is only sizeable through the deck's own tables, and those are held
+ * for the track the deck opened LAST. A track re-served from the page pool was
+ * not opened again, so its probe fails -- but its length has not changed, and
+ * with it the cache lookup still finds the pair. Loader thread only. */
+#define LEN_MEMO 16
+static struct {
+    char    path[STEM_CACHE_PATH_MAX];
+    int64_t frames;
+} g_len[LEN_MEMO];
+static int g_len_next;
+
+static int64_t len_known(const char *path)
+{
+    int i;
+
+    for (i = 0; i < LEN_MEMO; i++)
+        if (g_len[i].frames > 0 && strcmp(g_len[i].path, path) == 0)
+            return g_len[i].frames;
+    return -1;
+}
+
+static void len_remember(const char *path, int64_t frames)
+{
+    int i;
+
+    for (i = 0; i < LEN_MEMO; i++)
+        if (g_len[i].frames > 0 && strcmp(g_len[i].path, path) == 0) {
+            g_len[i].frames = frames;
+            return;
+        }
+    i = g_len_next++ % LEN_MEMO;
+    snprintf(g_len[i].path, sizeof(g_len[i].path), "%s", path);
+    g_len[i].frames = frames;
+}
+
 static int loader_publish(const char *h, float hg, const char *v, float vg)
 {
     int rc;
@@ -29,21 +89,34 @@ static void loader_serve(const char *path)
 {
     struct stem_cache_entry e;
     int64_t frames;
-    int rc;
+    int rc, remembered = 0;
 
     /* The DECODER's frame count, which is half the cache key: stems are aligned
      * to EP122's padded decode, so a firmware that pads differently must miss
      * rather than load something silently misaligned. */
     frames = stem_decode_pull(path, STEM_UPLOAD_RATE, NULL, NULL);
-    if (frames <= 0) {
-        MDBG("stem_job: length probe failed (%lld)\n", (long long)frames);
-        job_retry_later();
-        return;
+    if (frames > 0) {
+        len_remember(path, frames);
+    } else {
+        frames = len_known(path);
+        remembered = frames > 0;
+        if (!remembered) {
+            load_retry("length probe failed");
+            return;
+        }
+        MDBG("stem_job: length probe failed, using the earlier %lld\n",
+             (long long)frames);
     }
     if (!track_is_current(path))
         return;                     /* the DJ moved on while we probed */
 
     if (stem_cache_lookup(path, frames, &e) != 0) {
+        /* A remembered length finds a pair; it cannot decode a track the deck
+         * will not size, so there is nothing to upload. */
+        if (remembered) {
+            load_retry("no pair on the media and the track cannot be decoded");
+            return;
+        }
         /* A miss, and the ONLY route to the separator. */
         sep_request(path, frames);
         return;
@@ -57,9 +130,7 @@ static void loader_serve(const char *path)
     if (rc == STEM_PUBLISH_ABORT)
         return;                     /* the new track's generation drives us now */
     if (rc == STEM_PUBLISH_RETRY) {
-        MDBG("stem_job: cache hit not loadable yet, retrying in %d s\n",
-             JOB_RETRY_SEC);
-        job_retry_later();
+        load_retry("cache hit not loadable yet");
         return;
     }
     if (rc != STEM_PUBLISH_OK) {
@@ -79,27 +150,47 @@ static void loader_serve(const char *path)
     MDBG("stem_job: served from cache, no server needed\n");
 }
 
-/* A delivery from the separator, taken only if it is still wanted. */
-static void loader_take_delivery(void)
+/* The delivery the loader has not consumed yet, if any. */
+static uint32_t g_delivery_seen;
+
+static int loader_delivery_pending(void)
 {
-    static uint32_t seen;
-    char track[STEM_CACHE_PATH_MAX], h[STEM_CACHE_PATH_MAX], v[STEM_CACHE_PATH_MAX];
-    float hg, vg;
     uint32_t gen = __atomic_load_n(&g_delivery.gen, __ATOMIC_ACQUIRE);
 
-    if (gen == seen || (gen & 1u))
+    return gen != g_delivery_seen && !(gen & 1u);
+}
+
+/* A delivery from the separator, taken only if it is still wanted. A pair the
+ * store says RETRY to stays a pending delivery -- tmpfs copy included -- and is
+ * taken again when the retry falls due, rather than consumed with nothing
+ * scheduled. */
+static void loader_take_delivery(void)
+{
+    char track[STEM_CACHE_PATH_MAX], h[STEM_CACHE_PATH_MAX], v[STEM_CACHE_PATH_MAX];
+    float hg, vg;
+    int tmpfs;
+    uint32_t gen = __atomic_load_n(&g_delivery.gen, __ATOMIC_ACQUIRE);
+
+    if (gen == g_delivery_seen || (gen & 1u))
         return;
-    seen = gen;
+    if (g_retry_at && job_now_sec() < g_retry_at)
+        return;                     /* a RETRY is waiting its turn */
     snprintf(track, sizeof(track), "%s", g_delivery.track);
     snprintf(h, sizeof(h), "%s", g_delivery.h);
     snprintf(v, sizeof(v), "%s", g_delivery.v);
     hg = g_delivery.hg;
     vg = g_delivery.vg;
+    tmpfs = g_delivery.tmpfs;
 
     if (track_is_current(track)) {
+        int rc;
+
         ui_publish(STEM_STAGE_LOADING, 0, 0);
-        if (loader_publish(h, hg, v, vg) == STEM_PUBLISH_OK &&
-            track_is_current(track)) {
+        rc = loader_publish(h, hg, v, vg);
+        if (rc == STEM_PUBLISH_RETRY &&
+            load_retry("the separated pair cannot be loaded yet"))
+            return;                 /* still pending */
+        if (rc == STEM_PUBLISH_OK && track_is_current(track)) {
             __atomic_store_n(&g_stem_ready, 1, __ATOMIC_RELEASE);
             ui_publish(STEM_STAGE_DONE, 100, 0);
             wave_stems_track_ready(track);
@@ -108,11 +199,14 @@ static void loader_take_delivery(void)
         MDBG("stem_job: %s finished separating, but is no longer loaded --"
              " it is in the cache for when it is\n", track);
     }
-    /* The tmpfs copies are pure duplication from here: the media cache has the
-     * durable pair and publish has them in RAM. /dev/shm is guest RAM on a
-     * 3 GiB ceiling at ~170 MB a track. */
-    unlink(h);
-    unlink(v);
+    g_delivery_seen = gen;
+    /* A pair still on tmpfs -- one the media would not take -- is pure
+     * duplication from here: publish has it in RAM, or gave up on it. The
+     * media's own copy is the cache entry and stays. */
+    if (tmpfs) {
+        unlink(h);
+        unlink(v);
+    }
 }
 
 void * loader_main(void *arg)
@@ -135,6 +229,7 @@ void * loader_main(void *arg)
             memset(g_arrived, 0, sizeof(g_arrived));
             ui_publish(STEM_STAGE_IDLE, 0, 0);
             g_retry_at = 0;
+            g_load_retries = 0;
         }
 
         loader_take_delivery();
@@ -142,8 +237,10 @@ void * loader_main(void *arg)
         /* A scheduled retry OUTRANKS `served`. Requiring both meant the flag
          * won every time -- it is set the moment the separator is asked, which
          * is before anything can fail -- so job_failed's reschedule was never
-         * acted on and a job that died on the wire stayed dead. */
-        if (g_stems_on && g_cur_path[0] &&
+         * acted on and a job that died on the wire stayed dead. A pending
+         * delivery owns the retry it scheduled; the probe would only find the
+         * same pair on the media and load it twice. */
+        if (!loader_delivery_pending() && g_stems_on && g_cur_path[0] &&
             (g_retry_at ? job_now_sec() >= g_retry_at : !served)) {
             char path[STEM_CACHE_PATH_MAX];
 

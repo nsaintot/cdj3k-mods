@@ -27,10 +27,9 @@
  * arguments - no analysis data synthesised, no reader shared with the player,
  * and no lifetime entanglement with the page filler's copy.
  *
- * This TU is currently an OBSERVATION PROBE: it records and chains, and creates
- * nothing. It exists to confirm what the arguments actually are, because
- * everything above is read off the decompiler and the argument identities in
- * particular are inference.
+ * The hook records what every open() was handed (the reporter prints it) and
+ * keeps, for the track the deck opened last, the path and those two tables;
+ * stem_decode_pull hands them back to createReaderFor for that path.
  *
  * Threading: `open` runs on the page-filler thread, which the track loader
  * blocks on - stall it and the load times out in
@@ -50,8 +49,8 @@
  *
  * Found by walking RTTI base arrays (scripts/ep122sym.py impls
  * audio_format::AbstractReader), which is also how we know the list is complete.
- * Every concrete reader inherits the same `open` - one function, nine vtables -
- * so the wrapper is shared and only the slots differ.
+ * The seven file readers share AbstractFileReader::open; the JUCE wrapper has
+ * its own. One wrapper serves all eight, telling them apart by vptr.
  *
  *   bool open(const juce::String &path, const audio_format::SeekTable &,
  *             const audio_format::FrameInfoList &)
@@ -180,6 +179,10 @@ static struct reader_vt g_reader[] = {
     { "Mp4",  EP122_READER_MP4,  0, 0 },
     { "Aiff", EP122_READER_AIFF, 0, 0 },
     { "Wav",  EP122_READER_WAV,  0, 0 },
+    /* The factory's fallback for what the seven refuse -- a 32-bit float WAV
+     * among them. The deck plays those through it, so this is the open that
+     * succeeds for such a track, and the only one that names its path. */
+    { "Juce", EP122_READER_JUCE, 0, 0 },
 };
 #define N_READER_VT ((int)(sizeof(g_reader) / sizeof(g_reader[0])))
 
@@ -228,6 +231,30 @@ static unsigned g_open_calls;
  * g_cap.path, which the reporter consumes and clears; the decode worker needs
  * the path to stay valid for as long as the track is loaded. */
 static char g_track_path[PATH_MAX_CAP];
+
+/* Set the instant a SUCCESSFUL deck open refreshes g_track_path, cleared the
+ * first time a new sourceId consumes it. A track whose OWN open failed never
+ * sets it, so g_track_path still points at the previous, successfully-opened
+ * track -- and a new id must NOT bind to that stale path. Consume-once is what
+ * tells "the deck just opened this track" apart from "g_track_path is left over
+ * from a different song": only the former is fresh. Written from the page-filler
+ * thread with RELEASE after the memcpy, read from the message thread with
+ * ACQUIRE, so a reader that sees fresh=1 also sees the path bytes. */
+static int g_track_fresh;
+
+/* The SeekTable and FrameInfoList the deck built for g_track_path -- open()'s
+ * 2nd and 3rd arguments, which the worker cannot invent. Both are handed back
+ * to createReaderFor so our reader opens against the same analysis the deck's
+ * did -- for a VBR MP3 that is what lets setSource size it, since the reader
+ * alone carries no length. Captured on the SAME successful open as g_track_path
+ * so the three always describe one track, and only used while the pull's path
+ * still matches, i.e. for the track the deck has loaded and whose analysis it
+ * is holding. They are read during createReaderFor only: the MP3 reader builds
+ * its own frame index from them at open (sub_a47b20), so the exposure is that
+ * call, not the decode that follows. Never used for a re-served track: nothing
+ * says the deck still holds the analysis it handed over the first time. */
+static uintptr_t g_track_seek;
+static uintptr_t g_track_frame;
 
 /* Set while THIS thread is inside stem_decode_pull.
  *
@@ -380,7 +407,11 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
     if (!g_decode_self)
         __atomic_store_n(&g_deck_open_ms, decode_now_ms(), __ATOMIC_RELEASE);
 
-    if (!g_cap.pending) {
+    /* A failed open holds the capture only until one succeeds. The factory
+     * falls through its readers -- FileReadWav refuses a float WAV and the JUCE
+     * wrapper takes it -- and the open that succeeded is the one that names the
+     * track; keeping the first would report the refusal and lose the path. */
+    if (!g_cap.pending || (!g_cap.ret && ret)) {
         uintptr_t rate_fn = 0;
 
         g_cap.which = which;
@@ -397,8 +428,14 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
          * track. g_cap still records it, because seeing those opens in the log
          * is how the stem decode is debugged; only the thing that decides what
          * gets uploaded is protected. */
-        if (ret && g_cap.path[0] && !g_decode_self)
+        if (ret && g_cap.path[0] && !g_decode_self) {
             memcpy(g_track_path, g_cap.path, sizeof(g_track_path));
+            /* Same open as the path: the analysis these describe is this
+             * track's, and the worker hands both back to createReaderFor. */
+            __atomic_store_n(&g_track_seek, (uintptr_t)seek_table, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_track_frame, (uintptr_t)frame_info, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_track_fresh, 1, __ATOMIC_RELEASE);
+        }
 
         /* Read the field the stock getter would have returned, but only once
          * the slot has confirmed it IS that getter -- an override would mean
@@ -564,12 +601,28 @@ const char *stem_decode_path_for_sid(uint64_t lo, uint64_t hi)
     int i;
 
     for (i = 0; i < SID_BINDS; i++)
-        if (g_bind[i].used && g_bind[i].lo == lo && g_bind[i].hi == hi)
+        if (g_bind[i].used && g_bind[i].lo == lo && g_bind[i].hi == hi) {
+            /* A reload of a track the pool had evicted opens it again, which
+             * set the flag; this binding is that open's, so spend it here or
+             * the next reader-less load inherits it and binds to this path. */
+            if (__atomic_load_n(&g_track_fresh, __ATOMIC_ACQUIRE) &&
+                strcmp(g_bind[i].path, g_track_path) == 0)
+                __atomic_store_n(&g_track_fresh, 0, __ATOMIC_RELEASE);
             return g_bind[i].path;
+        }
 
     /* Unseen id: it must be the track the deck just opened, because an open is
-     * the only way a new source enters the pool. */
-    if (!g_track_path[0])
+     * the only way a new source enters the pool -- but ONLY if that open
+     * succeeded and left a fresh path. A float WAV (or any format this reader
+     * cannot open) fails its open, so g_track_path still holds the PREVIOUS
+     * track; binding this id to it publishes that song's stems over the wrong
+     * one. Consume the freshness so a second new id in the same gap -- a
+     * re-served track has its own binding already and never reaches here --
+     * cannot inherit it either. No fresh path means no stems, and the caller
+     * dropping the resident set on a NULL is what stops the last song's faders
+     * from bleeding through. */
+    if (!g_track_path[0] ||
+        !__atomic_exchange_n(&g_track_fresh, 0, __ATOMIC_ACQ_REL))
         return NULL;
 
     i = g_bind_next++ % SID_BINDS;
@@ -602,10 +655,15 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     /* juce::String is a single pointer; the second word is slack so a wrong
      * guess about its size cannot scribble on the frame. */
     uintptr_t jstr[2] = { 0, 0 };
-    /* FileReadFlac ignores open()'s 2nd and 3rd arguments outright. Zeroed
-     * stand-ins keep the call well-formed for the formats that do read them,
-     * and this path is only claimed for FLAC until that is tested. */
+    /* FileReadFlac ignores open()'s 2nd and 3rd arguments outright, so zeroed
+     * stand-ins are enough for it. A VBR MP3 is not: its length comes out of the
+     * SeekTable/FrameInfoList, and with stubs setSource reports -1 frames and the
+     * job never starts. So when the deck has already opened THIS track we reuse
+     * the very tables it built (g_track_seek/g_track_frame); the stubs remain the
+     * fallback for a track the deck has not opened for us to observe. */
     uint8_t seek_stub[64], frame_stub[64];
+    const void *seek_arg, *frame_arg;
+    uintptr_t cap_seek, cap_frame;
     int32_t err = 0;
     void *reader = NULL, *src = NULL;
     float *buf = NULL;
@@ -626,6 +684,23 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     memset(seek_stub, 0, sizeof(seek_stub));
     memset(frame_stub, 0, sizeof(frame_stub));
 
+    /* Reuse the deck's own analysis for this track when we have it; the stubs
+     * otherwise. strcmp against g_track_path is what ties the tables to the file
+     * being decoded -- a mismatch (a re-served track the deck never re-opened,
+     * or our own stem files) falls back rather than handing MP3 a stranger's
+     * SeekTable. */
+    seek_arg = seek_stub;
+    frame_arg = frame_stub;
+    cap_seek = __atomic_load_n(&g_track_seek, __ATOMIC_ACQUIRE);
+    cap_frame = __atomic_load_n(&g_track_frame, __ATOMIC_ACQUIRE);
+    if (cap_seek && cap_frame && g_track_path[0] &&
+        strcmp(path, g_track_path) == 0) {
+        seek_arg = (const void *)cap_seek;
+        frame_arg = (const void *)cap_frame;
+        MDBG("stem_decode: reusing deck seekTable=%#lx frameInfo=%#lx\n",
+             (unsigned long)cap_seek, (unsigned long)cap_frame);
+    }
+
     if (sink)
         buf = malloc((size_t)DECODE_CHUNK * 2 * sizeof(float));
     src = malloc(SRC_SIZE);
@@ -640,7 +715,7 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     t0 = decode_cntvct();
     reader = ((create_reader_fn_t)FN_CREATE_READER)((void *)ADDR_READER_FACTORY,
                                                     jstr, &err, 1,
-                                                    seek_stub, frame_stub,
+                                                    seek_arg, frame_arg,
                                                     (uint64_t)g_factory_kind);
     dt = decode_cntvct() - t0;
     if (!reader) {
@@ -696,23 +771,8 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
          * path when they differ. */
         rc = ((fileread_fn_t)fn_fileread)(src, pos, buf, want);
         if (rc != 0) {
-            MDBG("stem_decode: fileRead rc=%d at frame %lld of %lld\n", rc,
-                 (long long)pos, (long long)out_len);
-            /* Stop and report what was actually delivered. NOT a judgement about
-             * whether that is enough -- this function cannot make it.
-             *
-             * out_len is the converter's ESTIMATE, derived from an in_len that
-             * includes the decoder's own pad (17538276 = 17534160 + 4116 here),
-             * so it always asks for a little more than the source can yield, by
-             * an amount that varies per track: 2816 frames on one, 7936 on the
-             * next. Every threshold guessed here was just a number wide enough
-             * for the tracks that had been tried.
-             *
-             * The caller knows the real frame count -- from the cache entry's
-             * meta, or from what JOB_BEGIN committed to -- so the caller does
-             * the checking, against a fact rather than an estimate. */
-            MDBG("stem_decode: stream ended at %lld of an estimated %lld\n",
-                 (long long)pos, (long long)out_len);
+            MDBG("stem_decode: fileRead rc=%d, stream ended at %lld of %lld\n",
+                 rc, (long long)pos, (long long)out_len);
             break;
         }
         if (sink(buf, want, user) != 0) {
