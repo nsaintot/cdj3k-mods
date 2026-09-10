@@ -425,6 +425,7 @@ void      menu_pane_show(uintptr_t view, int visible);
 void    menu_apply_value(int row, int focus_pane, const char *src);
 void    menu_pane_fit(uintptr_t rlist, int rows);
 void    menu_list_fit(uintptr_t list, int armed);
+int     menu_list_row_h(void);          /* measured, MOD_ROW_H until it is */
 int     menu_list_fit_above_kbd(uintptr_t list, int row);
 void    menu_pane_labels(uintptr_t view, uintptr_t rmodel, const struct kit_row *r);
 void    menu_force_right_pane_sel(uintptr_t view, int sel_row);

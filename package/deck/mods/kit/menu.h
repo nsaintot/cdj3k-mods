@@ -83,8 +83,14 @@ struct kit_row {
  * The live count is dynamic (revealing children grows it), so this is enforced
  * when the list is flattened rather than at registration: the overflow is
  * logged and the surplus dropped. A row that is silently invisible and
- * unreachable is the failure this exists to prevent. */
+ * unreachable is the failure this exists to prevent. The ceiling in force is
+ * whatever the overlay could size the list for (kit_menu_set_shown): a list it
+ * could not grow shows seven, and the eighth is dropped with the same log line
+ * rather than drawn nowhere. */
 #define KIT_MENU_MAX_ROWS 9
+
+/* The rows the list can show right now, 1..KIT_MENU_MAX_ROWS. */
+void kit_menu_set_shown(int n);                         /* [message] */
 
 /* The longest buffer a TEXT row may hand over. The overlay keeps the pre-edit
  * value in a buffer of its own, which has to be sized for any row. */

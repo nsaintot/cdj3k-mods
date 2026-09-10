@@ -147,11 +147,17 @@ void menu_pane_fit(uintptr_t rlist, int rows)
  * so an overlay of more rows rendered inside that viewport and scrolled. As with
  * the right pane, the row height is measured from the stock-built list, once,
  * and the armed height is that unit times the row count. What the list is sized
- * for is published in menu_g_list_rows, which is what getNumRows reports: a list
- * that could not be grown is left at its stock height and reports the stock
- * count, so it scrolls rather than clips. */
+ * for is published in menu_g_list_rows, which is what getNumRows reports, and
+ * handed to the kit as its ceiling: a list that could not be grown stays at its
+ * stock height, and the rows past what it shows are dropped with a warning
+ * rather than left undrawn and unselectable. */
 static int32_t g_list_rowh;      /* measured once from the stock-built list */
 static int32_t g_list_stock_h;
+
+int menu_list_row_h(void)
+{
+    return g_list_rowh > 0 ? g_list_rowh : MOD_ROW_H;
+}
 
 void menu_list_fit(uintptr_t list, int armed)
 {
@@ -161,7 +167,9 @@ void menu_list_fit(uintptr_t list, int armed)
     if (!list || mod_safe_read(list + COMP_BOUNDS_OFF, b, sizeof(b)) != 0) return;
 
     if (!g_list_rowh) {
-        if (b[3] <= 0 || (b[3] % MOD_LIST_ROWS_STOCK) != 0) {
+        if (b[3] <= 0)
+            return;                 /* not laid out yet: measure next time */
+        if ((b[3] % MOD_LIST_ROWS_STOCK) != 0) {
             MDBG("djlist: %dx%d is not a clean %d rows -> not resizing\n",
                  b[2], b[3], MOD_LIST_ROWS_STOCK);
             g_list_rowh = -1;
@@ -176,13 +184,15 @@ void menu_list_fit(uintptr_t list, int armed)
 
     rows = armed ? MOD_ROWS_VISIBLE : MOD_LIST_ROWS_STOCK;
     want = armed ? g_list_rowh * rows : g_list_stock_h;
-    if (b[1] + want > MOD_LIST_BOTTOM) {
+    /* The slack counts: the grow below passes through want + slack. */
+    if (b[1] + want + MOD_LIST_GROW_SLACK > MOD_LIST_BOTTOM) {
         MDBG("djlist: %d rows would end at %d, past %d -> staying stock-sized\n",
              rows, b[1] + want, MOD_LIST_BOTTOM);
         rows = MOD_LIST_ROWS_STOCK;
         want = g_list_stock_h;
     }
     menu_g_list_rows = rows;
+    kit_menu_set_shown(rows - MOD_ROW_FIRST);
     if (want == b[3]) return;
     /* Growing back from the keyboard's cut goes past the target first. The cut
      * list is scrolled and overflowing, so both of JUCE's scrollbars are up, and

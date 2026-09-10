@@ -164,7 +164,7 @@ static void mod_kbd_move_editor(uintptr_t editor, int row)
     if (b[2] <= 0 || b[3] <= 0 || b[3] > 4 * MOD_ROW_H) return;   /* not a row-sized editor */
     if (stock_y < 0) stock_y = b[1];
     ((void (*)(void *, int, int))FN_SET_TOPLEFT)
-        ((void *)editor, b[0], stock_y + (row - KBD_STOCK_ROW) * MOD_ROW_H);
+        ((void *)editor, b[0], stock_y + (row - KBD_STOCK_ROW) * menu_list_row_h());
 }
 
 /* Clear the right pane for the duration of the edit, the way the stock text setting does:
