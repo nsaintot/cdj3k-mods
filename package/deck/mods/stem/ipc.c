@@ -14,6 +14,7 @@
 #include "stem/stem.h"
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 
 /* Reconnect attempts are rate-limited so a sidecar that is down costs one
@@ -100,7 +101,11 @@ int stem_ipc_ensure(void)
         return -1;
     g_next_try = now + IPC_RETRY_SEC;
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    /* CLOEXEC: the deck forks helpers (edb_streamd, a shell for ping) that
+     * inherit every descriptor. A copy of this one in a child keeps the
+     * sidecar's end open after we close ours, so its read never returns and
+     * no reconnect is ever accepted. */
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0)
         return -1;
 
@@ -162,11 +167,23 @@ static int ipc_write_all(const void *buf, size_t len)
         /* A zero return is not an error and leaves errno holding whatever an
          * earlier call left there. Only a negative return has an errno worth
          * printing. */
-        if (n == 0)
+        if (n == 0) {
             MDBG("stem_ipc: write %zu/%zu returned 0 (peer not draining)\n",
                  done, len);
-        else
-            MDBG("stem_ipc: write %zu/%zu failed errno=%d\n", done, len, errno);
+        } else {
+            /* What fd %d is at that moment: a number the deck reused for
+             * something else fails in ways a socket cannot. */
+            char link[64], target[96] = "?";
+            struct stat st;
+            int e = errno;
+
+            snprintf(link, sizeof(link), "/proc/self/fd/%d", g_fd);
+            if (readlink(link, target, sizeof(target) - 1) < 0)
+                snprintf(target, sizeof(target), "readlink errno=%d", errno);
+            MDBG("stem_ipc: write %zu/%zu failed errno=%d on fd %d -> %s mode=%#o\n",
+                 done, len, e, g_fd, target,
+                 fstat(g_fd, &st) == 0 ? (unsigned)st.st_mode : 0u);
+        }
         return -1;
     }
     return 0;
