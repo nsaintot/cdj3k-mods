@@ -77,6 +77,8 @@ static void cue_shortcut_paint(void *self, void *g)
     if (mod_ui_gen() != g_ink_gen)
         cue_shortcut_paint_state();
     if (juce_comp_bounds((uintptr_t)self, b) == 0) {
+        /* A flat fill, not the stipple the other plates wear: beside the timer
+         * and the tempo the texture read as a heavier control than it is. */
         mod_gfx_colour(g, g_gate_on ? ui->accent : ui->surface);
         mod_gfx_fill(g, 0, (b[3] - BTN_PLATE_H) / 2, b[2], BTN_PLATE_H);
     }
@@ -132,6 +134,9 @@ static void cue_shortcut_build(uintptr_t rack)
     g_btn = juce_label(rack, BTN_TEXT, BTN_FONT, 0x00000000u, mod_ui()->text_dim,
                        g_vptr, x, y, w, BTN_HIT_H);
     if (!g_btn) return;
+    /* Label::paint ends with a one-pixel outline in the LookAndFeel's colour;
+     * the plate is the whole of the drawing, so it is made invisible. */
+    juce_comp_colour(g_btn, LBL_COL_OUTLINE, 0x00000000u);
     g_rack = rack;
     cue_shortcut_paint_state();
     MDBG("cue_shortcut: GATE CUE shortcut at {%d,%d,%d,%d} in rack %#lx, plate %dpx\n",

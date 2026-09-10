@@ -124,7 +124,7 @@ static void derive(struct theme_ui *out, const struct theme_palette *pal)
     uint32_t w, k;
 
     /* Walked as a flat array of ARGB words on purpose. Every member is one, and naming
-     * each of the eighteen here would be a list to forget to extend -- a role added to
+     * each one here would be a list to forget to extend -- a role added to
      * the struct and not to this loop would silently come out black. */
     for (i = 0; i < n; i++)
         dst[i] = theme_palette_argb(pal, src[i], ROLE_IS_FILL);

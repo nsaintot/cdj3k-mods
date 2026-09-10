@@ -22,9 +22,8 @@
  * is what these were before.
  *
  * The lamp carries the state and the word never changes shape -- only its
- * brightness, from the deck's dim lettering to its full white, which is the same
- * pair GATE CUE uses one rack below. The lamp's own frame is one pixel of `edge`,
- * no fill, until it lights.
+ * brightness, from the deck's dim lettering to its full white. The lamp's own
+ * frame is one pixel of `edge`, no fill, until it lights.
  *
  * BOTH LIGHT THE SAME WAY. OVERDUB blinked here for a while, after the RMX's own
  * recording signal, and it was wrong on a screen: a lamp caught on the dim half
