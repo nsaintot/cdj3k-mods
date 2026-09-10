@@ -342,7 +342,7 @@ static const struct ep122_vt_spec {
     { EP122_GRIDBTN_SHIFT, "N3gui18grid_adjust_button15ShiftGridButtonE", NULL },   /* 0x20f69d0 */
     { EP122_GRIDBTN_RESET, "N3gui18grid_adjust_button11ResetButtonE", NULL },   /* 0x20f7a30 */
 };
-#define EP122_N_VT 84
+#define EP122_N_VT 85
 
 /* ---- virtuals: whatever the slot holds IS the implementation ---- */
 static const struct ep122_slot_spec {
