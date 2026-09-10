@@ -116,6 +116,13 @@ static uintptr_t bs_find_visible(uintptr_t comp, uintptr_t ti, int depth)
     return 0;
 }
 
+uintptr_t bs_find_visible_class(uintptr_t comp, uintptr_t vt)
+{
+    uintptr_t ti = vt ? juce_class_of(vt) : 0;
+
+    return ti ? bs_find_visible(comp, ti, 0) : 0;
+}
+
 /* The header of whichever track list is on screen. NOT cached across a take:
  * which of the two lists is showing is exactly what changes between one press
  * and the next. */

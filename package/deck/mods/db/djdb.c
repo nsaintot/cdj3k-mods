@@ -552,46 +552,53 @@ static int64_t djdb_wrap_cache_trim(uintptr_t self, uint32_t cap)
  * 0x14 caches at the top of every createListCache. */
 #define LCC_SANE_CACHES   64
 
-/* The id a single cached list was asked for, or 0 if it is not a playlist's. */
-static uint32_t djdb_cache_playlist(uintptr_t cache, uint32_t *serial)
+/* The source kind of a cached TRACK list (0 for any other cache), its serial,
+ * and -- for a playlist's -- the playlist id, else 0. */
+static uint16_t djdb_cache_kind(uintptr_t cache, uint32_t *serial, uint32_t *id)
 {
     uintptr_t cond, hb, he;
     uint16_t  kind;
-    uint32_t  id;
 
+    *id = 0;
     if (mod_safe_read(cache + LC_CONDITION, &cond, sizeof cond) != 0 || !cond)
         return 0;
     if (mod_safe_read(cond, &hb, sizeof hb) != 0 ||
         hb != ep122_sym(EP122_TRACK_LIST_CONDITION))
         return 0;
-    if (mod_safe_read(cond + TLC_KIND, &kind, sizeof kind) != 0 ||
-        kind != TLC_FROM_PLAYLIST)
+    if (mod_safe_read(cond + TLC_KIND, &kind, sizeof kind) != 0 || !kind)
         return 0;
+    mod_safe_read(cache + LC_SERIAL, serial, sizeof *serial);
+    if (kind != TLC_FROM_PLAYLIST)
+        return kind;
     if (mod_safe_read(cond + TLC_HIER, &hb, sizeof hb) != 0 ||
         mod_safe_read(cond + TLC_HIER_END, &he, sizeof he) != 0)
         return 0;
     if (he <= hb || (he - hb) % HIER_STEP)
-        return 0;
-    if (mod_safe_read(he - HIER_STEP + HIER_STEP_ID, &id, sizeof id) != 0 || !id)
-        return 0;
-    if (serial)
-        mod_safe_read(cache + LC_SERIAL, serial, sizeof *serial);
-    return id;
+        return kind;
+    mod_safe_read(he - HIER_STEP + HIER_STEP_ID, id, sizeof *id);
+    return kind;
 }
 
-/* The newest playlist list-cache, preferring one SOMEONE ELSE STILL HOLDS.
+/* The newest TRACK-LIST cache, preferring one SOMEONE ELSE STILL HOLDS, and the
+ * playlist it was asked for -- 0 when that newest cache is another kind of
+ * list (an album's, an artist's), even if a playlist's is still held beside it.
  *
  * Both halves are the collector's own vocabulary. The serial at +0x28 counts up
  * once per cached list, so the largest is the most recently opened. And the deck
  * purges caches whose use count is 1 -- see ListCacheCollector's own sweep --
  * because a use count of 1 means nobody but the collector is looking at it; the
- * list on screen is by definition held by something else.
+ * list on screen is held by something else. Measured (3.20): walking from a
+ * playlist into an album releases the playlist's cache about 130 ms after the
+ * album's list is on screen, so the newest held one is the honest answer and a
+ * held playlist alone is not.
  *
  * `*held`: the pick is a held one. `verbose`: log every candidate. */
 static uint32_t djdb_scan_caches(int verbose, int *held)
 {
+    static uint32_t told_serial;
     uintptr_t p, end;
     uint32_t  best = 0, best_serial = 0;
+    uint16_t  best_kind = 0;
     int       best_held = 0, seen = 0;
 
     *held = 0;
@@ -606,31 +613,39 @@ static uint32_t djdb_scan_caches(int verbose, int *held)
     for (; p < end; p += 16) {
         uintptr_t cache, ctrl;
         uint32_t  serial = 0, use = 0, id;
+        uint16_t  kind;
         int       is_held;
 
         if (mod_safe_read(p, &cache, sizeof cache) != 0 || !cache)
             continue;
-        id = djdb_cache_playlist(cache, &serial);
-        if (!id)
+        kind = djdb_cache_kind(cache, &serial, &id);
+        if (!kind)
             continue;
         if (mod_safe_read(p + 8, &ctrl, sizeof ctrl) == 0 && ctrl)
             mod_safe_read(ctrl + 8, &use, sizeof use);
         is_held = use > 1;
         seen++;
         if (verbose)
-            MDBG("djdb: cached list #%u is playlist %u, %s (use %u)\n",
-                 (unsigned)serial, (unsigned)id, is_held ? "held" : "loose",
-                 (unsigned)use);
+            MDBG("djdb: cached list #%u kind %u playlist %u, %s (use %u)\n",
+                 (unsigned)serial, (unsigned)kind, (unsigned)id,
+                 is_held ? "held" : "loose", (unsigned)use);
         if (is_held < best_held)
             continue;
         if (is_held > best_held || serial >= best_serial) {
             best = id;
             best_serial = serial;
+            best_kind = kind;
             best_held = is_held;
         }
     }
     if (verbose && !seen)
-        MDBG("djdb: the collector holds no playlist list-cache\n");
+        MDBG("djdb: the collector holds no track-list cache\n");
+    if (best_serial != told_serial) {
+        told_serial = best_serial;
+        MDBG("djdb: newest %s list-cache is #%u, kind %u, playlist %u\n",
+             best_held ? "held" : "loose", (unsigned)best_serial,
+             (unsigned)best_kind, (unsigned)best);
+    }
     *held = best_held;
     return best;
 }
