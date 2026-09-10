@@ -154,6 +154,11 @@ void *cue_controller(const struct cue_event *ev);      /* [deck] */
 /* How many hot-cue pads are down right now. */
 int cue_pads_held(void);                               /* [deck] */
 
+/* Was the deck paused at this event's press, as the deck itself defines paused
+ * (a track loaded, not playing, not in a cue mode)? Read off the pad handler's
+ * own dj_player::PlayerState; 0 when it cannot be read or is not one. */
+int cue_deck_paused(const struct cue_event *ev);                /* [deck] */
+
 /* CueController slots. Each is one thin forwarder to a dj_player::ICueLoopSetter
  * method -- see docs/mods.md and the memory note for the whole map.
  *

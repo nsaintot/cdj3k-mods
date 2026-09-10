@@ -2,9 +2,14 @@
 /*
  * cue/gate.c - GATE CUE: momentary / play-while-press hot cues.
  *
+ * With the deck PAUSED:
  *   - press a hot-cue pad   -> jump to that cue and PLAY while held (stock)
  *   - release the pad       -> return to the cue point and PAUSE (back-cue)
  *   - press PLAY while held -> LATCH; releasing then no longer back-cues
+ *
+ * With the deck PLAYING the pads are the deck's own: a press jumps and keeps
+ * playing, the release does nothing, and PLAY is PLAY. Decided once per
+ * session, on its first pad, from the deck's play state at that moment.
  *
  * Nothing here performs the back-cue: it asks the deck's own release for one by
  * naming an op, and the deck's release task does it. Everything in this file is
@@ -29,8 +34,13 @@
 
 int g_gate_on;                  /* persisted; see mods/common.c */
 
-/* One momentary session. A PLAY press during the hold promoted it to continuous
- * playback, so the release must not back-cue. */
+/* One momentary session: from the first pad down to the last pad up. Armed
+ * when it began with the deck paused; a second pad joins whichever session is
+ * running rather than deciding again. */
+static int gate_g_armed;
+
+/* A PLAY press during the hold promoted it to continuous playback, so the
+ * release must not back-cue. */
 static int gate_g_latched;
 
 /* Pads whose press did anything OTHER than go to a cue that was already there,
@@ -66,10 +76,18 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
             gate_g_had |= 1u << ev->pad;
         else
             gate_g_had &= ~(1u << ev->pad);
-        /* First pad of a session clears the latch; a second pad joins the one
+        /* First pad of a session decides it; a second pad joins the one
          * already running rather than starting a new one. */
-        if (g_gate_on && cue_pads_held() == 1)
+        if (cue_pads_held() == 1) {
+            int armed = g_gate_on && cue_deck_paused(ev);
+
             __atomic_store_n(&gate_g_latched, 0, __ATOMIC_RELAXED);
+            /* RELEASE: PLAY's task may already be running with held == 1. */
+            __atomic_store_n(&gate_g_armed, armed, __ATOMIC_RELEASE);
+            if (g_gate_on)
+                MDBG("gate: pad %d down -> %s\n", ev->pad,
+                     armed ? "gated" : "the deck's own hot cue");
+        }
         break;
 
     case CUE_PAD_PRESSED:
@@ -80,8 +98,10 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
         break;
 
     case CUE_PAD_UP:
-        if (g_gate_on && cue_pads_held() == 0)
+        if (cue_pads_held() == 0) {
             __atomic_store_n(&gate_g_latched, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&gate_g_armed, 0, __ATOMIC_RELAXED);
+        }
         break;
     }
 }
@@ -89,7 +109,7 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
 /* Whether the deck's own release should come back to the cue. */
 static int gate_release_op(const struct cue_event *ev)
 {
-    if (!g_gate_on)
+    if (!g_gate_on || !__atomic_load_n(&gate_g_armed, __ATOMIC_ACQUIRE))
         return 0;
     if (__atomic_load_n(&gate_g_latched, __ATOMIC_ACQUIRE)) {
         MDBG("gate: latched -> keep playing\n");
@@ -123,7 +143,8 @@ static int gate_release_op(const struct cue_event *ev)
 /* Claim the PLAY press: it means "keep going", not play/pause. */
 static int gate_play_while_held(void)
 {
-    if (!g_gate_on || __atomic_load_n(&gate_g_latched, __ATOMIC_ACQUIRE))
+    if (!g_gate_on || !__atomic_load_n(&gate_g_armed, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&gate_g_latched, __ATOMIC_ACQUIRE))
         return 0;
     __atomic_store_n(&gate_g_latched, 1, __ATOMIC_RELAXED);
     MDBG("gate: PLAY during hold -> latched\n");
