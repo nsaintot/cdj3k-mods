@@ -28,11 +28,11 @@ In [MOD SETTINGS](mod-settings.md):
 ## What happens when you load a track
 
 When you load a track, the deck uploads it to the server, which processes it and
-returns the separated parts. For reference, on an M1 Pro with a Balanced setup,
-an eight-minute track typically took **about 25 seconds** to process.
-track plays normally throughout, and the faders become live when the parts
-arrive.
+returns the separated parts. This starts at a track load. For reference,
+on an M1 Pro with a Balanced setup, an eight-minute track typically took **about 25 seconds** to process.
 
+The track plays normally throughout, and the faders become live when the parts
+arrive.
 - **The second deck is free.** Two decks loading the same track cost one
   separation, the second attaches to the job already running.
 - **A track you have played before is quicker.** The separation is cached, see
@@ -101,6 +101,8 @@ The row sits under the waveform: three controls, one per part (**DRUMS**,
 of the row.
 
 ![The STEMS row open with all three at full.](img/stems-row-unity.png)
+
+While stems are loading, a progress bar replaces the faders, showing steps like **UPLOADING**, **SEPARATING**, **PREPARING**, **DOWNLOADING**, and **LOADING**. If stems are already on the stick, only **LOADING** appears.
 
 | | |
 | --- | --- |
