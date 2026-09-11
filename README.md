@@ -6,6 +6,11 @@ A set of modifications for the CDJ-3000, installed as a firmware update. They
 run alongside the deck's own application rather than replacing it, and come off
 from the front panel.
 
+<p align="center">
+  <img src="https://cdj3k-mods.com/img/stems-row-unity.png" width="49%" alt="The STEMS row: drums, harmonics and vocals on three faders over the play screen">
+  <img src="https://cdj3k-mods.com/img/theme-comb.png" width="49%" alt="The play screen in six of the themes, one vertical strip each">
+</p>
+
 Features:
 
 - **Cues** — gate cues (hold to play, release to return), smart cues (last hot cue is cue), and
