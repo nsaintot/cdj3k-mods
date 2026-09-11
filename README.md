@@ -13,8 +13,9 @@ from the front panel.
 
 Features:
 
-- **Cues** — gate cues (hold to play, release to return), smart cues (last hot cue is cue), and
-  preview hot cue to set a hot cue with the preview.
+- **Cues** — gate cues (press a pad while paused: hold to play, release to
+  return), smart cues (last hot cue is cue), and preview hot cue to set a hot
+  cue with the preview.
 - **Stems** — drums, harmonics and vocals on three toggles and three faders.
   Separation runs on a computer on your network via
   [stemd](https://github.com/nsaintot/stemd), not on the deck. Groove circuit

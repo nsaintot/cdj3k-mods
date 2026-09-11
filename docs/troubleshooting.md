@@ -62,6 +62,11 @@ Check in this order:
 **GATE CUE is off.** Turn it on in [MOD SETTINGS](mod-settings.md), or with the
 shortcut on the play screen.
 
+**The deck was playing when you pressed.** Only a pad pressed **while paused**
+gates. Pressed while playing, it is a normal hot cue: the deck jumps and keeps
+playing, and releasing it does nothing. Whether a press gates is decided at
+the press, so pausing during a hold does not turn it into one.
+
 An **empty** pad does not return. Pressing one sets a cue at the play head
 instead of recalling one, so there is nowhere to return to. See
 [hot cues](hot-cues.md).
@@ -86,7 +91,11 @@ In order:
 
 Give it time on the first play of a track: around 25 seconds for an
 eight-minute track on the setup this was measured on. The track plays normally
-while it waits.
+while it waits. With the STEMS row open, the bar under the caption shows where
+the job is. **PREPARING** standing still is normal: the server is writing the
+parts and reports no count for that step, and how long it takes depends on the
+server. A **!** on the row means the job failed; load another track, then this one
+again, to retry.
 
 ## A groove circuit pad is not lit
 
