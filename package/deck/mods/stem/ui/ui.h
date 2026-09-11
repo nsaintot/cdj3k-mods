@@ -175,7 +175,7 @@ extern "C" {
  * FOUR SEGMENTS, and each one is reached:
  *
  *   |  upload  |========  separating  ========|  prepare + fetch  |  load  |
- *   0         20                             80                 95      100
+ *   0         20                             80                 90      100
  *
  * The third segment used to hold the download alone, five points wide, and the sidecar
  * reported that leg as `part index / part count` -- 0 then 50 for a pair, never 100. So
@@ -189,21 +189,13 @@ extern "C" {
  * DJ sees the caption change inside it rather than the bar hand over. */
 #define PROG_BOUND_UPLOAD    20  /* the deck's PCM upload ends here       */
 #define PROG_BOUND_SEPARATE  80  /* the model's own work ends here        */
-/* The two interior splits of the third segment, drawn with no delimiter between them.
- *
- * RECONSTRUCTING and WRITING GET A SPAN EACH RATHER THAN SHARING ONE, and that is the
- * only thing here that is defensive rather than measured. stemd reports a single
- * `fraction` and we do not get to see which question it is answering: read as the
- * whole job's it is already near 1 by the time these run, read as the stage's it
- * restarts at 0 for each. Sharing one span is monotone under the first reading and
- * steps BACKWARDS under the second. A span each is monotone under both -- the worst
- * it can do is put a stage at the top of its own four points and step to the next.
- *
- * They still share a caption, because the boundary between them is stemd's business
- * and not a thing the DJ can act on. See k_stage_name in row.c. */
-#define PROG_BOUND_RECON     84  /* reconstruction ends                   */
-#define PROG_BOUND_WRITE     88  /* the server has the files ready        */
-#define PROG_BOUND_FETCH     95  /* the two stems have landed by here     */
+/* RECONSTRUCTING and WRITING share the third segment with DOWNLOADING; no delimiter
+ * between them. stemd sends no progress count for these two stages: 1% each, the
+ * bar holds at the start of each until the next stage begins. Both use the caption
+ * PREPARING (k_stage_name in row.c). */
+#define PROG_BOUND_RECON     81  /* reconstruction ends                   */
+#define PROG_BOUND_WRITE     82  /* the server has the files ready        */
+#define PROG_BOUND_FETCH     90  /* the two stems have landed by here     */
 #define PROG_BOUND_LIST     { PROG_BOUND_UPLOAD, PROG_BOUND_SEPARATE, PROG_BOUND_FETCH }
 #define N_PROG_BOUND        3    /* one delimiter per SEGMENT boundary    */
 #define PROG_MARK_W         2

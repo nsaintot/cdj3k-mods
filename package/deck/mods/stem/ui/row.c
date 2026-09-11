@@ -273,9 +273,7 @@ static int stems_prog_pos(int stage, int pct, int via_server)
     switch (stage) {
     case STEM_STAGE_UPLOADING:
         return pct * PROG_BOUND_UPLOAD / 100;
-    /* The server's tail, sharing the third segment with the download. A span each,
-     * so the pair stays monotone whichever question stemd's fraction answers -- see
-     * ui.h, which is the only place that reasoning belongs. */
+    /* The server's tail, sharing the third segment with the download. See ui.h. */
     case STEM_STAGE_RECONSTRUCTING:
         return PROG_BOUND_SEPARATE +
                pct * (PROG_BOUND_RECON - PROG_BOUND_SEPARATE) / 100;
@@ -293,8 +291,9 @@ static int stems_prog_pos(int stage, int pct, int via_server)
     case STEM_STAGE_DONE:
         return 100;
     default:
-        /* QUEUED, ANALYZING, SEPARATING: stemd's own fraction, which is where nearly
-         * all of a job's time goes and so gets the widest segment. */
+        /* QUEUED, ANALYZING, SEPARATING share the second segment. Only separating
+         * reports a count; the other two send 0. Most of a job's time is spent here,
+         * hence the widest segment. */
         return PROG_BOUND_UPLOAD +
                pct * (PROG_BOUND_SEPARATE - PROG_BOUND_UPLOAD) / 100;
     }
