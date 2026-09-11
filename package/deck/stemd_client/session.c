@@ -237,10 +237,24 @@ static size_t upload_pull(void *buf, size_t cap, void *user)
 
 /* ---- fetching a stem ------------------------------------------------------ */
 
+/* One stem being downloaded. Its progress runs from `base` to `base + span` percent
+ * of the download stage, computed from bytes written over Content-Length. Without
+ * a Content-Length it stays at `base`. */
 struct stem_out {
-    int      fd;
-    uint64_t written;
+    int      fd;            /* the .part file */
+    uint64_t written;       /* body bytes on disk */
+    int      ctl;           /* the shim socket PROGRESS frames go to */
+    uint64_t expected;      /* Content-Length, or 0 when unknown */
+    int      base, span;    /* this stem's range of the download stage, percent */
+    int      sent;          /* last percent sent; unchanged means no frame */
 };
+
+static void stem_begin(uint64_t len, void *user)
+{
+    struct stem_out *o = user;
+
+    o->expected = (len == HTTP_BODY_LEN_UNKNOWN) ? 0 : len;
+}
 
 static int stem_sink(const void *buf, size_t len, void *user)
 {
@@ -260,6 +274,16 @@ static int stem_sink(const void *buf, size_t len, void *user)
         return -1;
     }
     o->written += len;
+
+    /* drain_body caps at the announced length, so this never passes base + span. */
+    if (o->expected) {
+        int pct = o->base + (int)((o->written * (uint64_t)o->span) / o->expected);
+
+        if (pct != o->sent) {
+            o->sent = pct;
+            send_progress(o->ctl, STEM_STAGE_FETCHING, pct);
+        }
+    }
     return 0;
 }
 
@@ -311,10 +335,11 @@ static const char *out_format_name(uint32_t f)
     }
 }
 
-/* GET one stem into tmpfs and tell the shim where it is. */
+/* GET one stem into tmpfs and tell the shim where it is. `base`/`span`: see
+ * struct stem_out. */
 static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
                       const char *name, uint32_t rate, uint32_t frames,
-                      uint32_t format, float gain)
+                      uint32_t format, float gain, int base, int span)
 {
     char path[192], part[200], url[192];
     unsigned char hdr[44];
@@ -350,8 +375,12 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
     snprintf(part, sizeof(part), "%s.part", path);
     snprintf(url, sizeof(url), "/v1/jobs/%s/stems/%s", job_id, name);
 
+    memset(&out, 0, sizeof(out));
     out.fd = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    out.written = 0;
+    out.ctl = fd;
+    out.base = base;
+    out.span = span;
+    out.sent = -1;
     if (out.fd < 0) {
         SERR("cannot create %s: %s\n",
                 part, strerror(errno));
@@ -375,6 +404,7 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
     memset(&req, 0, sizeof(req));
     req.method = "GET";
     req.path = url;
+    req.begin = stem_begin;
     req.push = stem_sink;
     req.push_user = &out;
     status = http_perform(srv, &req);
@@ -505,11 +535,25 @@ static int await_job(int fd, const struct stem_server *srv, const char *job_id,
             return -1;
         }
 
-        memset(&prog, 0, sizeof(prog));
-        prog.stage = (uint32_t)stage;
-        prog.percent = (uint32_t)(json_num(final_doc->data, "fraction", 0.0)
-                                  * 100.0);
-        prog.queue_position = (uint32_t)json_num(final_doc->data, "completed", 0);
+        /* Progress of the current stage only: `completed` / `total`. `fraction` is
+         * the whole job and is not used. Stages without a count (analysing,
+         * reconstructing, writing) send 0. While QUEUED, `completed` is the queue
+         * position. */
+        {
+            double completed = json_num(final_doc->data, "completed", 0);
+            double total = json_num(final_doc->data, "total", 0);
+            int pct = 0;
+
+            if (stage != STEM_STAGE_QUEUED && total > 0 && completed > 0)
+                pct = (int)(completed * 100.0 / total);
+            if (pct > 100)
+                pct = 100;
+
+            memset(&prog, 0, sizeof(prog));
+            prog.stage = (uint32_t)stage;
+            prog.percent = (uint32_t)pct;
+            prog.queue_position = (uint32_t)completed;
+        }
         send_frame(fd, STEM_MSG_PROGRESS, &prog, sizeof(prog));
 
         if (stage == STEM_STAGE_DONE)
@@ -798,24 +842,24 @@ void session_run(int fd)
                  * here is a bar that steps BACKWARDS when the server hands over,
                  * because it is answering a different question than the stage before it.
                  *
-                 * BOTH ENDS OF EACH STEM, which is what was missing: reporting only
-                 * `i / n` before each pull sends 0 and 50 for a pair and stops. The leg
-                 * ends at half its own length for ever, so the deck's third segment was
-                 * left part-filled and the next thing drawn was the local decode at the
-                 * start of the fourth -- a segment the bar visibly never crossed. */
+                 * Each stem gets an equal range of the download stage and reports
+                 * bytes as they arrive (struct stem_out). The range's start is sent
+                 * before each download; 100 only once every stem is on disk, since a
+                 * failed download has already reported FAILED. */
                 for (i = 0; i < n; i++) {
-                    send_progress(fd, STEM_STAGE_FETCHING, (i * 100) / n);
+                    const int base = (i * 100) / n;
+                    const int span = ((i + 1) * 100) / n - base;
+
+                    send_progress(fd, STEM_STAGE_FETCHING, base);
                     if (fetch_stem(fd, &srv, job_id, k_part[i], rate, job_frames,
                                    job_format,
-                                   stem_gain(doc.data, k_part[i])) != 0) {
+                                   stem_gain(doc.data, k_part[i]),
+                                   base, span) != 0) {
                         report_failed(fd, 0);
                         break;
                     }
                     got = i + 1;
                 }
-                /* Only a COMPLETE fetch closes the leg. A pull that died half way has
-                 * already reported failed, and following it with a full bar would be
-                 * the last thing the DJ saw before the row went grey. */
                 if (got == n)
                     send_progress(fd, STEM_STAGE_FETCHING, 100);
             }

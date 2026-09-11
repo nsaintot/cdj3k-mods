@@ -376,6 +376,9 @@ int http_perform(const struct stem_server *srv, const struct http_request *req)
 
     /* Chunked wins if both are present, per RFC 7230. A 204 or a HEAD-like
      * empty response has neither and no body to read. */
+    if (req->begin)
+        req->begin(!chunked && have_len ? body_len : HTTP_BODY_LEN_UNKNOWN,
+                   req->push_user);
     if (chunked) {
         if (drain_chunked(&c, req->push, req->push_user) != 0)
             status = -1;

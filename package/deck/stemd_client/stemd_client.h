@@ -115,6 +115,11 @@ typedef size_t (*http_body_pull_fn)(void *buf, size_t cap, void *user);
 /* A streamed response body: `push` receives each chunk as it arrives. */
 typedef int (*http_body_push_fn)(const void *buf, size_t len, void *user);
 
+/* The response body's size, called once before the first push. HTTP_BODY_LEN_UNKNOWN
+ * when the headers do not say (chunked, or read to EOF). */
+#define HTTP_BODY_LEN_UNKNOWN ((uint64_t)-1)
+typedef void (*http_body_begin_fn)(uint64_t len, void *user);
+
 struct http_request {
     const char *method;
     const char *path;             /* including any query string */
@@ -122,8 +127,9 @@ struct http_request {
     uint64_t    content_length;   /* exact, so no chunked encoding is needed */
     http_body_pull_fn pull;
     void       *pull_user;
+    http_body_begin_fn begin;     /* NULL when the size is of no interest */
     http_body_push_fn push;       /* NULL to discard the response body */
-    void       *push_user;
+    void       *push_user;        /* handed to both begin and push */
 };
 
 /* Perform one request. Returns the HTTP status, or -1 on a transport failure. */

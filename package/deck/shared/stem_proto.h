@@ -183,11 +183,10 @@ enum stem_stage {
 
 struct stem_progress {
     uint32_t stage;              /* enum stem_stage */
-    /* 0..100 WITHIN THE SENDER'S OWN LEG: the separation's own fraction while the
-     * server has the job, the download's own count while this end is pulling the two
-     * stems. Weighting those onto one bar is the DECK's, because the division of the
-     * bar is the deck's -- a leg that reports a position on that bar instead makes it
-     * step backwards at the handover. */
+    /* 0..100 of the current stage only: the server's completed/total for that stage
+     * (0 when it reports none), or bytes downloaded over Content-Length while
+     * fetching. Never the whole job's fraction and never a bar position: the deck
+     * maps stages onto the bar. */
     uint32_t percent;
     uint32_t queue_position;     /* jobs ahead of us; meaningful when QUEUED */
     uint32_t reserved;
