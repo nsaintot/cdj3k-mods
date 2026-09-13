@@ -145,15 +145,19 @@ static void menu_listnav(void *listref, void *modelref, long delta)
 static void mod_selchanged(void *self, int row)
 {
     int target;
+    int settling = menu_g_mod_mode && !menu_g_bouncing && menu_g_view && menu_row(row);
 
-    ((selchanged_t)menu_g_orig_selchanged)(self, row);
-    if (!menu_g_mod_mode || menu_g_bouncing || !menu_g_view) return;
-
-    if (menu_row(row)) {               /* a real settings row: it now owns the right pane */
-        const struct kit_row *r;
+    if (settling) {
         if (row != menu_g_setting_row) menu_kbd_close();   /* the previous row's editor, if any */
         menu_g_setting_row = row;
-        r = menu_row(row);
+    }
+
+    ((selchanged_t)menu_g_orig_selchanged)(self, row);
+
+    if (!menu_g_mod_mode || menu_g_bouncing || !menu_g_view) return;
+
+    if (settling) {
+        const struct kit_row *r = menu_row(row);
         if (r->text) menu_kbd_open(r);
         return;
     }
