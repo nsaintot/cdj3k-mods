@@ -2,42 +2,40 @@
 /*
  * theme.c - the setFill choke point, and install.
  *
- * Why not the obvious routes
- * --------------------------
- * JUCE's LookAndFeel is not the lever here: the app subclasses it only for
- * table headers and one slider, so LookAndFeel::setColour would leave the deck
- * and utility screens untouched. The real skin is Pioneer's own -- layout rows
- * in skin16/layout named `kind_#rrggbb_id`, where the SAME name string is also a
- * literal in .rodata and the lookup is an exact match on the full name, hex
- * included. Patching it works (verified live), but it needs BOTH sides changed
- * in lockstep, the CSVs live on the ramdisk, and the colour is resolved at
- * widget construction -- so it costs an app restart. Not a hot swap.
+ * Alternatives not used
+ * ----------------------
+ * JUCE's LookAndFeel: the app subclasses it only for table headers and one
+ * slider, so LookAndFeel::setColour would miss the deck and utility screens.
+ * The stock skin: layout rows in skin16/layout are named `kind_#rrggbb_id`, the
+ * same string is a literal in .rodata, and the lookup matches the full name, hex
+ * included. Patching works but needs both sides changed in
+ * lockstep, the CSVs live on the ramdisk, and colours are resolved at widget
+ * construction, so it needs an app restart.
  *
  * Mechanism
  * ---------
- * Every colour the UI ever paints -- rect fills, paths, and text glyphs alike --
- * funnels through one pure-virtual choke point:
+ * Every colour the UI paints (rect fills, paths and text glyphs) goes through
+ * one pure-virtual choke point:
  *
  *     juce::LowLevelGraphicsContext::setFill (const FillType&)
  *
  * The app renders with juce::LowLevelGraphicsSoftwareRenderer, where setFill is
- * virtual index 18. Repointing that one slot recolours the entire interface on
- * the next repaint -- which is what makes switching themes live.
+ * virtual index 18. Repointing that slot recolours the whole interface on the
+ * next repaint, so themes switch live.
  *
- * juce::FillType (JUCE 5.3.2, layout confirmed against the stock setFill):
+ * juce::FillType (JUCE 5.3.2):
  *     +0x00  Colour colour        (uint32 ARGB)   <- all we touch
  *     +0x08  unique_ptr<ColourGradient> gradient
  *     +0x10  Image image
  *     +0x18  AffineTransform transform (6 floats)
  *     sizeof == 0x30
- * setFill deep-copies the gradient and ref-counts the image out of the object it
- * is handed, and never takes ownership of it, so we can pass a byte-copy on the
- * stack. That keeps us from writing through the caller's `const FillType&`,
- * which may legitimately live in read-only memory.
+ * setFill deep-copies the gradient and ref-counts the image without taking
+ * ownership of the object, so we pass a byte-copy on the stack instead of writing
+ * through the caller's `const FillType&`, which may live in read-only memory.
  *
  * Images go through image.c: blitted sprites and the waveform via drawImage, and
- * tiled textures via the Image carried inside the FillType itself. Gradients are
- * not handled -- they keep their colours inside the ColourGradient object.
+ * tiled textures via the Image carried inside the FillType. Gradient stops are
+ * mapped into a private copy of the ColourGradient (see wrap_setfill).
  */
 #include "theme/theme.h"
 #include "stem/stem.h"
@@ -48,7 +46,7 @@
 #define FILLTYPE_GRAD_OFF  0x08u   /* unique_ptr<ColourGradient> inside FillType */
 #define FILLTYPE_IMAGE_OFF 0x10u   /* juce::Image (a bare Ptr) inside FillType */
 
-/* juce::ColourGradient (5.3.2), read off the running deck rather than assumed:
+/* juce::ColourGradient (5.3.2):
  *     +0x00  Point<float> point1
  *     +0x08  Point<float> point2
  *     +0x10  bool isRadial
@@ -57,55 +55,44 @@
  *     +0x28  int numUsed
  *     ColourPoint { double position; Colour colour; }   == 16 bytes, colour at +8
  *
- * numUsed is at +0x28, NOT the +0x24 that counting the fields suggests: Array holds
- * ArrayAllocationBase by value and that struct pads out to 16 bytes, so Array's own
- * numUsed starts a full 16 in. The wrong offset reads the padding and yields 0 -- a
- * gradient with three visible stops reporting none is what caught it. */
+ * numUsed is at +0x28, not the +0x24 that counting fields suggests: Array holds
+ * ArrayAllocationBase by value, padded to 16 bytes. +0x24 reads the padding (0). */
 #define GRAD_ELEMS_OFF     0x18u
 #define GRAD_NUMALLOC_OFF  0x20u
 #define GRAD_NUMUSED_OFF   0x28u
 #define GRAD_POINT_SIZE    16u
 #define GRAD_POINT_COLOUR  8u
-/* Stops are stashed on the stack to be put back. Three is what the waveform uses and
- * JUCE gradients are small by nature; a gradient with more than this is left alone
- * rather than half-transformed. */
+/* Capacity of the private stop array. The waveform uses three; a gradient with more
+ * than this is left untouched. */
 #define GRAD_MAX_STOPS     16
 
 typedef void (*setfill_t)(void *ctx, const void *fill);
 
 static uintptr_t g_orig_setfill;
 
-/* Gradient accounting: how many fills carried one, how many looked like a ColourGradient,
- * how many we actually substituted. seen>0 with sub==0 says the validation is throwing
- * them out; sub>0 with no visible change says the substitution is not what paints them. */
+/* Gradient counters: fills carrying one, those that validated as a ColourGradient, and
+ * those substituted. seen>0 with sub==0 means validation rejects them. */
 static unsigned g_grad_seen, g_grad_ok, g_grad_sub;
 
-/* ---- who paints the overview ----
+/* ---- who paints the overview (debug) ----
  *
- * Counts fills per DRAWING FUNCTION. The strip is hundreds of columns painted in one
- * burst, so its painter sits far above the handful of fills a button or a row costs.
+ * Counts fills per drawing function. The strip is hundreds of columns painted in one
+ * burst, so its painter stands out from the few fills a button or row costs.
  *
- * The depth is the whole trick, and getting it wrong is what wasted the first attempt.
- * A watchpoint on the strip's own framebuffer bytes caught the real call shape:
+ * Call shape:
  *
  *     WidgetBase::paint -> <the widget's draw> -> Graphics::fillRect -> context fillRect
  *
- * so from this wrapper: depth 0 is inside juce::Graphics::fillRect, depth 1 is the
- * widget's draw, depth 2 is WidgetBase::paint. Depth 2 is shared by EVERY widget in the
- * app, so attributing there collapsed all of them into one bucket and guaranteed that no
- * individual painter could stand out -- which is exactly what happened, and it read as
- * "nothing paints the strip" rather than as a broken measurement. Depth 1 or nothing. */
+ * From this wrapper, depth 0 is inside juce::Graphics::fillRect, depth 1 the widget's
+ * draw, depth 2 WidgetBase::paint. Use depth 1: depth 2 is shared by every widget. */
 static uintptr_t g_orig_fillrect, g_orig_fillrectf, g_orig_fillrectlist, g_orig_fillpath;
 
 /* One step up the AArch64 frame chain per level: x29 holds the caller's frame pointer and
- * the return address sits beside it. Checked for alignment and range at every hop -- a
- * bad chain here would fault inside the app's paint, not just spoil a log line.
+ * the return address sits beside it. Alignment and range are checked at every hop, since
+ * a bad chain would fault inside the app's paint.
  *
- * ALWAYS INLINE, and called from the wrapper rather than from census(): the depth is
- * measured from whatever frame this expands into, so a helper that the compiler chooses
- * to keep as a real function silently shifts every level by one. That is not theoretical
- * -- factoring the counting into census() did exactly that and moved the whole census one
- * frame down onto the juce::Graphics helpers, which look plausible and are useless. */
+ * Always inline, and called from the wrapper, not from census(): depth is measured from
+ * the frame this expands into, so an extra real call frame shifts every level by one. */
 static inline __attribute__((always_inline)) uintptr_t frame_lr(int depth)
 {
     uintptr_t fp = (uintptr_t)__builtin_frame_address(0);
@@ -128,10 +115,9 @@ static void census(int tag, uintptr_t lr)
 {
     int i;
 
-    /* EP122 only. Our own stem-row checkerboard is hundreds of fills in one go and kept
-     * tripping the trigger, zeroing the window each time. mod_drawing() does not cover it
-     * (that bracket spans only setColour), so the test is the address: the app is non-PIE
-     * at 0x400000 and the shim is mapped up at 0xffff......... */
+    /* EP122 callers only, by address: the app is non-PIE at 0x400000 and the shim is mapped
+     * at 0xffff.... This excludes our own stem-row checkerboard (hundreds of fills), which
+     * mod_drawing() does not cover since that bracket spans only setColour. */
     if (lr < 0x400000u || lr > 0x3000000u) return;
 
     for (i = 0; i < g_who_n; i++)
@@ -143,12 +129,9 @@ static void census(int tag, uintptr_t lr)
     if (i >= g_who_n) return;
     g_who[i].n++;
 
-    /* CUMULATIVE, and never reset. The burst-triggered version clipped every painter at
-     * the trigger threshold: with several widgets each drawing ~150 fills, the first to
-     * reach it zeroed the window, so a painter doing 400 or 1200 in one pass was
-     * indistinguishable from one doing 150. Totals over time separate them by an order of
-     * magnitude instead -- and a per-column strip repainted on every track load pulls
-     * away from a button that fills once. */
+    /* Cumulative, never reset. A reset on a burst threshold clips every painter at that
+     * threshold; totals over time separate a per-column strip from a button that fills
+     * once. */
     if (((++g_who_burst) & 0x1fff) == 0) {
         int j;
 
@@ -183,32 +166,25 @@ static void wrap_fillpath(void *ctx, const void *p, const void *xf)
 
 static void wrap_setfill(void *ctx, const void *fill)
 {
-    /* A FillType can carry an IMAGE as well as a colour -- that is how the tiled
-     * textures are painted (the beat-loop pads and friends; cf. meow::TiledImageCache).
-     * Those pixels never reach drawImage, so remapping FillType::colour alone left the
-     * pads stubbornly dark. Sync it here instead. Gated on the pointer being non-null,
-     * which almost every fill is, so the table lookup stays off the hot path; and
-     * theme_sync_image itself returns immediately until a pixel theme has been on.
+    /* A FillType can carry an image as well as a colour: tiled textures such as the
+     * beat-loop pads are painted that way (cf. meow::TiledImageCache) and never reach
+     * drawImage. Most fills have a null image, so the table lookup stays off the hot
+     * path, and theme_sync_image returns immediately until a pixel theme has been on.
      *
-     * _deferred, because a FillType is not consumed here: setFill only ARMS the context,
-     * and the pixels are read by the fillRect/fillPath that follows. Nothing this hook
-     * does can be undone before then, so an image arriving on this path has to be left
-     * recoloured -- which is the difference between this and drawImage, and the reason
-     * the deck's extended overview (baked once per track, blitted as a FillType) was the
-     * one waveform surface no amount of work on the drawImage side could reach. */
+     * _deferred, because setFill only arms the context and the pixels are read by the
+     * following fillRect/fillPath, so the recolour must persist. The extended overview
+     * (baked once per track, blitted as a FillType) is themed through this path. */
     if (fill != NULL && *(void *const *)((const uint8_t *)fill + FILLTYPE_IMAGE_OFF))
         theme_sync_image_deferred((const uint8_t *)fill + FILLTYPE_IMAGE_OFF);
 
-    /* Borrow this hook as the audio side's heartbeat. stem/audio.c may only
-     * print from the message thread -- MDBG can block on a journald-drained stderr,
-     * and doing that on the audio or loader thread stalls track loading -- but the
-     * obvious message-thread hook (the waveform title bar's paint) barely repaints
-     * during playback, so the counters were never being drained. Every repaint comes
-     * through setFill, so this is the one place guaranteed to tick.
+    /* Also the message-thread heartbeat for the stem reports. stem/audio.c may only
+     * print from the message thread (MDBG can block on a journald-drained stderr, which
+     * stalls track loading on the audio or loader thread), and every repaint comes
+     * through setFill.
      *
-     * Gated on a plain counter first: setFill runs thousands of times per frame and
-     * mod_stem_audio_report() starts with an isb+mrs, which is not something to put
-     * in that loop unthrottled. The report throttles again on its own 3 s window. */
+     * Throttled by a plain counter: setFill runs thousands of times per frame and
+     * mod_stem_audio_report() starts with an isb+mrs. The report also throttles itself
+     * to a 3 s window. */
     {
         static unsigned tick;
         if (((++tick) & 0x3ff) == 0) {
@@ -217,9 +193,9 @@ static void wrap_setfill(void *ctx, const void *fill)
             mod_stem_audio_report();
             mod_stem_decode_report();
             theme_memo_report();
-            /* Cheap enough to sit here: eight word compares per table, and nothing
-             * written unless one has gone stock. This is what carries a theme switch
-             * and anything that rebuilds a table outside a waveform reply. */
+            /* Eight word compares per table, no writes unless one has gone stock.
+             * Applies theme switches and catches table rebuilds outside a waveform
+             * reply. */
             theme_wave_apply();
         }
     }
@@ -227,15 +203,11 @@ static void wrap_setfill(void *ctx, const void *fill)
     {
         const struct theme_palette *pal = mod_theme()->palette;
 
-        /* Our own controls are already painted in theme-correct colours -- they asked
-         * mod_ui() for a role, which resolved through this same palette once. Running
-         * them through it again here is not a near-miss, it is the transform applied
-         * twice: an inverted lightness inverts back, a duotone tints a tint. So the draw
-         * kit brackets its calls and we chain straight through.
-         *
-         * Cheap and leak-proof by construction rather than by discipline: the flag only
-         * ever spans one synchronous call into juce (see mod_draw_enter), so there is no
-         * path where it is left set with the app's own painting still to come. */
+        /* Our own controls already use themed colours (mod_ui() roles resolved through
+         * this palette), so mapping them again would apply the transform twice. The draw
+         * kit brackets its calls and we chain straight through. The flag spans only one
+         * synchronous call into juce (see mod_draw_enter), so it cannot leak into the
+         * app's painting. */
         if (mod_drawing()) {
             ((setfill_t)g_orig_setfill)(ctx, fill);
             return;
@@ -253,32 +225,23 @@ static void wrap_setfill(void *ctx, const void *fill)
 
         /* ---- gradients ----
          *
-         * A gradient fill IGNORES FillType::colour and takes its pixels from the stops
-         * inside the ColourGradient, so mapping the colour above does nothing for one.
-         * That was the whole of the BLUE/RGB overview waveform never theming: the deck
-         * draws it as ~1200 per-column gradient fills (measured -- switching WAVEFORM
-         * COLOR to RGB costs +1200 gradient setFills, to 3BAND +1), while 3BAND ships a
-         * prebaked image through drawImage and so themed correctly all along. Same
-         * widget slot, two entirely different routes.
+         * A gradient fill ignores FillType::colour and takes its pixels from the stops in
+         * the ColourGradient. The BLUE/RGB overview waveform is drawn as ~1200 per-column
+         * gradient fills; 3BAND uses a prebaked image through drawImage.
          *
-         * The byte-copy above does not help by itself: it copies the POINTER, so `copy`
-         * still refers to the caller's ColourGradient.
+         * The byte-copy above copies only the pointer, so `copy` still refers to the
+         * caller's ColourGradient.
          *
-         * We do NOT write into that object. The first attempt did -- transform the stops
-         * in place, let setFill copy, put the originals back -- and it took the deck down
-         * with a SIGSEGV. That approach needs two things to hold for EVERY gradient the
-         * app ever sets, not just the waveform's: that these offsets describe it, and
-         * that setFill has finished with it by the time we restore. Neither was proven,
-         * and the cost of being wrong is a write into somebody else's heap.
+         * Do not write into that object: transforming the stops in place and restoring
+         * them afterwards crashes the deck (SIGSEGV), since it relies on these offsets
+         * and on setFill's timing for every gradient the app sets.
          *
-         * So build our own gradient instead and point the copy at it. Reads of the app's
-         * object stay reads; every write lands in our own buffer. If anything about the
-         * object fails to look like a ColourGradient we simply leave the pointer alone
-         * and the fill goes through untouched -- unthemed, which is what it already was.
+         * Instead we build our own gradient and point the copy at it; the app's object is
+         * only read. Anything that does not validate as a ColourGradient goes through
+         * unthemed.
          *
-         * Safe to hand over a static: setFill copies what it is given (the whole file
-         * depends on that already -- `copy` is a stack temporary too), and painting is
-         * the message thread's alone. */
+         * A static is safe: setFill copies what it is given (as `copy` already relies
+         * on), and painting is message-thread only. */
         {
             const uint8_t *gr = *(const uint8_t *const *)
                                     ((const uint8_t *)fill + FILLTYPE_GRAD_OFF);
@@ -289,11 +252,9 @@ static void wrap_setfill(void *ctx, const void *fill)
                 int nused  = *(const int *)(gr + GRAD_NUMUSED_OFF);
                 int nalloc = *(const int *)(gr + GRAD_NUMALLOC_OFF);
 
-                /* Does this actually look like a ColourGradient? The positions are the
-                 * strong test and the reason it is worth doing: a real gradient's stops
-                 * run 0..1 and never go backwards, and arbitrary memory read as doubles
-                 * almost never does that. The counts alone would not have caught a
-                 * wrong-layout object; a monotonic 0..1 double sequence is hard to fake. */
+                /* Validate as a ColourGradient. The counts alone would not catch a
+                 * wrong-layout object; the strong test is that stop positions are
+                 * doubles running 0..1 without going backwards. */
                 int ok = el != NULL && nused >= 2 && nused <= GRAD_MAX_STOPS &&
                          nalloc >= nused;
 
@@ -319,17 +280,14 @@ static void wrap_setfill(void *ctx, const void *fill)
                                                    GRAD_POINT_COLOUR);
                         *c = theme_palette_argb(pal, *c, 1);
                     }
-                    /* Our own array, and numAllocated must describe IT rather than the
-                     * larger block the app may have reserved -- a copy sized from a
-                     * capacity we do not own would read off the end of `stops`. */
+                    /* numAllocated must describe our array, not the app's capacity,
+                     * or a copy would read past the end of `stops`. */
                     *(uint8_t **)(mine + GRAD_ELEMS_OFF)  = stops;
                     *(int *)(mine + GRAD_NUMALLOC_OFF)    = nused;
                     *(int *)(mine + GRAD_NUMUSED_OFF)     = nused;
                     *(const uint8_t **)(copy + FILLTYPE_GRAD_OFF) = mine;
-                    /* Who is drawing these? The substitution provably happens and provably
-                     * changes nothing on screen, so the next question is what these 1200
-                     * fills actually are. EP122 is non-PIE at 0x400000, so a return
-                     * address is directly usable against the binary. */
+                    /* Log the caller of the first few substitutions. EP122 is non-PIE
+                     * at 0x400000, so the return address maps directly to the binary. */
                     if (g_grad_sub < 3)
                         MDBG("theme: grad sub#%u from %p, stop0 %08x\n", g_grad_sub,
                              __builtin_return_address(0),
@@ -347,10 +305,9 @@ static void wrap_setfill(void *ctx, const void *fill)
 /* Install                                                            */
 /* ================================================================== */
 
-/* The MOD SETTINGS row. Its values ARE the registry -- filled from it at install
- * rather than written out again -- so adding a theme in presets.c puts it in the
- * menu with nothing to change here. `state` is an index into k_mod_themes, and a
- * theme is resolved at draw time, so switching needs no notification. */
+/* The MOD SETTINGS row. Its values are filled from the registry at install, so a
+ * theme added in presets.c appears in the menu automatically. `state` is an index into
+ * k_mod_themes, resolved at draw time, so switching needs no notification. */
 static const char *k_theme_values[MOD_THEME_MAX];
 
 static const struct kit_row k_rows[] = {
@@ -368,9 +325,7 @@ static int theme_install(void)
         return -1;
     }
 
-    /* Diagnostic, and deliberately not fatal: it names the code that paints the overview
-     * strip. Nothing else depends on it. */
-    /* Diagnostic, deliberately not fatal: names the code that paints the overview strip. */
+    /* Diagnostic, not fatal: names the code that paints the overview strip. */
     if (MLOG_AT(MOD_LOG_DEBUG)) {
         mod_patch_vslot("fillRect", EP122_GFX_RENDERER, THEME_SLOT_FILLRECT,
                         (void *)wrap_fillrect, &g_orig_fillrect);
@@ -382,8 +337,7 @@ static int theme_install(void)
                         (void *)wrap_fillpath, &g_orig_fillpath);
     }
 
-    /* Images are a bonus: without them the vector chrome still re-themes, so a
-     * failure there degrades rather than disables. */
+    /* Not fatal: without image hooks the vector chrome still re-themes. */
     images = theme_image_install() == 0;
 
     for (i = 0; i < MOD_THEME_MAX; i++)

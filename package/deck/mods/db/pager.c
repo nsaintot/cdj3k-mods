@@ -2,12 +2,12 @@
 /*
  * mods/db/pager.c - the page store underneath the media library's tables.
  *
- * djdb's table API refuses every write on this firmware (djdb.c says why), but
- * every row still passes through here: DeviceSQL holds export.pdb as fixed-size
- * pages and moves them with exactly two calls.
+ * Every row passes through here: DeviceSQL holds export.pdb as fixed-size pages
+ * and moves them with exactly two calls. (djdb's table API refuses writes from
+ * a thread without a context; see djdb.c.)
  *
- *   read (self, buf, index, &eof)   0x1c79270
- *   write(self, buf, index)         0x1c79110
+ *   read (self, buf, index, &eof)   EP122_DJDB_PAGE_READ
+ *   write(self, buf, index)         EP122_DJDB_PAGE_WRITE
  *
  * Both compute the file offset as `index * *(self + 0x10)` -- the page size --
  * seek the handle at `*(self + 0x00)` and move that many bytes, returning true
@@ -15,20 +15,19 @@
  * comes from `*(self + 0x18)` when that is set, and it goes to a second handle
  * at `*(self + 0x08)` when that is set.
  *
- * Neither is called directly. Both are installed as entries 1 and 2 of a
- * six-function storage backend built at 0x1c79300, which is why a caller search
- * finds nothing.
+ * Neither is called directly: both are entries 1 and 2 of a six-function
+ * storage backend and are reached only through it.
  *
- * OBSERVATION ONLY. This answers three questions and changes no byte:
+ * Observation only; no byte is changed. It logs:
  *
  *   - which page holds a row we can already identify,
- *   - whether the buffer a page is READ into is the buffer it is WRITTEN from,
- *     i.e. whether there is a page cache to change or only a scratch buffer,
- *   - which pages the deck writes at eject, since a page it does not write is
- *     a page a change would not reach the media through.
+ *   - whether a page is written from the buffer it was read into (a page
+ *     cache) or from a scratch buffer,
+ *   - which pages the deck writes at eject; a change to any other page would
+ *     not reach the media.
  *
- * Threading: the deck's database thread is the only caller of either op, which
- * is what lets the scratch buffer below be static.
+ * Threading: only the deck's database thread calls either op, so the scratch
+ * buffer below can be static.
  */
 #include "db/db.h"
 
@@ -38,8 +37,7 @@
 
 /* ---- the buffer pool above it ---------------------------------------------
  *
- * DBService.cpp registers three services per database, and the middle one is
- * the whole reason this file exists:
+ * DBService.cpp registers three services per database:
  *
  *   PGA:SINGLE   the page adaptor -- the two ops above, "ONEFD=T"
  *   PGM:PGM      the page manager -- "INIT_CLOSED=T,PGA=SINGLE,PAGESZ=4096,
@@ -47,7 +45,7 @@
  *   SM:DEFAULT   the storage manager over both
  *
  * So the deck holds the media library in memory as pages, and every row the
- * browser draws is read out of one of those buffers. The pool is walkable:
+ * browser draws is read from one of those buffers. The pool layout:
  *
  *   pgm = *(*handle + 0x138)      the manager
  *   pgm + 0x58                    the buffer table
@@ -57,14 +55,12 @@
  *   desc + 0x08                   the page's 4096 raw bytes
  *   page + 0x04                   which page index it is holding
  *
- * A page is written when it is on the manager's MODIFIED LIST, not merely
- * because its bytes changed: PageMarkDirty (0x1c63b20, and the plain variant
- * 0x1c625b0 -- both name themselves in their own assertion string) sets flag 2,
- * registers the page index, sets `pgm + 0x1c`, and stamps the transaction at
- * `page + 0x10`. When `*(int16 *)(pgm + 0x20)` is set it does not defer at all
- * and writes the page there and then.
- *
- * That is the fact a write mod turns on, which is why both are watched here.
+ * A page is written only if it is on the manager's modified list, not merely
+ * because its bytes changed. PageMarkDirty (EP122_DJDB_MARK_DIRTY, and the plain
+ * variant EP122_DJDB_MARK_DIRTY_PLAIN) sets flag 2, registers
+ * the page index, sets `pgm + 0x1c`, and stamps the transaction at
+ * `page + 0x10`. When `*(int16 *)(pgm + 0x20)` is set it writes the page
+ * immediately instead of deferring. Both variants are hooked below.
  */
 
 /* The backend object, as both ops index it. */
@@ -73,7 +69,7 @@
 #define PG_PAGESZ_OFF     0x10
 #define PG_HDRSZ_OFF      0x18
 
-/* A file handle: { int fd; int64 pos at +0x08 }, from the seek at 0x1c7deb0. */
+/* A file handle: { int fd; int64 pos at +0x08 }. */
 #define PG_FD_OFF         0x00
 
 /* The page manager, reached from a handle PageMarkDirty was called with. */
@@ -85,20 +81,18 @@
 #define PG_DESC_PAGE      0x08
 #define PG_PAGE_INDEX     0x04
 
-/* A page longer than this is a misread object rather than a page, and copying
- * it would be reading arbitrary memory. */
+/* A larger page size means a misread object; do not copy it. */
 #define PG_PAGE_MAX       0x2000
 
-/* How many distinct page indices to keep, and how much to say about them. A
- * browse touches far more pages than anyone reads log lines. */
+/* How many distinct page indices to track, and log limits. A browse touches
+ * many pages. */
 #define PG_SEEN_MAX       64
 #define PG_QUIET_AFTER    40           /* plain reads logged before going quiet */
 #define PG_DUMPS_MAX      12           /* row dumps, which are several lines each */
 
-/* Rows we can already name. Content id 7 is the track at 126.00, id 8 at
- * 120.00, id 11 at 125.00 -- settled read-only against the library on the
- * attached stick, so a tempo found here identifies both the page and the row
- * without parsing the format. */
+/* Tempos (x100) of known rows: content id 7 at 126.00, id 8 at 120.00, id 11
+ * at 125.00. A tempo found in a page identifies the page and the row without
+ * parsing the format. */
 static const int32_t k_pg_needle[] = { 12600, 12000, 12500 };
 #define PG_NEEDLES  ((int)(sizeof(k_pg_needle) / sizeof(k_pg_needle[0])))
 
@@ -114,14 +108,13 @@ static int  pg_g_nseen;
 static int  pg_g_logged, pg_g_dumped;
 static uintptr_t pg_g_tramp_read, pg_g_tramp_write;
 
-/* A live page-manager handle, kept from whichever PageMarkDirty variant fires.
- * Nothing here calls one; it is reported because a write mod would need it and
- * an idle thread has no other way to reach one. */
+/* A live page-manager handle, kept from the hooked calls. Not used here; it is
+ * logged because a write mod would need it and an idle thread cannot reach
+ * one otherwise. */
 static uintptr_t pg_g_handle;
 
-/* One page, copied out for scanning. Static because only one thread is ever in
- * either op, and because 8 KiB is more than the deck's database thread wants on
- * its stack. */
+/* One page, copied out for scanning. Static because only one thread enters
+ * either op, and 8 KiB is too much for the database thread's stack. */
 static uint8_t pg_g_scratch[PG_PAGE_MAX];
 
 typedef int64_t (*pg_read_fn)(uintptr_t self, void *buf, uint64_t index,
@@ -179,8 +172,8 @@ static struct pg_seen *pg_slot(uint64_t index)
     return &pg_g[pg_g_nseen++];
 }
 
-/* The words around a hit, which is what says where the id sits relative to the
- * tempo and how wide each field is. */
+/* Log the words around a hit, to show where the id sits relative to the tempo
+ * and how wide each field is. */
 static void pg_dump_around(const uint8_t *page, size_t len, size_t at)
 {
     size_t from = at > 32 ? at - 32 : 0;
@@ -262,9 +255,9 @@ static int64_t pg_wrap_read(uintptr_t self, void *buf, uint64_t index,
     return r;
 }
 
-/* What the session taught, printed as the flush starts: whether a page index
- * keeps one buffer between reads (a cache to change) or gets a new one every
- * time (a scratch buffer, which a change would not survive). */
+/* Logged once as the flush starts: whether each page index kept one buffer
+ * between reads (a cache) or got a new one each time (a scratch buffer, which
+ * a change would not survive). */
 static void pg_report(void)
 {
     static int done;
@@ -293,8 +286,8 @@ static int64_t pg_wrap_write(uintptr_t self, void *buf, uint64_t index)
 
     pg_report();
 
-    /* The write's own index-0 rule, mirrored so the line says what the deck is
-     * about to do rather than what a data page would do. */
+    /* Mirror the write's index-0 rule so the log shows the real length and
+     * handle. */
     if (index == 0) {
         uint64_t hdrsz = pg_field(self, PG_HDRSZ_OFF);
         uint64_t alt = pg_field(self, PG_HANDLE2_OFF);
@@ -305,7 +298,7 @@ static int64_t pg_wrap_write(uintptr_t self, void *buf, uint64_t index)
             handle = alt;
     }
 
-    /* BEFORE the stock call: these are the bytes that reach the media. */
+    /* Before the stock call: these are the bytes that reach the media. */
     if (pagesz && len && len <= PG_PAGE_MAX &&
         mod_safe_read((uintptr_t)buf, pg_g_scratch, (size_t)len) == 0)
         hits = pg_scan(pg_g_scratch, (size_t)len, index, "write");
@@ -319,19 +312,17 @@ static int64_t pg_wrap_write(uintptr_t self, void *buf, uint64_t index)
     if (s)
         s->writes++;
 
-    /* The registry dump wants a moment the context is certainly live, and this
-     * is the reliable one. */
+    /* The context is reliably live here, so the registry can be dumped. */
     mod_djdb_note("the eject flush");
     return ((pg_write_fn)pg_g_tramp_write)(self, buf, index);
 }
 
 /* ---- what the deck dirties, and how -----------------------------------------
  *
- * The one question a write mod cannot guess: a page changed in memory is only
- * written if it was REGISTERED as modified, so this reports each call -- which
- * page, and whether the manager defers it or writes it through. It also keeps
- * the handle, because PageMarkDirty takes one and there is no other way to get
- * one from an idle thread.
+ * A page changed in memory is only written if it was registered as modified,
+ * so each call is logged: which page, and whether the manager defers it or
+ * writes it through. The handle is also kept, since PageMarkDirty takes one and
+ * an idle thread cannot get one otherwise.
  */
 static uintptr_t pg_g_tramp_dirty, pg_g_tramp_dirty_plain, pg_g_tramp_get;
 
@@ -396,13 +387,12 @@ static int64_t pg_wrap_dirty_plain(uintptr_t self, uintptr_t desc)
     return ((pg_dirty_fn)pg_g_tramp_dirty_plain)(self, desc);
 }
 
-/* The handle comes from here, and nowhere else: every page the deck reads is
- * fetched through this call, so one line of it is enough. */
-/* NOT a moment for a held write, though it is on the right thread. A page fetch
- * is mid-resolution of a buffer its caller is about to use, and a table write
- * from in here re-enters the pool underneath that caller -- it can evict or
- * reuse the very buffer being resolved. The page WRITER is different and is
- * used: by then the caller is done with the page. */
+/* Every page the deck reads is fetched through this call, so it reliably
+ * provides the handle. */
+/* Do not drain a held write here, even though it is the right thread: the
+ * caller is still resolving the buffer, and a table write would re-enter the
+ * pool and could evict or reuse it. The page writer is safe because the caller
+ * is done with the page by then. */
 static int64_t pg_wrap_get(uintptr_t self, uint32_t index, uintptr_t *desc)
 {
     pg_g_handle = self;

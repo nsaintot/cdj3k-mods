@@ -3,59 +3,52 @@
  * cue/preview.c - PREVIEW HOTCUE: assign where the needle is, not where the
  * play head is.
  *
- * Hold the preview zone (green needle) and press an UNASSIGNED pad: the cue
- * lands under the needle, on the press, and nothing else happens.
+ * Hold the preview zone (green needle) and press an unassigned pad: the cue is
+ * set under the needle on the press, and nothing else happens.
  *
- * IT IS ITS OWN GESTURE. The press is CLAIMED, so the deck's own press does not
- * run and no other behaviour sees it: the pad does not jump, GATE CUE does not
- * back-cue on the release, and SMART CUE does not follow. Assigning a cue and
- * recalling one are different instructions, and a press that means the first
- * must not carry any of the second.
+ * The press is claimed, so no other behaviour sees it: the pad does not jump,
+ * GATE CUE does not back-cue on release, and SMART CUE does not follow.
  *
- * WHAT RUNS INSTEAD IS THE DECK'S OWN PRESS. Claiming it and then re-issuing
- * it looks circular, and is not: the claim is what stops the OTHER behaviours,
- * and the deck's press is what makes a cue that is a cue. Setting one any other
- * way was tried and came out the wrong colour -- see below.
+ * The handler then runs the deck's own press itself. The claim stops the other
+ * behaviours; the deck's press sets a complete cue, including its colour (see
+ * below).
  *
- * Mechanism (RE-verified against EP122-3.19)
- * ------------------------------------------
- * Whichever way a cue is set, it ends at one setter (sub_10dd0d8) over a
- * pcmbuf::PositionWithSourceInfo, and the cue engine has two ways in:
+ * Mechanism
+ * ---------
+ * Every cue is set by one setter over a
+ * pcmbuf::PositionWithSourceInfo, and the cue engine has two entry points:
  *
  *     setHere(engine, kind, quantize, desc)     the PLAY HEAD
  *     setAt  (engine, kind, pos, onGrid, desc)  a given position
  *
- * So the redirect is one hook on setHere: when a kind is armed, call setAt with
- * the needle's position instead, forwarding the caller's own `desc`.
+ * The redirect is one hook on setHere: when a kind is armed, it calls setAt with
+ * the needle's position instead, forwarding the caller's `desc`.
  *
- * `desc` IS THE COLOUR -- three bytes the caller owns, which sub_10de100 copies
- * into the slot at +0x10..+0x12. Forwarding the caller's is the whole reason
- * this hooks the position and nothing else: a cue issued through setPoint
- * instead of the pad's own press carried setPoint's default 255,113,0 and lit
- * the pad orange against the 0,127,0 of every cue the deck made itself.
+ * `desc` is the colour: three caller-owned bytes that the setter copies into
+ * the slot at +0x10..+0x12. That is why only the position is redirected: a cue
+ * set through setPoint gets setPoint's default 255,113,0 (orange) instead of
+ * the deck's 0,127,0.
  *
- * The needle's position is already a cue record and already on the grid. The
- * strip's touch is converted and snapped by sub_10d0788, which stores the result
- * through the same per-kind accessor the hot cues use at CueKind 9 -- past the
- * eight of them and past the memory cue's 0. Slot 9 IS the preview needle, and
- * every slot embeds its PositionWithSourceInfo at +0x28, so the arm is a 0x30
- * byte snapshot and the beat-grid flag beside it.
+ * The needle's position is already a cue record, snapped to the grid.
+ * The deck converts and snaps the strip's touch and stores it through the
+ * per-kind accessor the hot cues use, at CueKind 9 (after the memory cue's 0
+ * and the hot cues' 1..8). Every slot embeds its PositionWithSourceInfo at
+ * +0x28, so the arm is a 0x30-byte snapshot plus the beat-grid flag.
  *
- * WHY NOT WRITE THE SLOT. Setting a cue is not storing a position. sub_10dd0d8
- * also takes a reference on the source, sets the exists byte at +0x20 and the
- * on-grid byte at +0x21, bumps the version at +0x08, writes the state at +0x0c,
- * and resets the second position block at +0x70; the facade above it then tells
- * the lamp and the waveform marker. A hand-written slot is a cue that is missing
- * whichever of those the next firmware happens to read.
+ * The slot is not written directly because setting a cue does more than store
+ * a position. The setter also takes a reference on the source, sets the exists
+ * byte at +0x20 and the on-grid byte at +0x21, bumps the version at +0x08,
+ * writes the state at +0x0c and resets the second position block at +0x70; the
+ * facade above it then notifies the lamp and the waveform marker.
  *
- * A SNAPSHOT, not a pointer to slot 9: the finger is still on the strip while
- * setPoint's write is in flight, and slot 9 moves under it.
+ * The arm is a snapshot, not a pointer to slot 9, because slot 9 keeps moving
+ * under the finger while setPoint's write is in flight.
  */
 #include "cue/cue.h"
 #include "kit/menu.h"
 #include "kit/mod.h"
 
-int g_preview_on;               /* persisted; see mods/common.c */
+int g_preview_on;               /* persisted; see core/common.c */
 
 /* CueKind 9 is the preview needle. */
 #define CUE_KIND_PREVIEW    9
@@ -75,23 +68,21 @@ typedef int64_t (*set_at_fn_t)(void *engine, uint32_t kind, const void *pos,
 
 static uintptr_t preview_g_set_here;     /* the stock setHere, behind the hook */
 
-/* The cue engine, taken from a live setHere rather than walked to.
- *
- * Every cue the deck sets passes through that call, so one arrives long before
- * anything here needs it, and it is the SAME pointer the deck's own setter uses
- * -- which is the point: a cue put back through it is a cue, not a hand-written
- * slot. Single-player, so the last one seen is the only one. */
+/* The cue engine, captured from a live setHere call. Every cue the deck sets
+ * passes through it, so it is known long before it is needed, and it is the
+ * pointer the deck's own setter uses. Single-player, so the last one seen is the
+ * only one. */
 static void *preview_g_engine;
 
 void *cue_engine(void) { return __atomic_load_n(&preview_g_engine, __ATOMIC_ACQUIRE); }
 static int       preview_g_ready;
 
-/* The arm. `kind` is published LAST and taken with a compare-exchange, so the
- * pair below it is visible to whichever thread runs the write and exactly one
- * write consumes it. Written [deck], read wherever setPoint's task lands.
+/* The arm. `kind` is published last and consumed with a compare-exchange, so
+ * the pair above it is visible to the thread that runs the write and exactly
+ * one write consumes it. Written [deck], read on whichever thread setPoint's
+ * task runs.
  *
- * ONE at a time, and a new press clears it: a claimed press is a whole gesture,
- * so an arm that outlived one is an arm nothing is going to consume. */
+ * One at a time; a new press clears any stale arm. */
 static uint8_t preview_g_pos[SLOT_POS_INFO_LEN] __attribute__((aligned(16)));
 static uint8_t preview_g_on_grid;
 static int     preview_g_kind;           /* 0 = nothing armed; kinds are 1..8 */
@@ -122,13 +113,11 @@ static void preview_wrap_set_here(void *engine, uint32_t kind, uint32_t quantize
 
 /* ---- the gesture ---------------------------------------------------------- */
 
-/* Take the press when it means "put a cue here".
+/* Claim the press when it means "put a cue here".
  *
- * An ASSIGNED pad is left alone: pressing one means jump to it, and a gesture
- * that silently moved a cue the DJ had already placed would be a trap. So is a
- * needle that holds no position yet, and so is a build where the redirect did
- * not install -- claiming there would put the cue at the play head with the
- * deck's own press suppressed, which is worse than not offering the feature. */
+ * Not claimed: an assigned pad (the press jumps to it and must not move it), a
+ * needle with no position yet, or a build where the redirect did not install
+ * (the cue would land at the play head). */
 static int preview_claim(const struct cue_event *ev)
 {
     int64_t at;
@@ -148,16 +137,14 @@ static void preview_pad(const struct cue_event *ev, enum cue_phase phase)
 
     switch (phase) {
     case CUE_PAD_DOWN:
-        /* Every pad's, claimed or not, which is where a stale arm is dropped:
-         * a claimed press is a whole gesture, so one that outlived its own
-         * write is one nothing is going to consume. */
+        /* Called for every pad, claimed or not; drops any stale arm. */
         __atomic_store_n(&preview_g_kind, 0, __ATOMIC_RELEASE);
         return;
 
     case CUE_PAD_UP:
-        /* The other half of the press below. It does NOT disarm: the release
-         * can beat the write it is waiting on, and a quick tap that disarmed
-         * first would put the cue at the play head after all. */
+        /* Pairs with the press below. Does not disarm: on a quick tap the
+         * release can run before the write, which would then land at the play
+         * head. */
         cue_stock_release(ev);
         return;
 
@@ -174,8 +161,8 @@ static void preview_pad(const struct cue_event *ev, enum cue_phase phase)
         return;
     }
 
-    /* Armed before the press, because the write it causes can land on another
-     * thread the moment it is made. */
+    /* Armed before the press, since its write can run on another thread
+     * immediately. */
     __atomic_store_n(&preview_g_kind, ev->kind, __ATOMIC_RELEASE);
     MDBG("preview: pad %d takes the needle at %d/1000\n",
          ev->pad, (int)(ev->needle_at * 1000.0f));
@@ -188,9 +175,8 @@ CUE_HANDLER(k_cue_preview,
 
 /* ---- the row -------------------------------------------------------------- */
 
-/* On by default. It creates no write that was not already happening -- the same
- * gesture already puts a hot cue somewhere -- it only puts it where the DJ was
- * pointing, which is the gate-cue argument rather than the smart-cue one. */
+/* On by default: the gesture already sets a hot cue in stock; this only
+ * changes where. */
 static const struct kit_row k_rows[] = {
     KIT_ROW_BOOL("PREVIEW HOTCUE", &g_preview_on, .idx = KIT_IDX_PREVIEW),
 };

@@ -1,6 +1,6 @@
 # Themes
 
-Theming for the deck's screen, switched in
+Colour themes for the deck's screen. Choose one in
 [MOD SETTINGS](mod-settings.md) under **THEME**.
 
 ## The themes
@@ -13,4 +13,4 @@ Theming for the deck's screen, switched in
 ![AURORA](img/theme-aurora.png)
 ![SANDSTONE](img/theme-sandstone.png)
 
-**WHITE** and **SANDSTONE** are the light ones, if you play somewhere bright.
+**WHITE** and **SANDSTONE** are the light themes, for bright venues.

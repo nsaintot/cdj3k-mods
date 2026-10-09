@@ -1,33 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * mods/db/db.c - see db.h for what this is and what its rules are.
+ * mods/db/db.c - borrowed SQL connection; see db.h for the rules.
  *
  * ---- how the sqlite3 functions are reached --------------------------------
  *
- * WEAK, NOT RESOLVED. libsqlcipher.so.0 is a NEEDED of EP122, so it is already
- * loaded and its symbols are in the process's global scope by the time any mod
- * runs. Declaring them weak lets the dynamic linker do the resolution -- which
- * is the most exact form of "by identity, not by address" available anywhere in
- * this shim, because the name is matched by the linker itself -- and an
- * unresolved weak symbol is NULL rather than a load failure, so a build without
- * the library degrades to db_ready() == 0 instead of refusing to start.
+ * Weak symbols, not ep122_sym. libsqlcipher.so.0 is a NEEDED of EP122, so its
+ * symbols are in the global scope before any mod runs, and the dynamic linker
+ * resolves them by name. An unresolved weak symbol is NULL, so a build without
+ * the library degrades to db_ready() == 0 instead of failing to load.
  *
- * That also reaches more of the API than EP122 imports. The deck itself pulls in
- * twenty sqlite3 entry points; the library exports the whole public surface, and
- * the guards below need sqlite3_get_autocommit and sqlite3_threadsafe, which are
- * not among the twenty. Weak linking gets them anyway.
+ * This also reaches functions EP122 does not import: the deck uses twenty
+ * sqlite3 entry points, and the guards below need sqlite3_get_autocommit and
+ * sqlite3_threadsafe, which are not among them.
  *
  * ---- how a handle is reached ----------------------------------------------
  *
- * By hooking the deck's own SqliteUpdateTransaction::exec, whose first argument
- * holds the live sqlite3*. Not by opening anything: the files are encrypted, the
- * deck has already keyed them, and a borrowed handle means no key ever touches
- * this code.
+ * By hooking the deck's SqliteUpdateTransaction::exec, whose first argument
+ * holds the live sqlite3*. Nothing is opened: the files are encrypted and the
+ * deck has already keyed them, so no key touches this code.
  *
- * Threading. The hook fires on the deck's database thread. It stores a pointer
- * and nothing else -- the identification below happens on the first CALLER's
- * thread, not in the hook, because running a PRAGMA inside the app's own exec
- * would be re-entering the connection mid-statement.
+ * Threading: the hook runs on the deck's database thread and only stores the
+ * pointer. Identification runs later on a caller's thread, because a PRAGMA
+ * inside the app's exec would re-enter the connection mid-statement.
  */
 #include "db/db.h"
 
@@ -61,8 +55,8 @@ extern DB_WEAK int         sqlite3_threadsafe(void);
 #define SQLITE_OK           0
 #define SQLITE_ROW          100
 #define SQLITE_DONE         101
-/* SQLITE_TRANSIENT: SQLite copies the text before returning. Spelled as the
- * header does, which is a cast of -1 to the destructor pointer. */
+/* SQLITE_TRANSIENT: SQLite copies the text before returning. Defined as in
+ * sqlite3.h, a cast of -1 to the destructor pointer. */
 #define SQLITE_TRANSIENT    ((void (*)(void *))-1)
 
 /* ---- the borrowed handle -------------------------------------------------- */
@@ -79,9 +73,8 @@ static int  db_g_usable;
 
 static uintptr_t db_g_tramp;
 
-/* Every sqlite3 entry point this file calls, in one test. A partial library is
- * not a thing that happens, but half a provider silently doing nothing is worse
- * than one that says why. */
+/* Every sqlite3 entry point this file calls, checked together so a partial
+ * library fails install with a log line. */
 static int db_syms_ok(void)
 {
     return sqlite3_prepare_v2 && sqlite3_step && sqlite3_finalize &&
@@ -93,8 +86,8 @@ static int db_syms_ok(void)
 
 /* The deck's SqliteUpdateTransaction::exec(txn, query). `*txn` is the sqlite3*.
  *
- * OBSERVATION ONLY -- the stock call is made with its arguments untouched and
- * its result returned verbatim. All this takes is a pointer. */
+ * Observation only: the stock call gets its arguments unchanged and its result
+ * is returned as is. */
 typedef int64_t (*db_exec_fn)(void *txn, const void *query);
 
 static int64_t db_wrap_exec(void *txn, const void *query)
@@ -104,18 +97,16 @@ static int64_t db_wrap_exec(void *txn, const void *query)
     if (txn && !__atomic_load_n(&db_g_handle, __ATOMIC_ACQUIRE) &&
         mod_safe_read((uintptr_t)txn, &h, sizeof(h)) == 0 && h) {
         __atomic_store_n(&db_g_handle, (sqlite3 *)h, __ATOMIC_RELEASE);
-        /* Once, and only the pointer -- identifying it means running a PRAGMA,
-         * and doing that here would re-enter the connection from inside the
-         * deck's own statement. mod_db_poll picks it up. */
+        /* Only the pointer: identifying it runs a PRAGMA, which here would
+         * re-enter the connection mid-statement. mod_db_poll does it. */
         MDBG("db: borrowed a connection (%p)\n", (void *)h);
     }
 
     return ((db_exec_fn)db_g_tramp)(txn, query);
 }
 
-/* One statement, prepared and bound. NULL if it will not compile -- which is
- * said out loud, because a typo in a mod's SQL is otherwise a feature that
- * quietly does nothing. */
+/* One statement, prepared and bound. NULL if it will not compile, with a log
+ * line so a typo in a mod's SQL is visible. */
 static sqlite3_stmt *db_prepare(sqlite3 *h, const char *sql,
                                 const struct db_bind *binds, int nbind)
 {
@@ -157,9 +148,8 @@ static sqlite3_stmt *db_prepare(sqlite3 *h, const char *sql,
 
 /* Which database this handle is on. Asked once, on a caller's thread.
  *
- * `PRAGMA database_list` gives (seq, name, file) and the main entry's file is
- * the answer. It is a read of the connection's own state -- no table is touched
- * -- so it is safe to ask of a handle we have only just met. */
+ * `PRAGMA database_list` gives (seq, name, file); the "main" entry's file is the
+ * answer. It reads connection state only, no table. */
 static void db_name_once(sqlite3 *h)
 {
     sqlite3_stmt *st;
@@ -185,8 +175,7 @@ static void db_name_once(sqlite3 *h)
          db_g_path[0] ? db_g_path : "(no file -- in memory?)");
 }
 
-/* The connection, or NULL, with everything that has to be true about it checked
- * exactly once. */
+/* The connection, or NULL. Its preconditions are checked once. */
 static sqlite3 *db_get(void)
 {
     sqlite3 *h = __atomic_load_n(&db_g_handle, __ATOMIC_ACQUIRE);
@@ -197,10 +186,9 @@ static sqlite3 *db_get(void)
         return NULL;
 
     if (!__atomic_load_n(&db_g_usable, __ATOMIC_ACQUIRE)) {
-        /* SERIALISED OR NOTHING. Sharing the app's connection is only safe
-         * because SQLite takes a mutex per call; built without that, two threads
-         * on one connection is corruption, and no amount of care here would fix
-         * it. Refused rather than risked. */
+        /* Sharing the app's connection is only safe if SQLite takes a mutex
+         * per call. Without that, two threads on one connection corrupt it, so
+         * the provider turns off. */
         if (sqlite3_threadsafe() == 0) {
             MDBG("db: sqlite is not serialised -> the connection is not"
                  " shareable, provider off\n");
@@ -274,11 +262,9 @@ int db_run(const char *sql, const struct db_bind *binds, int nbind)
     if (!h || !sql)
         return -1;
 
-    /* NOT INTO SOMEONE ELSE'S TRANSACTION. Autocommit off means the app has a
-     * BEGIN open on this connection; a statement issued now is committed or
-     * rolled back by whatever the app decides, which is not a thing to hand a
-     * DJ's library over to. The deck's transactions are short -- the caller
-     * retrying in a moment is the whole remedy. */
+    /* Autocommit off means the app has a BEGIN open on this connection, and a
+     * statement issued now would be committed or rolled back with it. The
+     * deck's transactions are short; the caller retries. */
     if (!sqlite3_get_autocommit(h)) {
         MDBG("db: the deck is mid-transaction -> refused: %s\n", sql);
         return -1;
@@ -290,8 +276,7 @@ int db_run(const char *sql, const struct db_bind *binds, int nbind)
 
     rc = sqlite3_step(st);
     if (rc != SQLITE_DONE) {
-        /* A statement handed to db_run returned rows, or failed. Both are the
-         * caller's mistake and both are worth the line. */
+        /* The statement returned rows or failed; both are caller errors. */
         MDBG("db: step %d (%s): %s\n", rc, sqlite3_errmsg(h), sql);
         sqlite3_finalize(st);
         return -1;
@@ -300,12 +285,10 @@ int db_run(const char *sql, const struct db_bind *binds, int nbind)
     return 0;
 }
 
-/* Identify the connection as soon as one has been borrowed, rather than waiting
- * for a mod to want it. Two reasons it is worth a poll: WHICH database this is
- * decides whether a write travels with the stick, which is a thing to know
- * before anything is written rather than after; and a provider whose only
- * evidence of working is a client using it is one that cannot be told from a
- * broken hook. Costs one atomic load per idle tick once it has run.
+/* Identify the connection as soon as one is borrowed, without waiting for a
+ * caller. Which database it is decides whether a write travels with the stick,
+ * and the log line shows the hook works even with no client. Costs one atomic
+ * load per idle tick once it has run.
  *
  * [worker] */
 void mod_db_poll(void)

@@ -8,25 +8,22 @@
  *   DELETE /v1/jobs/{id}
  *   GET    /v1/health
  *
- * Not a general-purpose client and it should not become one. The peer is a
- * known server on the LAN, there is no TLS, no redirects, no auth and no
- * chunked encoding to emit -- `stemd` accepts an exact Content-Length, which we
- * always know: the frame count comes from the decoder before the upload starts.
+ * Not a general-purpose client. The peer is a known server on the LAN: no TLS,
+ * no redirects, no auth, and no chunked encoding to send, since stemd accepts an
+ * exact Content-Length and the frame count is known before the upload starts.
  *
- * The one property that matters is that **neither direction is ever fully
- * buffered**. The request body is pulled in slices as the socket drains, and
- * the response body is pushed to a callback as it arrives, so a 171 MB upload
- * and an 86 MB stem download both run in a fixed-size buffer.
+ * Neither direction is ever fully buffered: the request body is pulled in slices
+ * as the socket drains and the response body is pushed to a callback as it
+ * arrives, so a 171 MB upload and an 86 MB stem download both run in a
+ * fixed-size buffer.
  *
- * Three framings are accepted on the way back, because getting this wrong is a
- * silent truncation rather than an error: Content-Length (what stemd sends --
- * `get_stem` sets it explicitly), chunked, and read-until-EOF. The last is what
- * `Connection: close` licenses a server to do.
+ * Three response framings are accepted, since a wrong one silently truncates:
+ * Content-Length (what stemd sends; `get_stem` sets it explicitly), chunked, and
+ * read-until-EOF (allowed by `Connection: close`).
  */
-/* strcasestr, for the Transfer-Encoding check. Without this it is an implicit
- * declaration returning int, which on aarch64 truncates the returned pointer --
- * a non-NULL result can then test as NULL and chunked decoding silently does
- * not happen. */
+/* strcasestr, for the Transfer-Encoding check. Without it the implicit int
+ * declaration truncates the pointer on aarch64 and chunked decoding can
+ * silently be skipped. */
 #define _GNU_SOURCE
 
 #include "stemd_client.h"
@@ -39,16 +36,12 @@
 #include <sys/time.h>
 
 /* One buffer serves headers, the upload slices and the download chunks. 64 KB
- * is well past the point where syscall overhead matters on a LAN and still
- * small enough that two of these per connection are irrelevant next to the
- * page pool. */
+ * keeps syscall overhead negligible on a LAN. */
 #define HTTP_BUF 65536
 
 /* A separation can take minutes, but no single read or write should. These
- * bound the socket so a server that wedges mid-transfer surfaces as a failed
- * job rather than a sidecar that never returns -- the shim's worker is blocked
- * on this call, and above it the UI is showing a progress bar that would
- * otherwise sit forever. */
+ * bound the socket so a server that hangs mid-transfer becomes a failed job;
+ * the shim's worker blocks on this call while the UI shows progress. */
 #define HTTP_CONNECT_MS 5000
 #define HTTP_IO_SEC     30
 
@@ -69,14 +62,13 @@ static int set_timeouts(int fd)
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0)
         return -1;
-    /* The upload is one long stream and the polls are tiny; in neither case is
-     * waiting to coalesce a win. */
+    /* Neither the long upload stream nor the tiny polls benefit from Nagle. */
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     return 0;
 }
 
-/* Connect with a bounded wait. Non-blocking for the connect itself, then back
- * to blocking, so the rest of the function can be written straight-line. */
+/* Connect with a bounded wait: non-blocking for the connect, then back to
+ * blocking. */
 static int dial(const char *host, int port)
 {
     struct addrinfo hints, *res = NULL, *ai;
@@ -88,17 +80,13 @@ static int dial(const char *host, int port)
     hints.ai_family = AF_UNSPEC;      /* an mDNS answer may be v6 */
     hints.ai_socktype = SOCK_STREAM;
 
-    /* Numeric first, and that is the path that actually runs: avahi-browse -rtp
-     * hands back an address, not a hostname, and a manual entry typed on the
-     * deck is an address too. Trying it first also keeps the common case off
-     * the resolver entirely.
+    /* Numeric first, the usual path: discovery yields an address and a manual
+     * entry is normally one too, so the resolver is skipped.
      *
-     * The fallback is for someone who types a name. It resolves ordinary DNS --
-     * this binary is musl-static (guest/Makefile builds tools with Alpine's
-     * gcc), so unlike a glibc static build there is no NSS module to dlopen.
-     * What it will NOT resolve is `.local`: musl has no mDNS support and no
-     * nss-mdns equivalent, so an mDNS name has to arrive here already resolved,
-     * which is exactly what discovery.c does. */
+     * The fallback resolves ordinary DNS for a typed name. This binary is
+     * musl-static (package/deck/Makefile, Alpine stage of package/docker/
+     * Dockerfile), so there is no NSS module to dlopen and no `.local`
+     * resolution; mDNS names must arrive already resolved by discovery.c. */
     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
     if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
         hints.ai_flags = AI_NUMERICSERV;
@@ -298,9 +286,8 @@ int http_perform(const struct stem_server *srv, const struct http_request *req)
     if (c.fd < 0)
         return -1;
 
-    /* `Connection: close` on purpose. Reuse would save a handshake on the
-     * poll loop, but it also means a half-consumed body poisons the next call,
-     * and on a LAN the handshake is not what this costs. */
+    /* `Connection: close`: reuse would let a half-consumed body corrupt the next
+     * call, and a LAN handshake is cheap. */
     n = snprintf(head, sizeof(head),
                  "%s %s HTTP/1.1\r\n"
                  "Host: %s:%d\r\n"
@@ -324,9 +311,8 @@ int http_perform(const struct stem_server *srv, const struct http_request *req)
     if (write_all(c.fd, head, (size_t)n + 2) != 0)
         goto out;
 
-    /* Body, in slices. The pull callback is the decoder upstream, so this loop
-     * is also what throttles it: nothing is produced faster than the socket
-     * drains, which is the whole reason a track never becomes resident. */
+    /* Body, in slices. The pull callback is fed by the decoder upstream, so this
+     * loop throttles it to the socket's pace and the track is never held whole. */
     if (req->content_type && req->pull) {
         uint64_t left = req->content_length;
 

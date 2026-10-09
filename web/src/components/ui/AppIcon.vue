@@ -2,9 +2,9 @@
 /*
  * The site's icons, as one 20x20 stroke set.
  *
- * Inline rather than a sprite sheet or an icon package: there are nine of them,
- * they all share a grid and a stroke width, and drawing them here means they
- * inherit colour and can never load late.
+ * Inline rather than a sprite sheet or an icon package: there are ten, they
+ * share a grid and a stroke width, and inline icons inherit colour and never
+ * load late.
  */
 const paths = {
   search: 'M9 3a6 6 0 1 0 0 12A6 6 0 0 0 9 3ZM13.5 13.5 17.5 17.5',

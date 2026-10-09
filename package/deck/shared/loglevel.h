@@ -2,14 +2,11 @@
 /*
  * loglevel.h - the log level grammar, shared by the shim and the sidecar.
  *
- * Two binaries, two toolchains, one spelling. They are separate units with
- * separate environment variables (EP122_MOD_LOGLEVEL, STEMD_LOGLEVEL), so
- * turning one up does not drag the other with it, but a level means the same
- * thing in both and parses the same way. That is the whole reason this is a
- * header rather than two private copies that drift.
+ * The two binaries read separate environment variables (EP122_MOD_LOGLEVEL,
+ * STEMD_LOGLEVEL), so each is tuned independently, but a level means the same
+ * thing and parses the same way in both.
  *
- * ERROR is the default everywhere. A deck in a booth says nothing while it
- * works.
+ * ERROR is the default everywhere, so a working deck logs nothing.
  */
 #ifndef CDJ3K_LOGLEVEL_H
 #define CDJ3K_LOGLEVEL_H
@@ -30,9 +27,8 @@ enum {
  *   >= 0   the level
  *   -1     `s` names no level -- the caller decides what to say about that
  *
- * NULL and empty are NOT errors: they mean unset, which is LOG_ERROR. Only text
- * that was meant to select something and failed returns -1, so a typo can be
- * reported instead of silently reading as the quietest setting.
+ * NULL and empty mean unset and return LOG_ERROR. Only unrecognised text
+ * returns -1, so a typo can be reported instead of silently acting as ERROR.
  */
 static inline int log_level_from(const char *s)
 {

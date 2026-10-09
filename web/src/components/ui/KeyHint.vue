@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /*
- * A keyboard key. Renders the platform's own modifier glyph, because telling a
- * Mac user to press Ctrl is telling them the wrong thing.
+ * A keyboard key. `mod` renders as the platform's modifier: ⌘ on Apple
+ * devices, Ctrl elsewhere.
  */
 import { computed } from 'vue'
 

@@ -1,38 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * cue/pad.c - the one place that hooks the deck's hot-cue path.
+ * cue/pad.c - hooks the deck's hot-cue path.
  *
- * Every slot the hot-cue behaviours need is taken here, decoded once, and
- * handed round as a cue_event. The behaviours (gate.c, smart.c, preview.c) hold
- * no addresses and repeat no ABI; see cue.h for the contract.
+ * Every slot the hot-cue behaviours need is hooked here, decoded once and
+ * passed on as a cue_event. The behaviours (gate.c, smart.c, preview.c) hold no
+ * addresses; see cue.h for the contract.
  *
- * Mechanism (RE-verified against EP122-3.19; non-PIE ET_EXEC @0x400000)
- * --------------------------------------------------------------------
+ * Mechanism (non-PIE ET_EXEC @0x400000)
+ * -------------------------------------
  * A physical hot-cue pad is handled by input_devices::DeckOperationPadHandler
  * <HotCueOperation>. The pad DOWN/UP each post a meow::AsyncTask whose "run"
  * slot (vtable+0x10, in .rodata) executes on the deck thread:
- *   - pressPad   run  sub_183cf98  (vtable 0x21f7168) -> jump to cue + PLAY
- *   - releasePad run  sub_183d130  (vtable 0x21f7198) -> pad state bookkeeping
- * PLAY posts PlayPauseHandler::pushOn run sub_185ae50 (vtable 0x21fbe00).
+ *   - pressPad   run -> jump to cue + PLAY
+ *   - releasePad run -> pad state bookkeeping
+ * PLAY posts a PlayPauseHandler::pushOn task.
  * Those three run slots are repointed at wrappers that call the stock run back
  * through saved pointers.
  *
- * The release already carries what it MEANS. Once sub_183d130 pops the last
- * held pad it hands &closure[0x28] to the handler's own release method
- * (vtable+0x20, the default sub_183b348), which reads the pad index at +0 and
- * dispatches on an op word at +4: 1 returns to the cue and pauses, anything else
- * is the plain release. So a behaviour that wants a back-cue writes that word
- * and the DECK's release performs it -- see cue_set_release_op.
+ * Once the releasePad run pops the last held pad it passes &closure[0x28] to
+ * the handler's release method (vtable+0x20), which reads the
+ * pad index at +0 and dispatches on an op word at +4: 1 returns to the cue and
+ * pauses, anything else is the plain release. A behaviour that wants a back-cue
+ * writes that word and the deck's release performs it; see cue_set_release_op.
  *
- * The preview needle comes from usecase::deck::PreviewController, which is what
- * the strip's touch drives: slot +0x10 carries the touched point as a
- * normalised fraction and +0x18 clears it. Hooking the pair is how the layer
- * knows the zone is held without going anywhere near the strip's own drawing.
+ * The preview needle comes from usecase::deck::PreviewController, driven by the
+ * strip's touch: slot +0x10 carries the touched point as a normalised fraction
+ * and +0x18 clears it. Hooking the pair tells the layer when the zone is held.
  *
  * Every input handler embeds a dj_player::PlayerState at +0x80, the deck's own
- * snapshot of the player. The deck's input-state snapshot (sub_138f5e8) derives
- * its PAUSED bit from it as: load state +0x20 == 2, and sub_11459f0 == 1, where
- * sub_11459f0 is
+ * snapshot of the player. The deck's input-state snapshot derives its PAUSED
+ * bit from it as: load state +0x20 == 2, and play mode == 1, where play mode is
  *     +0x65 ? 0 : (+0x66 && !+0x6b) ? 3 : +0x67 ? 2 : 1
  * 2 is playing, 1 paused; 0 and 3 are modes the PLAY button and the load lock
  * treat as not paused. cue_deck_paused evaluates the same expression, read at
@@ -42,7 +39,7 @@
 #include "kit/mod.h"
 
 /* ================================================================== */
-/* EP122-3.19 ABI                                                     */
+/* EP122 ABI                                                          */
 /* ================================================================== */
 
 #define CUE_RUN_SLOT       0x10   /* AsyncTask::run, on every closure class */
@@ -66,29 +63,28 @@
 #define DECK_RESOLVE_OFF     0x38
 #define HANDLER_DECK_MOP_OFF 0x30
 
-/* The shared pad/release closure. The last two are ONE pair as far as the deck
- * is concerned: the stock release hands `&closure[0x28]` to the handler's own
- * release method, which reads the index at +0 and dispatches on the op at +4. */
+/* The shared pad/release closure. The last two form one pair: the stock release
+ * passes `&closure[0x28]` to the handler's release method, which reads the
+ * index at +0 and dispatches on the op at +4. */
 #define CLOSURE_HANDLER_OFF     0x18  /* handler `this` pointer                */
 #define CLOSURE_PAD_OFF         0x28  /* the pad's own index, 0-based (A=0)    */
 #define CLOSURE_RELEASE_OP_OFF  0x2c  /* what the release means; 1 = back-cue  */
 
-/* The handler's release method, and the stock body that reads the op above. */
+/* The handler's release method slot; its stock body reads the op above. */
 #define HANDLER_RELEASE_SLOT    0x20
 
-/* The deck's press run returns this when the pad was already assigned. It is
- * also what a CLAIMED press returns: nothing ran, so there is nothing to report,
- * and 0 is the value the task machinery treats as "no news". */
+/* The deck's press run returns this when the pad was already assigned. A
+ * claimed press returns it too, since the task machinery treats 0 as "no
+ * news". */
 #define STATUS_ASSIGNED      0
 
 /* From the CueController to the cue table:
  *   facade = *(cc + 0x18)      MappedObjPtr<ICueLoopSetter>, linked by the stock
  *                              press path before any of this runs
  *   P      = *(facade + 0x70)  the parent everything cue hangs off
- *   table  = *(P + 0x40)       one object, reached three ways -- the engine takes
- *                              it from +0x18, +0x40 and +0x60, and all three read
- *                              the same pointer live
- *   slot   = *(table + 0x10 + kind*8)        sub_10d67d8 */
+ *   table  = *(P + 0x40)       the engine also reads it from +0x18 and +0x60;
+ *                              all three hold the same pointer
+ *   slot   = *(table + 0x10 + kind*8) */
 #define FACADE_MOP_OFF      0x18
 #define FACADE_PARENT_OFF   0x70
 #define PARENT_TABLE_OFF    0x40
@@ -140,8 +136,8 @@ int cue_deck_paused(const struct cue_event *ev)
     if (mod_safe_read(state + STATE_LOAD_OFF, &load, sizeof(load)) != 0 ||
         mod_safe_read(state + STATE_FLAGS_OFF, f, sizeof(f)) != 0)
         return 0;
-    /* The flags are bools. Anything else is not the layout this reads, and a
-     * misread must not gate: it would give every press the paused answer. */
+    /* The flags are bools; any other value means the layout is wrong. Stop
+     * gating rather than report every press as paused. */
     if (f[0] > 1 || f[1] > 1 || f[2] > 1 || f[6] > 1) {
         MERR("cue: handler+%#x is not a PlayerState (flags %02x %02x %02x .. %02x)"
              " -> pads never gate\n", HANDLER_STATE_OFF, f[0], f[1], f[2], f[6]);
@@ -162,9 +158,8 @@ static int cue_decode(void *task, struct cue_event *ev)
 
     if (mod_safe_read((uintptr_t)task + CLOSURE_PAD_OFF, &pad, sizeof(pad)) != 0)
         return -1;
-    /* A pad outside the bank means the closure is not laid out the way this
-     * file assumes, and every offset below it is then a guess. Refuse the whole
-     * event rather than index anything with it. */
+    /* A pad outside the bank means the closure layout is not what this file
+     * assumes, so pass the event through untouched. */
     if (pad < 0 || pad >= CUE_PADS) {
         static int said;
 
@@ -181,7 +176,7 @@ static int cue_decode(void *task, struct cue_event *ev)
     ev->status    = 0;
     ev->assigned  = 0;
     /* A snapshot, so every handler in one dispatch sees the same needle even if
-     * the message thread lets go halfway through. */
+     * the message thread clears it mid-dispatch. */
     ev->needle_up = __atomic_load_n(&cue_g_needle_up, __ATOMIC_ACQUIRE);
     ev->needle_at = cue_g_needle_at;
     return 0;
@@ -196,15 +191,10 @@ static void cue_dispatch(const struct cue_event *ev, enum cue_phase phase)
 
         if (!h->pad)
             continue;
-        /* A behaviour that TAKES presses is not an observer of the ones it let
-         * through. It sees DOWN for every pad -- that is where it decides -- and
-         * then only the pads it actually owns, delivered straight to it rather
-         * than from here.
-         *
-         * Without this a claimer's own PRESSED runs for pads it DECLINED, on
-         * whatever state the last claim left behind: measured as an empty pad
-         * being set by the deck and simultaneously starting a loop over the
-         * previous pad's span. */
+        /* A claimer sees DOWN for every pad (where it decides) and later phases
+         * only for pads it owns, delivered directly by the hooks. Otherwise its
+         * PRESSED would run for declined pads on stale state, e.g. an empty pad
+         * set by the deck also starting a loop over the previous pad's span. */
         if (h->pad_claim && phase != CUE_PAD_DOWN)
             continue;
         h->pad(ev, phase);
@@ -221,12 +211,10 @@ void *cue_controller(const struct cue_event *ev)
 
     if (mod_safe_read((uintptr_t)ev->task + CLOSURE_HANDLER_OFF, &handler, sizeof(handler)) != 0)
         return NULL;
-    /* LINK IT FIRST. The MappedObjPtr at +0x30 caches its pointer on first use
-     * and starts empty, so reading the slot raw found nothing until the deck's
-     * own press path had run once -- and the first pad press after a track load
-     * fell through every behaviour that needs the controller. The deck's own
-     * back-cue links the same member the same way before resolving it, and a
-     * pointer already cached costs a load and a branch. */
+    /* Link first. The MappedObjPtr at +0x30 starts empty and caches its pointer
+     * on first use, so a raw read finds nothing until the deck's press path has
+     * run once (the first press after a track load). The deck's own back-cue
+     * links it the same way; when already cached it is a load and a branch. */
     if (FN_LINK_DECK)
         ((link_fn_t)FN_LINK_DECK)((void *)(handler + HANDLER_DECK_MOP_OFF));
     if (mod_safe_read(handler + HANDLER_DECK_MOP_OFF, &resolver, sizeof(resolver)) != 0 || !resolver) {
@@ -244,8 +232,8 @@ uintptr_t cue_slot(const struct cue_event *ev, int kind)
 
     cc = (uintptr_t)cue_controller(ev);
     if (!cc) return 0;
-    /* The second MappedObjPtr on the way here, and empty for the same reason as
-     * the handler's. setPoint links it before every use; so does this. */
+    /* Second MappedObjPtr on the path, empty for the same reason. setPoint links
+     * it before every use, as does this. */
     if (FN_LINK_FACADE)
         ((link_fn_t)FN_LINK_FACADE)((void *)(cc + FACADE_MOP_OFF));
     if (mod_safe_read(cc + FACADE_MOP_OFF, &facade, sizeof(facade)) != 0 || !facade)
@@ -285,29 +273,24 @@ int64_t cue_stock_release(const struct cue_event *ev)
 
 /* ---- asking again --------------------------------------------------------
  *
- * A short hold loses its back-cue, and nothing in this layer decides that: the
- * deck's release is reached with the same state and told to return to the same
- * hot cue whether the pad was down for 30 ms or 400. What differs is below it,
- * where the press's own jump-and-play is still settling and lands last.
+ * A short hold can lose its back-cue: the deck's release runs with the same
+ * state for a 30 ms hold as for a 400 ms one, but the press's jump-and-play is
+ * still settling and lands after it.
  *
- * So ask again. Returning to a hot cue is IDEMPOTENT -- a deck already parked
- * there parks there again -- which is the whole reason this is allowed to be a
- * repeat rather than a condition: there is nothing to test, and a request that
- * was already honoured costs a seek to where the play head already is.
+ * So the release op is re-sent. Returning to a hot cue is idempotent, so a
+ * repeat needs no condition; one that was already honoured costs a seek to the
+ * current position.
  *
- * ON A SPREAD, because the settle is not a fixed number and the tail is long. A
- * 400 ms hold returned three times out of three and a 200 ms hold none, so one
- * shot inside that spread is a coin toss -- and two were still one, because a
- * press of a few milliseconds sometimes has its play land after both. The last
- * ask is out at a second for that tail; every one before it is what makes the
- * common case quick.
+ * Repeats are spread out because the settle time has a long tail: a 200 ms
+ * hold can lose its back-cue, and with two shots a very short press can still
+ * have its play land after both. The last shot at 1 s covers the tail; the
+ * earlier ones keep the common case quick.
  *
- * CANCELLED BY THE DJ. Any new pad press and any PLAY press drops it, because
- * both say the deck is wanted somewhere other than where the last release left
- * it, and a repeat arriving after either would undo a deliberate act.
+ * Any new pad press or PLAY press cancels pending repeats, so a repeat never
+ * undoes a deliberate action.
  *
- * On the DISPLAY thread, which is where the app drives usecases from whenever a
- * finger is involved -- the same clock the pad lamps already run on. */
+ * Runs on the display thread, where the app drives usecases for touch input,
+ * on the same clock as the pad lamps. */
 #define CUE_AGAIN_SHOTS    4
 static const long k_cue_again_ms[CUE_AGAIN_SHOTS] = { 120, 280, 560, 1000 };
 
@@ -335,8 +318,8 @@ static void cue_again_cancel(void)
     __atomic_store_n(&cue_g_again.due, 0, __ATOMIC_RELEASE);
 }
 
-/* `due` is published LAST and taken FIRST, which is the whole synchronisation:
- * the display thread only ever reads a payload written before the due it saw. */
+/* `due` is published last and read first; that is the only synchronisation.
+ * The display thread only reads a payload written before the `due` it saw. */
 static void cue_again_arm(uintptr_t handler, int pad, int32_t op)
 {
     long t0 = cue_now_ms();
@@ -393,10 +376,9 @@ void cue_pad_tick(void)
 /* Give the deck's own release an op, if any behaviour wants one.
  *
  * The release closure carries {pad index, op} at +0x28, and the stock release
- * hands that pair straight to the handler's own release method once the last
- * held pad is popped. So a behaviour that wants the deck to do something on the
- * release writes the op and lets the deck's task do it -- rather than performing
- * the same operation alongside, which races the press it belongs to. */
+ * passes that pair to the handler's release method once the last held pad is
+ * popped. Writing the op lets the deck's task perform it; performing it
+ * separately would race the press. */
 static void cue_set_release_op(const struct cue_event *ev)
 {
     uintptr_t handler = 0, vt = 0, slot20 = 0;
@@ -410,8 +392,8 @@ static void cue_set_release_op(const struct cue_event *ev)
     if (!op)
         return;
 
-    /* The op only means anything to the release that reads it, so check that is
-     * still the one this layout was measured against. */
+    /* Only write the op if the release method is the one this layout was
+     * written for. */
     if (mod_safe_read((uintptr_t)ev->task + CLOSURE_HANDLER_OFF, &handler, sizeof(handler)) != 0)
         return;
     if (mod_safe_read(handler, &vt, sizeof(vt)) != 0) return;
@@ -432,9 +414,8 @@ static void cue_set_release_op(const struct cue_event *ev)
 /* The hooks                                                          */
 /* ================================================================== */
 
-/* Who, if anyone, is taking this press instead of the deck. First in
- * (prio, name) order wins, and one claimer is the whole answer -- two
- * behaviours meaning different things by one press is not a state to resolve. */
+/* The behaviour taking this press instead of the deck, if any. The first in
+ * (prio, name) order wins; there is only ever one claimer. */
 static const struct cue_handler *cue_claimer(const struct cue_event *ev)
 {
     int i;
@@ -445,8 +426,8 @@ static const struct cue_handler *cue_claimer(const struct cue_event *ev)
     return NULL;
 }
 
-/* Which behaviour owns each pad that is down, so the release goes back to the
- * one that took the press and to nobody else. Indexed by pad, [deck]. */
+/* The claimer of each pad that is down, so the release goes only to it.
+ * Indexed by pad, [deck]. */
 static const struct cue_handler *cue_g_owner[CUE_PADS];
 
 static int64_t cue_wrap_press(void *task)
@@ -458,8 +439,7 @@ static int64_t cue_wrap_press(void *task)
     if (cue_decode(task, &ev) != 0)
         return ((task_run_t)cue_g_orig_pp)(task);
 
-    /* A new press says where the deck is wanted; the last release's repeat no
-     * longer does. */
+    /* A new press cancels the last release's repeats. */
     cue_again_cancel();
 
     __atomic_fetch_add(&cue_g_held, 1, __ATOMIC_ACQ_REL);
@@ -467,8 +447,8 @@ static int64_t cue_wrap_press(void *task)
 
     owner = cue_claimer(&ev);
     if (owner) {
-        /* The deck's press never runs, so the pad does not jump, does not play
-         * and does not set a cue on an empty slot. */
+        /* The deck's press does not run, so the pad does not jump, play, or
+         * set a cue on an empty slot. */
         cue_g_owner[ev.pad] = owner;
         MDBG("cue: pad %d taken by %s -> the deck's press does not run\n",
              ev.pad, owner->name);
@@ -498,23 +478,22 @@ static int64_t cue_wrap_release(void *task)
     if (cue_decode(task, &ev) != 0)
         return ((task_run_t)cue_g_orig_rp)(task);
 
-    /* Clamped rather than trusted: a release whose press we never saw would
-     * otherwise drive the count negative and wedge PLAY consumption. */
+    /* Clamped: a release whose press we never saw would otherwise drive the
+     * count negative and break PLAY consumption. */
     prev = __atomic_fetch_sub(&cue_g_held, 1, __ATOMIC_ACQ_REL);
     if (prev <= 0)
         __atomic_store_n(&cue_g_held, 0, __ATOMIC_RELAXED);
 
     owner = cue_g_owner[ev.pad];
     if (owner) {
-        /* Symmetric with the press: the deck's release is skipped too, because
-         * there is no press of its own for it to be the other half of. */
+        /* The deck's press was skipped, so its release is skipped too. */
         cue_g_owner[ev.pad] = NULL;
         if (owner->pad)
             owner->pad(&ev, CUE_PAD_UP);
         return 0;
     }
 
-    /* Before the stock run, because the stock run is what reads it. */
+    /* Before the stock run, which reads it. */
     cue_set_release_op(&ev);
     r = ((task_run_t)cue_g_orig_rp)(task);
     if (prev > 0)
@@ -526,8 +505,7 @@ static int64_t cue_wrap_play(void *task)
 {
     int i;
 
-    /* PLAY is the DJ asking for playback. A repeat landing after it would take
-     * that away. */
+    /* A repeat landing after PLAY would undo it. */
     cue_again_cancel();
 
     if (cue_pads_held() > 0)
@@ -539,12 +517,10 @@ static int64_t cue_wrap_play(void *task)
     return ((task_run_t)cue_g_orig_play)(task);
 }
 
-/* The CUE button, passed straight through -- and the standing check on the two
- * values cue.h hands behaviours. This slot carries the memory cue and nothing
- * else (hot-cue pads set theirs through CueController +0xb0), so every call
- * through here should name the same pair. A firmware where it does not is one
- * where anything using them moves the wrong thing, and that says so on the
- * first CUE press rather than on a dance floor. */
+/* The CUE button, passed through unchanged. Also checks the two values cue.h
+ * gives behaviours: this slot only carries the memory cue (hot-cue pads use
+ * CueController +0xb0), so every call should pass the same pair. If a firmware
+ * differs, an error is logged on the first CUE press. */
 static int64_t cue_wrap_cueing(void *cc, uint32_t kind, uint32_t slip, uint32_t quantize)
 {
     if (kind != CUE_KIND_MEMORY || quantize != CUE_QUANTIZE_DECK) {
@@ -583,8 +559,8 @@ static void cue_wrap_preview_clear(void *self)
 /* Install                                                            */
 /* ================================================================== */
 
-/* (prio, name) ascending, sorted here because link order is the Makefile's
- * wildcard -- the same reason and the same rule as the mod registry. */
+/* (prio, name) ascending, sorted here because link order follows the
+ * Makefile's wildcard; same rule as the mod registry. */
 static void cue_sort_handlers(void)
 {
     const struct cue_handler *h;
@@ -638,9 +614,9 @@ static int cue_pad_install(void)
         ok += (mod_patch_vslot(hooks[i].name, hooks[i].vt, hooks[i].slot,
                                hooks[i].wrapper, hooks[i].saved) == 0);
 
-    /* All of them or none. The behaviours on top of this assume a complete
-     * event stream, and two thirds of a momentary pad is one that plays and
-     * never comes back. The registry unwinds what did go in. */
+    /* All or none: the behaviours assume a complete event stream (a momentary
+     * pad without its release hook would play and never return). The registry
+     * unwinds the hooks that did go in. */
     if (ok != n) {
         MDBG("cue: partial install (%d/%d) -> refused\n", ok, n);
         return -1;

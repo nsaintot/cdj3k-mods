@@ -7,33 +7,27 @@
  */
 #include "stem/ui/ui.h"
 
-/* The control row takes the rect the stock panels use, inside the waveform view, lifted
- * by ROW_RISE so the air above it matches the air below. Only the TOP moves, so the whole
- * of the rise reaches the wedge: the caption keeps its own height and its distance to the
- * footer, and everything under it is measured from a band bottom that has not moved.
+/* The control row takes the stock panel rect inside the waveform view, with its top
+ * raised by ROW_RISE; the bottom stays, so the extra height goes to the wedges.
  *
- * The lift is applied here and nowhere else: kit_band_rect() keeps the STOCK rect,
- * because the kit identifies the app's own panels by comparing bounds against it and a
- * lifted copy would stop matching them. Our strip is excluded from those scans by
- * identity instead -- kit_band_own below. */
+ * The lift is applied only here: kit_band_rect() keeps the stock rect because the kit
+ * identifies the app's own panels by comparing bounds against it. Our strip is
+ * excluded from those scans by identity (kit_band_own). */
 static uintptr_t stems_build_row(void)
 {
     const int32_t *panel = kit_band_rect();
-    /* The delimiters are drawn from the same list the fill is weighted by, so a mark on
-     * screen is a boundary the map really hands over at, by construction. */
+    /* The same boundaries that weight the fill. */
     static const int k_prog_bound[N_PROG_BOUND] = PROG_BOUND_LIST;
     int usable, wedge_w, x, i;
     int row_y   = panel[1] - ROW_RISE;
     int row_h   = panel[3] + ROW_RISE;
     int wedge_h = row_h - WEDGE_Y - ROW_PAD / 2;
-    int btn_w   = wedge_h;                    /* BYPASS is square -- see the note above */
+    int btn_w   = wedge_h;                    /* BYPASS is square; see ui.h */
     uintptr_t band, row;
 
-    /* `band` is the strip that owns the whole panel rect, and is what the caller gets
-     * because it is what has to be hidden. `row` is only the parent the contents hang
-     * off, and changes to stems_g_controls partway down. Keeping them in separate variables
-     * is load-bearing: one name for both means the caller ends up holding the contents,
-     * hiding those, and never touching the strip. */
+    /* `band` is the strip covering the panel rect and is returned, since it is what
+     * gets hidden. `row` is the parent for the contents (stems_g_controls). Keep them
+     * separate, or the caller ends up hiding the contents instead of the strip. */
     band = stems_label(kit_band_view(), "", FONT_CAPTION, COL_ROW_BG, mod_ui()->text, 0,
                        panel[0], row_y, panel[2], row_h);
     if (!band) return 0;
@@ -45,23 +39,18 @@ static uintptr_t stems_build_row(void)
                              0, 0, panel[2], row_h);
     if (!stems_g_controls || !stems_g_progress) return band;
 
-    /* The processing state reuses the CONTROL row's own geometry rather than inventing
-     * its own: the caption sits exactly where the stem captions sit, and the bar
-     * exactly where their rails sit. So the two states are the same shape and swapping
-     * between them moves nothing vertically -- and the bar is a rail like the others
-     * instead of a slab filling the whole strip.
+    /* The processing state reuses the control row's geometry: its caption sits where
+     * the stem captions sit and the bar within the wedge band, so swapping states
+     * moves nothing vertically.
      *
-     * Caption first, then track, then fill: the fill has to draw over the track, and
-     * the caption never overlaps either. */
+     * Caption, then track, then fill, so the fill draws over the track. */
     stems_g_prog_x = ROW_LEFT;
     stems_g_prog_w = panel[2] - ROW_LEFT - ROW_RIGHT;
-    /* Centred in the band the wedges occupy, computed from that band rather than from a
-     * constant offset: wedge_h follows the panel rect and ROW_RISE, and a hand-measured
-     * offset stops being centred the moment either moves. */
+    /* Centred in the wedge band, which follows the panel rect and ROW_RISE. */
     stems_g_prog_y = WEDGE_Y + (wedge_h - PROG_BAR_H) / 2;
-    /* STOCK ROLES, not mod_ui()'s: juce paints these Labels, and every fill it makes goes
-     * through the theme hook once already -- see mod_ui_stock. Stored resolved, the
-     * caption came out #ffffff on the row's own #ffffff plate under WHITE. */
+    /* Stock roles, not mod_ui()'s: juce paints these Labels and every fill already
+     * goes through the theme hook (see mod_ui_stock). Resolved values would be
+     * resolved twice, e.g. #ffffff on #ffffff under WHITE. */
     stems_g_prog_text = stems_label(stems_g_progress, "", FONT_CAPTION, 0x00000000u,
                               mod_ui_stock()->text, 0,
                               stems_g_prog_x, ROW_PAD / 2, stems_g_prog_w, CAPTION_H);
@@ -71,8 +60,7 @@ static uintptr_t stems_build_row(void)
     stems_g_prog_fill = stems_label(stems_g_progress, "", FONT_CAPTION,
                               mod_ui_stock()->accent, mod_ui_stock()->accent, 0,
                               stems_g_prog_x, stems_g_prog_y, 0, PROG_BAR_H);
-    /* Built after the fill so they draw over it: a handover mark that the fill could bury
-     * would vanish exactly when it is being crossed, which is when it is worth seeing. */
+    /* Built after the fill so they draw over it. */
     for (i = 0; i < N_PROG_BOUND; i++) {
         stems_g_prog_mark[i] = stems_label(stems_g_progress, "", FONT_CAPTION,
                                      mod_ui_stock()->mark, mod_ui_stock()->mark, 0,
@@ -83,17 +71,13 @@ static uintptr_t stems_build_row(void)
     stems_set_visible(stems_g_progress, 0);
 
     row = stems_g_controls;   /* everything below hangs off the controls container */
-    /* BYPASS is a square now. It reads as an icon beside three big shapes rather than
-     * as a fourth control competing with them, and the 104px it gave back go straight
-     * into the wedges, which are the things a hand is actually on. */
+    /* BYPASS: a square icon button (see ui.h). */
     stems_g_btn_bypass = stems_label(row, "", FONT_CAPTION, mod_ui()->surface, mod_ui()->text, 1,
                                  ROW_LEFT, WEDGE_Y, btn_w, wedge_h);
     if (stems_g_btn_bypass && stems_icon_vt_ready())
         *(uintptr_t *)stems_g_btn_bypass = stems_g_icon_vptr;
 
-    /* The one free cell in the row: the caption band above BYPASS. The three stem
-     * captions are centred over their wedges, so the nearest of them starts far to the
-     * right of this and nothing else is built left of it. */
+    /* The wavewait mark goes in the free caption cell above BYPASS. */
     stems_wavewait_build(row, ROW_LEFT, ROW_PAD / 2, btn_w, CAPTION_H);
 
     /* One gap between neighbours, so N wedges leave N-1 gaps inside the free span. */
@@ -107,8 +91,7 @@ static uintptr_t stems_build_row(void)
     }
 
     for (i = 0; i < N_STEMS; i++, x += wedge_w + ROW_GAP) {
-        /* Narrower than the wedge and centred over it: full width read as a heading for
-         * the strip rather than as a thing to press. */
+        /* Narrower than the wedge and centred over it, so it reads as a button. */
         stems_g_caption[i] = stems_label(row, k_stem_name[i], FONT_CAPTION, mod_ui()->surface,
                                    mod_ui()->text_dim, 1, x + (wedge_w - CAPTION_W) / 2,
                                    ROW_PAD / 2, CAPTION_W, CAPTION_H);
@@ -124,8 +107,8 @@ static uintptr_t stems_build_row(void)
 }
 
 /* `anchor` is a TouchAria, whose parent is the title bar's juce::Component base.
- * kit/band.c walks that up to the waveform view and the rect the stock panels
- * share; until it can, there is nothing to build against. */
+ * kit/band.c walks up from it to the waveform view and the stock panel rect;
+ * nothing is built until that succeeds. */
 void stems_build(uintptr_t anchor)
 {
     uintptr_t bar;
@@ -134,32 +117,29 @@ void stems_build(uintptr_t anchor)
     bar = kit_band_bar();
     if (!stems_label_vt_ready()) return;
 
-    /* Each half is built at most once. A retry after a partial build must not create a
-     * second button: paint fires per frame, so anything unguarded here leaks a widget
-     * per frame rather than once. */
+    /* Each half is built at most once: paint fires per frame, so an unguarded retry
+     * after a partial build would leak a widget per frame. */
     stems_g_building = 1;
     if (!stems_g_btn_stems) {
         stems_g_btn_stems = stems_label(bar, "STEMS", FONT_QUICKMENU, 0x00000000u, mod_ui()->text_deck, 1,
                                   QM_SLOT_X, QM_SLOT_Y, QM_SLOT_W, QM_SLOT_H);
-        /* The badge is a child of the button, so it moves and hides with it and
-         * cannot be tapped in its own right -- the press belongs to STEMS whether
-         * or not it lands on the mark. Not clickable, so it keeps stock Label's
-         * mouseDown (the empty stub) and the press falls through to the parent. */
+        /* The badge is a child of the button, so it moves and hides with it. Not
+         * clickable: it keeps stock Label's mouseDown (the empty stub) and the press
+         * falls through to STEMS. */
         stems_g_warn = stems_label(stems_g_btn_stems, "!", FONT_CAPTION, 0x00000000u, mod_ui()->warn, 0,
                              QM_SLOT_W - 22, 4, 18, 20);
         stems_set_visible(stems_g_warn, 0);
-        /* The other corner, mirrored, same size and the same non-clickable
-         * child: one mark says the deck cannot separate this track, the other
-         * says the stems are not leaving it alone.
+        /* The edit mark: the opposite corner, same kind of non-clickable child.
+         * The warn badge says the deck cannot separate this track; this one says
+         * the stems are changing it.
          *
-         * U+2022 BULLET, written as its UTF-8 bytes and placed by
-         * juce_string_utf8 -- the plain String constructor is ASCII-per-byte and
-         * would spell it as three Latin-1 characters.
+         * U+2022 BULLET as UTF-8 bytes, built via juce_string_utf8; the plain
+         * String constructor is ASCII-per-byte and would produce three Latin-1
+         * characters.
          *
-         * THE GLYPH IS CHOSEN AGAINST THE FONT THE DECK RESOLVES, not the one
-         * the sources name. U+00B7 MIDDLE DOT is a circle in the UCGothic faces
-         * and a SQUARE in TsukuGo, FZLTZH and GB18030; this deck draws the
-         * square. U+2022 is round in every face that has it at all. */
+         * Chosen for the font the deck actually resolves: U+00B7 MIDDLE DOT is a
+         * circle in the UCGothic faces but a square in TsukuGo, FZLTZH and GB18030,
+         * and this deck draws the square. U+2022 is round in every face that has it. */
         stems_g_edit = stems_label(stems_g_btn_stems, "\xe2\x80\xa2", FONT_BADGE, 0x00000000u, mod_ui()->text, 0,
                              BADGE_AT_X - BADGE_MARK_X, BADGE_AT_Y - BADGE_MARK_Y,
                              BADGE_BOX, BADGE_BOX);
@@ -172,9 +152,9 @@ void stems_build(uintptr_t anchor)
     }
     stems_g_building = 0;
 
-    /* Sync before the completeness check, not after: addAndMakeVisible shows each piece
-     * as it is attached, so a half-built row would otherwise be left on screen over the
-     * waveform with no way to close it. */
+    /* Sync before the completeness check: addAndMakeVisible shows each piece as it is
+     * attached, so a half-built row would otherwise stay on screen with no way to close
+     * it. */
     stems_sync();
     if (!stems_g_btn_stems || !stems_g_row) {
         MDBG("stems: build incomplete (button=%#lx row=%#lx)\n",

@@ -14,8 +14,8 @@ double stem_loop_wrap(double u, int64_t span)
     s = (double)span;
 
     /* fmod by hand, because this file links into the tests without libm. The
-     * cast truncates toward zero, so a position before `from` comes back
-     * negative -- loops do not run backwards. */
+     * cast truncates toward zero, so a position before `from` comes out
+     * negative and is wrapped forward below. */
     turns = (int64_t)(u / s);
     u -= (double)turns * s;
     if (u < 0.0)
@@ -35,11 +35,9 @@ double stem_loop_phase(const struct stem_loop *l, int64_t at, double ratio)
     return stem_loop_wrap((double)(at - l->from) * ratio, l->span);
 }
 
-/* How far ahead of the hint it is still worth walking. A block is a few
- * milliseconds and a beat is a few hundred, so a block advances by a fraction of
- * one interval and the walk ends on its first or second compare. Anything past
- * this is a seek rather than the next frame, and bisecting to it is cheaper than
- * stepping. */
+/* How far ahead of the hint to walk. A block is a few milliseconds and a beat a
+ * few hundred, so the walk usually ends on its first or second compare.
+ * Anything further is a seek, and bisecting is cheaper than stepping. */
 #define BEAT_WALK_MAX   4
 
 double stem_beat_at(const int64_t *beats, int32_t count, int64_t at,
@@ -67,8 +65,8 @@ double stem_beat_at(const int64_t *beats, int32_t count, int64_t at,
 
     lo = -1;
 
-    /* The hint, if it still brackets `at` or is a step or two behind it. Checked
-     * rather than believed: everything below is the same whether it came from
+    /* Use the hint if it still brackets `at` or is a step or two behind it.
+     * It is verified, so everything below is the same whether `lo` came from
      * here or from the bisection. */
     if (cursor) {
         int32_t i = *cursor, n;
@@ -84,8 +82,8 @@ double stem_beat_at(const int64_t *beats, int32_t count, int64_t at,
 
     if (lo < 0) {
         /* beats[lo] <= at < beats[hi] on entry, and every step keeps it. The
-         * array is ascending -- grid.c refuses one that is not, because a search
-         * over an unordered array is not wrong loudly, it is wrong quietly. */
+         * array is ascending: grid.c refuses one that is not, since a bisection
+         * over an unordered array gives wrong answers without failing. */
         lo = 0;
         hi = count - 1;
         while (hi - lo > 1) {

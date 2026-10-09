@@ -2,30 +2,26 @@
 /*
  * xpad/seq.c - OVERDUB: four beats of the track, as events.
  *
- * WHAT IS STORED IS THAT SOMETHING HAPPENED AND WHERE IN THE BAR, and replay
- * makes it happen again. Not audio. The RMX-1000's own OVERDUB is read the same
- * way: its mute and its delete act per X-PAD button, which cannot be done to a
- * mixed buffer, so what it keeps has to be per-source too.
+ * Stores events (what happened and where in the bar), not audio; replay
+ * re-triggers them. The RMX-1000's OVERDUB mutes and deletes per X-PAD button,
+ * which requires per-source storage rather than a mixed buffer.
  *
- * TWO KINDS. A HIT is a pad firing. A PAD event is the X-PAD's own gesture --
- * which loop length, and how far bent -- so a sweep across the strip becomes
- * part of the loop instead of something the DJ has to keep playing by hand.
- * Both live on the same four beats and the same phases; only what they do on
- * replay differs.
+ * Two kinds. A HIT is a pad firing. A PAD event is the X-PAD's gesture (loop
+ * length and bend), so a sweep across the strip becomes part of the loop. Both
+ * use the same four-beat phase; only their replay differs.
  *
- * That reading is also what makes this cheap and exact. There is no capture
- * buffer, no feedback path and no gain stacking; an event costs 24 bytes; and a
- * replayed hit goes through the same read head as a live one, so it is pitched
- * and rolled by whatever the strip is doing NOW rather than by whatever it was
- * doing when the hit was recorded.
+ * There is no capture buffer, feedback path or gain stacking, and an event is 24
+ * bytes. A replayed hit goes through the same read head as a live one, so it is
+ * pitched and rolled by the strip's current state, not its state when recorded.
  *
- * THE PHASE IS AGAINST THE TRACK'S GRID, modulo four beats. A hit at track beat
- * 10.7 is stored at 2.7 and fires at every beat congruent to 2.7 for as long as
- * OVERDUB is on: there is no window to open, no bar counter to keep, and nothing
- * that can drift. Seek, and the bar is wherever the track is.
+ * The phase is relative to the track's grid, modulo four beats. A hit at track
+ * beat 10.7 is stored at 2.7 and fires at every beat congruent to 2.7 while
+ * OVERDUB is on: no window, no bar counter, no drift. After a seek the bar
+ * follows the track.
  *
- * Threads: [audio] records and plays -- both, in that order within one block, so
- * the array has a single writer and needs no lock; [message] arms and clears.
+ * Threads: [audio] records and plays, in that order within one block, so the
+ * array has a single writer and needs no lock; [deck] (DELETE) and [message]
+ * (the panel) arm and clear.
  */
 #include "xpad/xpad.h"
 #include "kit/mod.h"
@@ -44,12 +40,12 @@ struct xp_event {
 
 static struct xp_event xpad_g_ev[XP_SEQ_MAX];
 
-/* Published LAST on a record and cleared FIRST on a wipe, so a reader either
- * sees an event whose fields are written or does not see it at all. */
+/* Published last on a record and cleared first on a wipe, so a reader sees
+ * either a fully written event or none. */
 static int xpad_g_nev;
 
 /* What the bar is playing back on the strip. Audio-thread state, cleared with
- * the bar and whenever a finger takes the strip back. */
+ * the bar. */
 static int   xpad_g_auto_div = XP_DIV_NONE;
 static float xpad_g_auto_semis;
 
@@ -78,8 +74,8 @@ static double xp_wrap(double b)
 {
     double p = b - (double)XP_SEQ_BEATS * floor(b / (double)XP_SEQ_BEATS);
 
-    /* floor keeps this in range for negative beats too -- a track has audio
-     * before its first analysed beat, and a hit there is still a hit. */
+    /* floor keeps this in range for negative beats too: a track has audio
+     * before its first analysed beat. */
     if (!(p >= 0.0) || !(p < (double)XP_SEQ_BEATS))
         return 0.0;
     return p;
@@ -87,10 +83,8 @@ static double xp_wrap(double b)
 
 /* Append, evicting the oldest when the bar is full.
  *
- * OLDEST BY WHEN IT WAS RECORDED, not by where it sits in the bar: the array is
- * in insertion order, so this is a shift by one. Full is not a state to refuse
- * from -- a DJ still overdubbing after a hundred and twenty events is still
- * playing, and the four beats they are playing now are the ones worth keeping. */
+ * Oldest by recording time, not bar position: the array is in insertion order,
+ * so this is a shift by one. A full bar never refuses a new event. */
 static void xp_seq_push(const struct xp_event *ev)
 {
     int n = xpad_g_nev;
@@ -136,9 +130,8 @@ void xpad_seq_record_pad(int div, float semis, double beat)
 /* Fire whatever falls in (b0, b1]. Half-open at the low end so a boundary landing
  * exactly on a block edge fires once rather than twice.
  *
- * The span is compared in BAR PHASE, and a block never covers a whole bar, so
- * the only case to handle is the span crossing the bar's wrap -- which is why
- * this is two tests rather than one. */
+ * The span is compared in bar phase. A block never covers a whole bar, so the
+ * only special case is the span crossing the bar's wrap. */
 void xpad_seq_play(double b0, double b1)
 {
     double p0, p1;
@@ -164,17 +157,15 @@ void xpad_seq_play(double b0, double b1)
         if (!hit)
             continue;
         if (xpad_g_ev[i].kind == XP_EV_HIT) {
-            /* At the phase it was recorded at, which is a frame inside this
-             * block: the bar is a machine and belongs exactly on its own grid. */
+            /* At the recorded phase, on its own frame inside this block. */
             double d = p - p0;
 
             if (d <= 0.0)
                 d += (double)XP_SEQ_BEATS;      /* the span wrapped the bar */
             xpad_seq_fire_at(xpad_g_ev[i].bank, b0 + d);
         } else {
-            /* IN INSERTION ORDER, so two gesture events inside one block leave
-             * the later one standing -- which is what a sweep sampled faster
-             * than the block rate should come back as. */
+            /* In insertion order, so of two gesture events in one block the
+             * later one wins. */
             xpad_g_auto_div   = xpad_g_ev[i].div;
             xpad_g_auto_semis = xpad_g_ev[i].semis;
         }
@@ -183,10 +174,8 @@ void xpad_seq_play(double b0, double b1)
 
 /* ---- the arming, from the panel ------------------------------------------- */
 
-/* OVERDUB going off frees the lot, which is the RMX's own behaviour and the only
- * one that needs no second control: with three buttons borrowed there is nowhere
- * to put a per-layer delete, so the pass that clears everything is the one the
- * DJ has. */
+/* Turning OVERDUB off clears the bar, as on the RMX. There is no spare button
+ * for a per-layer delete. */
 void xpad_overdub_set(int on)
 {
     if (on == xpad_g_overdub)

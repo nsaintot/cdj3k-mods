@@ -2,8 +2,7 @@
  * Spacing, sizing and layout tokens.
  *
  * One 4px-based scale for every gap, pad and margin in the site. A component
- * that needs a value not on the scale is usually a component with a layout
- * problem, not a scale that is missing a step.
+ * that needs a value not on the scale usually has a layout problem.
  */
 
 :root {
@@ -19,7 +18,7 @@
   --space-9: 4rem; /*    64px */
   --space-10: 5.5rem; /* 88px */
 
-  /* Measures. Prose is capped at something readable rather than at the column. */
+  /* Measures. Prose is capped at a readable width, not the column width. */
   --measure-prose: 68ch;
   --width-content: 68rem;
   --width-wide: 84rem;

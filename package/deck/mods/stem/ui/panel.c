@@ -9,10 +9,9 @@
 
 /* ---- the band ------------------------------------------------------------
  *
- * kit/band.c owns the strip and arbitrates who has it; this is only the STEMS
- * end of that contract. The mode number is ours alone and must stay unique
- * across clients -- it is what the kit's watch reads back to tell "still ours"
- * from "taken". */
+ * kit/band.c owns the strip and arbitrates who has it; this is the STEMS side.
+ * The mode number must be unique across clients: the kit's watch reads it back
+ * to tell "still ours" from "taken". */
 #define STEMS_BAND_MODE 5
 
 static void stems_band_closed(void)
@@ -45,10 +44,9 @@ int32_t stems_slot_x(void)
 /* Interaction                                                        */
 /* ================================================================== */
 
-/* ENABLE STEMS in MOD SETTINGS is the master gate and can be flipped while the play
- * screen is up, so visibility is re-asserted from the paint hook rather than only at
- * build time. Paint runs per frame, hence the memo: juce's own setters already
- * no-op on an unchanged value, but this keeps the common case to one comparison. */
+/* ENABLE STEMS in MOD SETTINGS is the master gate and can change while the play
+ * screen is up, so visibility is re-asserted from the paint hook. Paint runs per
+ * frame; the memo keeps the common case to one comparison. */
 void stems_sync(void)
 {
     static int last = -1;
@@ -61,47 +59,38 @@ void stems_sync(void)
     on  = (state & 1) != 0;
     lit = on && (state & 2) != 0;
 
-    /* The gate moving changes which slots are in use, so the other client's
-     * button and the track title both move with it. */
+    /* The gate changes which slots are in use, so the other client's button and
+     * the track title move with it. */
     if (gate_moved) kit_band_slots_changed();
     stems_set_visible(stems_g_btn_stems, on);
     stems_set_visible(stems_g_row, lit);
-    /* Closing the row ends any gesture outright, cooldown included: the next thing
-     * the DJ does after reopening is a fresh intent, not the tail of an old sweep.
-     *
-     * The STEMS button is exempt, because it is not IN the row -- it is what closed it,
-     * and the finger is still down on it. Clearing its grab here dropped the touch tier
-     * mid-press, so a press that CLOSED the panel stayed flat grey while one that opened
-     * it lit up. Its own mouseUp releases the grab, which is where that belongs. */
+    /* Closing the row ends any gesture, cooldown included. The STEMS button is
+     * exempt: it is not in the row and its finger is still down; clearing its grab
+     * would drop its touch highlight mid-press. Its own mouseUp releases it. */
     if (!lit && stems_g_grab != stems_g_btn_stems) { stems_g_grab = 0; stems_g_grab_last = 0; }
     stems_btn_state(lit ? BTN_ON : BTN_OFF);
 
-    /* The master gate is the one route that changes whether the row is up without
-     * touching stems_g_row_open -- every other one moves that flag and claims or releases
-     * the band on its way. Hiding the strip on its own would leave the waveform
-     * compacted around nothing.
+    /* The master gate is the only route that shows or hides the row without
+     * touching stems_g_row_open; every other route claims or releases the band
+     * itself. Hiding the strip alone would leave the waveform compacted around
+     * nothing.
      *
-     * A BACKSTOP, not the main path. Switching STEMS off also drops the resident
-     * set, which makes stems_available() false, and the warn branch further down
-     * then closes the row properly and hands the band back -- that is what is
-     * observed doing it, a second later, because that branch waits out
-     * WARN_SETTLE_TICKS first. This covers the second in between, for a DJ who
-     * leaves the settings screen faster than that, and the case where there was
-     * no set resident to drop.
+     * This is a backstop. Switching STEMS off drops the resident set, and the warn
+     * poll (hooks.c) then closes the row and returns the band after
+     * WARN_SETTLE_TICKS. This covers that interval and the case with no set
+     * resident.
      *
-     * Gated on the gate having MOVED rather than on `lit`, which is what tells it
-     * apart from an ordinary open or close -- and from the stock-quick-menu
-     * takeover, where releasing here would shut the panel that is about to open. */
+     * Keyed on the gate changing, not on `lit`, so an ordinary open/close or a
+     * stock quick-menu takeover does not release the band. */
     if (gate_moved && stems_g_row_open) {
         if (on) kit_band_take(&k_band_stems);
         else    kit_band_give(&k_band_stems);
     }
 }
 
-/* One-shot component-tree dump, debug builds only. This is how the stock quick-menu
- * panel's rect and the waveform's rect were found: open a stock panel, then open ours,
- * and read the two off the log. Bounded on depth and on child count so a corrupt or
- * unexpected pointer cannot turn into an unbounded walk. */
+/* One-shot component-tree dump at debug log level, for comparing the stock
+ * quick-menu panel's layout with ours. Bounded on depth and child count so a bad
+ * pointer cannot cause an unbounded walk. */
 #define STEMS_TREE_DEPTH   4
 #define STEMS_TREE_MAXKIDS 64
 
@@ -128,10 +117,9 @@ void stems_dump_tree(uintptr_t comp, int depth)
     }
 }
 
-/* The flag itself, for the parts of the feature that are not the UI. The groove
- * circuit is gated on it and its lamps follow, so this is read from [deck] and
- * from the display tick as well as from here. A plain aligned int, written only
- * by the toggle below. */
+/* The row-open flag for the non-UI parts of the feature. The groove circuit and its
+ * lamps are gated on it, so it is read from [deck] and from the display tick. A
+ * plain aligned int, written only by the toggle below and by stems_band_closed. */
 int stems_row_open(void)
 {
     return stems_g_row_open;
@@ -140,9 +128,8 @@ int stems_row_open(void)
 void stems_toggle_row(void)
 {
     if (!stems_g_row_open) {
-        /* THE BAND FIRST, AND ONLY OPEN IF IT COMES -- see kit_band_take. With no
-         * track the app refuses the mode, and the row went up over the rekordbox
-         * logo with its wedges grey and the poll flapping it. */
+        /* Take the band first and open only if it is granted (see kit_band_take).
+         * With no track loaded the app refuses the mode. */
         if (kit_band_take(&k_band_stems) < 0) {
             MDBG("stems: no band to open into (no track loaded?)\n");
             return;
@@ -153,12 +140,9 @@ void stems_toggle_row(void)
         kit_band_give(&k_band_stems);
     }
     stems_sync();
-    /* Pick up any in-flight processing the moment the row appears, rather than waiting
-     * for the paint tick -- the title bar repaints rarely, so that tick is not dependable
-     * on its own. */
+    /* Show any in-flight processing as soon as the row appears. */
     if (stems_g_row_open) {
-        /* Nothing cached survives the row being shut: the poll stops with it while the
-         * job carries on, so whatever is on the bar describes a state that is gone. */
+        /* The poll stopped while the row was shut, so the bar's cache is stale. */
         stems_progress_forget();
         stems_progress_poll();
     }

@@ -44,10 +44,9 @@ any commercial relationship with a trademark owner.
 ## Interoperability
 
 This project changes the behaviour of an application already running on hardware
-its owner bought. Where it was necessary to understand that application's
-interfaces in order to work alongside it, that understanding was reached by
-examining behaviour and interfaces only, for the sole purpose of interoperating
-with it.
+its owner bought. Where the project needed to understand that application's
+interfaces to work alongside it, it did so by examining behaviour and
+interfaces only, for the sole purpose of interoperating with it.
 
 No manufacturer's code, firmware, artwork, font, or other asset is copied,
 included, or redistributed by this project. Nothing here replaces the deck's own
@@ -57,4 +56,4 @@ software.
 
 If you believe any use here oversteps, please open an
 [issue](https://github.com/nsaintot/cdj3k-mods/issues) or contact the
-maintainer. It will be looked at and addressed on its merits.
+maintainer. It will be reviewed and addressed on its merits.

@@ -5,8 +5,8 @@
  * Shared by every mod; knows about none of them. A mod's own state and entry
  * points live in that mod's header.
  *
- * The install model, the naming rule for shared symbols, and the thread tags used
- * throughout: docs/mods.md.
+ * The install model, the naming rule for shared symbols and the thread tags
+ * used throughout are in docs/mods.md.
  *
  * Safety model, implemented in common.c:
  *   - EP122's internals are named, not addressed. See resolve.h, ep122_syms.spec.
@@ -43,28 +43,25 @@ extern "C" {
 
 /* ---- logging ----
  *
- * FIVE LEVELS, AND THE DECK SHIPS AT ERROR. A DJ's unit should say nothing while it
- * works; anything it does say should be worth reading. The level is read once from
- * EP122_MOD_LOGLEVEL, whose value is a name or a digit:
+ * Five levels; the default is ERROR, so a working deck logs nothing. The level
+ * is read once from EP122_MOD_LOGLEVEL, whose value is a name or a digit:
  *
  *     EP122_MOD_LOGLEVEL=error   (0)  the default -- only what is broken
  *     EP122_MOD_LOGLEVEL=warn    (1)  + a feature that refused to install, a value not saved
  *     EP122_MOD_LOGLEVEL=info    (2)  + what installed, what a track load decided
  *     EP122_MOD_LOGLEVEL=debug   (3)  + everything a DJ action produces
- *     EP122_MOD_LOGLEVEL=trace   (4)  + everything a FRAME produces
+ *     EP122_MOD_LOGLEVEL=trace   (4)  + everything a frame produces
  *
- * Unset or empty leaves ERROR. A value that names no level ALSO leaves ERROR, but says
- * so at ERROR: silence is what someone who typed EP122_MOD_LOGLEVEL=verbose would read
- * as the variable not working at all, and they would be right.
+ * Unset or empty leaves ERROR. A value that names no level also leaves ERROR,
+ * and logs an error saying so.
  *
- * Volume is not verbosity, which is why trace is a level of its own rather than more
- * debug: measured over half an hour of ordinary use, per-draw tracing alone was 17k
- * lines and buried every line anyone reads. A grid decision or a pad claim arrives
- * once and cannot be found next to it.
+ * Per-frame output is a separate trace level because of its volume: over half
+ * an hour of ordinary use, per-draw tracing alone was 17k lines, which buried
+ * one-off debug lines such as a grid decision or a pad claim.
  *
- * ERROR and WARN carry their level in the text because they are the two that appear
- * on a deck nobody is debugging, and whoever reads them is not reading this file.
- * The rest keep the bare prefix every existing grep already matches. */
+ * ERROR and WARN carry their level in the text because they are the ones seen
+ * on a deck nobody is debugging. The rest keep the bare prefix existing greps
+ * match. */
 #define MOD_LOG_ERROR LOG_ERROR
 #define MOD_LOG_WARN  LOG_WARN
 #define MOD_LOG_INFO  LOG_INFO
@@ -73,8 +70,8 @@ extern "C" {
 
 extern int g_mod_log;
 
-/* True when `lvl` would be printed. For guarding work that only exists to be logged --
- * a census, a dump, a snapshot -- so the cost goes away with the line. */
+/* True when `lvl` would be printed. Guards work done only for logging (a
+ * census, a dump, a snapshot) so it is skipped when the line is. */
 #define MLOG_AT(lvl) (g_mod_log >= (lvl))
 
 #define MLOG_(lvl, tag, ...) do { if (MLOG_AT(lvl)) { \
@@ -106,14 +103,13 @@ int  mod_prot(uintptr_t addr, size_t len, int flags);
  * target in *saved. Verifies the slot holds `expect_fn`; a mismatch or
  * unreadable address returns -1 without touching memory. `expect_fn` is
  * normally read from the same slot a moment earlier (see mod_patch_vslot), so
- * the check is a guard against a slot that moved out from under that read. */
+ * the check guards against the slot changing after that read. */
 int  mod_patch_slot(const char *name, uintptr_t slot, uintptr_t expect_fn,
                     void *wrapper, uintptr_t *saved);
 
 /* Patch a virtual named by (resolved vtable symbol, byte offset from the address
- * point). Preferred: the stock function comes out of the slot itself, so there
- * is no address to state and nothing to guard. -1 if the class or slot is
- * absent. */
+ * point). Preferred: the stock function is read from the slot itself, so no
+ * address needs stating. -1 if the class or slot is absent. */
 int  mod_patch_vslot(const char *name, int vt_sym, unsigned off,
                      void *wrapper, uintptr_t *saved);
 
@@ -125,21 +121,18 @@ void mod_restore_code(uintptr_t fn, const uint8_t *code, size_t n);
 
 /* ---- inline function hooking ----
  *
- * For a FREE function -- one reached by a direct call rather than through a
- * vtable, so there is no slot to repoint. The first four instructions are
- * replaced with a branch to `hook`, and *tramp is set to a copy of those four
- * followed by a branch back into the original, so a hook calls *tramp to get
- * the stock behaviour.
+ * For a free function, reached by a direct call with no vtable slot to
+ * repoint. The first four instructions are replaced with a branch to `hook`,
+ * and *tramp is set to a copy of those four followed by a branch back into the
+ * original; a hook calls *tramp for the stock behaviour.
  *
- * Prefer mod_patch_vslot wherever a virtual will do. This rewrites executable
- * memory and can only be as safe as the check below; a slot patch cannot be
- * wrong in that way.
+ * Prefer mod_patch_vslot wherever a virtual will do: this rewrites executable
+ * memory and is only as safe as the check below.
  *
- * REFUSES rather than corrupts. Every displaced instruction is checked for
- * PC-relative encodings -- ADR/ADRP, B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ and
- * literal loads all mean something different once moved -- and a function whose
- * prologue holds any of them is left alone with a log line saying which word.
- * That check is the whole safety argument: everything else here is mechanical.
+ * Every displaced instruction is checked for PC-relative encodings (ADR/ADRP,
+ * B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, literal loads), which change meaning once
+ * moved. A function whose prologue holds any of them is refused, with a log
+ * line naming the word.
  *
  * Journalled like a slot patch, so mod_unpatch_owner puts the bytes back.
  */
@@ -154,14 +147,13 @@ void mod_patch_owner(const char *name);
 /* Restore every slot `owner` patched, newest first. NULL means all. Returns the
  * count; already-restored slots are skipped, so calling twice is safe.
  *
- * There is no process-wide uninstall. The only place one could be called from is
- * a destructor, which does not run when the process is signalled -- and EP122 is
- * stopped with SIGTERM. Restoring slots in an address space about to be unmapped
- * would be unobservable in any case. */
+ * There is no process-wide uninstall: the only caller would be a destructor,
+ * which does not run when EP122 is stopped with SIGTERM, and restoring slots in
+ * an exiting process has no effect anyway. */
 int  mod_unpatch_owner(const char *owner);
 
-/* The same for the mod currently installing: the rollback an install uses when
- * it gets part-way in and stops. */
+/* The same for the mod currently installing: the rollback for an install that
+ * fails part-way. */
 int  mod_unpatch_current(void);
 
 /* ---- the registry (common.c) ----

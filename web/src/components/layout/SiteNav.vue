@@ -2,9 +2,8 @@
 /*
  * The primary navigation.
  *
- * Every entry is a route. None of them is an anchor into the page you are
- * already on -- a nav that scrolls you down the current page is a nav that
- * cannot tell you where you are.
+ * Every entry is a route, not an anchor into the current page, so the active
+ * entry always says where you are.
  *
  * Active state is computed rather than left to RouterLink's classes: `/` has to
  * match exactly (or it is active everywhere) while `/docs` has to match its

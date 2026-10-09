@@ -3,35 +3,31 @@
  * xpad/audio.c - eight voices, read at the pad's own rate and summed after the
  * stretcher.
  *
- * TWO CLOCKS, and keeping them apart is the whole design.
+ * Two separate clocks:
  *
- *   The VOICE runs free. Its playhead advances one frame per output frame
- *   whatever the deck is doing -- so a sample sounds on a paused deck, keeps its
- *   own length when the tempo fader moves, and is coloured only by the X-PAD's
- *   Y axis. That is what a sampler is.
+ *   The voice runs free. Its playhead advances one frame per output frame
+ *   whatever the deck is doing, so a sample sounds on a paused deck, keeps its
+ *   length when the tempo fader moves, and is pitched only by the X-PAD's Y axis.
  *
- *   The ROLL runs on the TRACK. Whether to re-trigger is asked of the track's
- *   own beat grid, so a 1/8 roll lands on the track's eighths however the tempo
- *   got there, and a paused deck simply has no boundaries to cross.
+ *   The roll runs on the track. Re-triggers follow the track's beat grid, so a
+ *   1/8 roll lands on the track's eighths at any tempo, and a paused deck has no
+ *   boundaries to cross.
  *
- * A one-shot needs no BPM stated about it for either of those, which is why the
- * banks need no config file where GROOVE CIRCUIT's loops do.
+ * Neither needs the sample's BPM, so the banks need no config file, unlike
+ * GROOVE CIRCUIT's loops.
  *
- * THE PITCH IS DURATION-PRESERVING, which is what the RMX-1000 does and is not
- * what a varispeed sampler does. The playhead runs at real time and the pitch is
- * taken out of two READ HEADS that wander back through the sample and wrap a
- * window at a time; the crossfade between them hides the wrap and the wraps are
- * what put the timeline back. A two-second sample is two seconds at any pitch.
- * See xp_heads for the mechanism and what it costs.
+ * The pitch shift preserves duration, as on the RMX-1000 (not varispeed). The
+ * playhead runs at real time and the pitch comes from two read heads that move
+ * back through the sample and wrap one window at a time; the crossfade between
+ * them hides the wrap. A two-second sample lasts two seconds at any pitch. See
+ * xp_heads for the mechanism and its cost.
  *
- * NOTHING THAT GROWS ALL NIGHT REACHES A FLOAT. The playhead is a count of whole
- * frames, the wrap phase is a Q32 unsigned that wraps by overflowing, and the
- * only float in the read path is a delay bounded by one window. A float index
- * carrying a sub-sample fraction on top of a magnitude that grows with uptime is
- * catastrophic cancellation: the resolution is the float spacing at the index,
- * which is already a 256th of a sample after a third of a second at 96 kHz and
- * halves with every doubling of uptime. It comes up clean and decays into
- * aliasing for as long as the deck stays on. Measured.
+ * No value that grows with uptime is stored as a float. The playhead is a count
+ * of whole frames, the wrap phase is a Q32 unsigned that wraps by overflow, and
+ * the only float in the read path is a delay bounded by one window. A float
+ * index with a sub-sample fraction loses resolution as it grows: the spacing is
+ * already 1/256 sample after a third of a second at 96 kHz and doubles with
+ * every doubling of uptime, so the output decays into aliasing.
  *
  * Threads. [audio] owns everything below the trigger line and may not allocate,
  * lock or log; [deck] fires and releases pads; [message] silences on close.
@@ -45,74 +41,64 @@
 
 /* ---- a voice --------------------------------------------------------------
  *
- * [audio] alone. The deck never touches one: it raises a bit in xpad_g_pend and
- * the mix starts the voice at the quantize boundary, so there is no handshake to
- * get wrong and a press cannot half-arrive. */
+ * [audio] only. The deck never touches a voice: it sets a bit in xpad_g_pend and
+ * the mix starts the voice on the next block, so a press cannot half-arrive. */
 struct xp_voice {
     uint64_t pos;           /* the playhead: whole frames, one per output frame */
-    uint32_t phi;           /* the wrap phase both heads hang off, Q32 */
-    float    ratio;         /* THE BEND THIS SHOT IS PLAYING AT -- see the mix */
+    uint32_t phi;           /* the wrap phase both heads follow, Q32 */
+    float    ratio;         /* the bend this shot is playing at; see the mix */
     float    win;           /* its own crossfade window, in frames */
-    int32_t  start;         /* WHICH FRAME OF THIS BLOCK IT BEGINS ON */
+    int32_t  start;         /* which frame of this block it begins on */
     int      fresh;         /* started this block; the bend is not seeded yet */
     int      sounding;
 };
 
 static struct xp_voice xpad_g_voice[XP_BANKS];
 
-/* "Stop everything", which is the one thing the trigger counter cannot say:
- * every value of it means fire. [message] sets, [audio] takes. */
+/* "Stop everything", which the pending bitmask cannot express. [message] sets,
+ * [audio] takes. */
 static int xpad_g_hush;
 
-/* WHAT REACHED THE OUTPUT, which is the only honest answer to "is it audible":
- * blocks our sum was added to, and the peak of OUR OWN contribution rather than
- * of the block, so a loud track cannot stand in for a sample that never played.
- * [audio] accumulates, [message] reads and clears. A lost update costs one
- * window and is not worth a lock on this path. */
+/* What reached the output: blocks our sum was added to, and the peak of our own
+ * contribution, not the block, so a loud track cannot hide a sample that never
+ * played. [audio] accumulates, [message] reads and clears. A lost update costs
+ * one window, so there is no lock. */
 static unsigned xpad_g_mix_blocks;
 static float    xpad_g_mix_peak;
 static unsigned xpad_g_mix_fires;
 static unsigned xpad_g_fired;       /* [deck] side of the same count */
 
-/* The one-pole the bend glides through, and the block it was set up for. The
- * glide is per voice; only the coefficient is shared, because it depends on the
- * block and the rate and on nothing a voice knows. */
+/* The one-pole coefficient for the bend's glide, and the block length and rate
+ * it was computed for. The glide state is per voice; the coefficient is shared
+ * because it depends only on block length and rate. */
 static float    xpad_g_pole;
 static int64_t  xpad_g_pole_len;
 static int      xpad_g_pole_rate;
 
 /* ---- the clock ------------------------------------------------------------
  *
- * THE TEMPO IS THE TRACK'S, THE TRANSPORT IS NOT. A sampler that stops when the
- * deck is paused is a sampler that cannot be played over a stopped record, and
- * the track's BPM is a property of the track rather than of whether it happens
- * to be moving. So the roll's clock runs whether or not the play head does.
+ * The tempo comes from the track, but the clock does not stop with the
+ * transport, so the sampler can be played over a paused deck.
  *
- * It has two sources and takes the better one every block:
+ * Two sources, chosen every block:
  *
- *   THE TRACK, whenever the play head advanced. The beat position comes off the
- *   grid, so the roll sits on the track's own eighths however the tempo got
- *   there, and the position is absolute rather than accumulated, so it cannot
- *   drift.
+ *   The track, whenever the play head advanced. The beat position comes from
+ *   the grid, so the roll sits on the track's eighths at any tempo, and the
+ *   position is absolute, so it cannot drift.
  *
- *   OUR OWN, once the play head has been still long enough to mean stopped
- *   rather than between pulls: `frames / spb` at the track's stated tempo. 125
- *   BPM parked is 125 BPM.
+ *   Our own, once the play head has been still long enough to mean stopped
+ *   rather than between pulls: `frames / spb` at the track's tempo.
  *
- * XP_STILL_BLOCKS is what separates the two, and it is deliberately short: a
- * burst gap is a handful of blocks and this is about twenty milliseconds, so a
- * roll on a parked deck starts imperceptibly late and a roll on a playing one is
- * never handed to the free-running branch.
+ * XP_STILL_BLOCKS separates the two. A burst gap is a handful of blocks and
+ * this is about 20 ms, so a roll on a parked deck starts imperceptibly late and
+ * a roll on a playing deck never switches to the free-running branch.
  *
- * ONE HEAD PER POINT OF THE PIPELINE, and that is the whole reason there are
- * two of them. The sampler sums into what the stretcher has just WRITTEN; the
- * stems' mute edits what it is about to READ; and those are not the same place
- * in the track. Measured on a playing deck, the read runs 8055..9271 frames
- * ahead of the write -- 84 to 97 ms at 96 kHz, wandering by thirteen of them
- * from block to block. A single head shared between the two puts whichever it
- * does not belong to that far out, which is a roll landing a tenth of a second
- * off the grid it is quantized to. Each head is advanced by the position of the
- * audio its own caller is touching. */
+ * There is one head per point in the pipeline. The sampler sums into what the
+ * stretcher has just written; the stems' mute edits what it is about to read.
+ * On a playing deck the read runs 8055..9271 frames ahead of the write (84 to
+ * 97 ms at 96 kHz, varying by up to 13 ms between blocks). A shared head would
+ * put one of them about 0.1 s off the grid. Each head is advanced by the
+ * position of the audio its own caller touches. */
 #define XP_STILL_BLOCKS 30
 
 struct xp_head {
@@ -126,32 +112,31 @@ static struct xp_head xpad_g_in  = { -1, 0, 0.0 };  /* what is being read    */
 
 /* Which route the beat came from this block: 0 none, 1 the flat samples-per-
  * beat, 2 the track's own beat array. Reported, because a roll that plays one
- * hit and stops is a roll with no clock. */
+ * hit and stops has no clock. */
 static int xpad_g_clock_kind;
 
 /* Presses waiting for the next block, one bit per bank. [deck] sets, [audio]
- * takes -- a bitmask rather than a queue because two presses of the same pad
- * inside one block are one hit, not two, and because it is the whole of the
- * handoff: the deck never touches a voice. */
+ * takes. A bitmask because two presses of the same pad in one block are one
+ * hit; it is the whole handoff, since the deck never touches a voice. */
 static unsigned xpad_g_pend;
 
-/* Which brick the roll last saw, so the moment a zone TAKES THE FINGER can be
- * told from the blocks after it. [audio] only; reset when the panel shuts. */
+/* Which brick the roll last saw, so the block where a zone first takes the
+ * finger can be told from the ones after it. [audio] only; reset when the panel
+ * shuts. */
 static int xpad_g_roll_div = XP_DIV_NONE;
 
-/* The boundary an off-grid hit STOOD IN FOR, and whether it is still owed.
- * See xp_roll: a hit sounding a few milliseconds from a boundary has to take
- * that boundary's place rather than queue in front of it. */
+/* The boundary an off-grid hit replaced, and whether it is still pending. See
+ * xp_roll: a hit a few milliseconds from a boundary takes that boundary's
+ * place. */
 static int64_t xpad_g_roll_claim;
 static int     xpad_g_roll_claim_ok;
 
-/* [audio] The hit that just sounded off-grid takes the nearest boundary of `L`
- * beats with it, so the roll does not play that one again a moment later.
+/* [audio] The off-grid hit that just sounded claims the nearest boundary of `L`
+ * beats, so the roll does not replay it a moment later.
  *
- * NEAREST, not the next one down: a hit lands either side of a boundary and it
- * is the nearer one it was aimed at. That is also what keeps the gap to the next
- * hit between half a division and one and a half, where rounding down leaves it
- * anywhere between nothing and one -- and nothing is the sound being fixed. */
+ * Nearest, not the one below: a hit can land either side of the boundary it was
+ * aimed at. This keeps the gap to the next hit between 0.5 and 1.5 divisions;
+ * rounding down would allow anything from 0 to 1. */
 static void xp_claim_boundary(double beat, double L)
 {
     if (!(L > 0.0))
@@ -162,14 +147,13 @@ static void xp_claim_boundary(double beat, double L)
 
 /* ---- firing (deck) -------------------------------------------------------- */
 
-/* THE BLOCK BEING MIXED, so a shot can be placed INSIDE it rather than at its
- * edge. A block is 64 frames of the ALSA period, and starting every shot at
- * frame 0 rounds every boundary down to it. [audio] only, set once per mix. */
+/* The block being mixed, so a shot can start inside it rather than at its edge.
+ * A block is 64 frames of the ALSA period. [audio] only, set once per mix. */
 static int64_t xpad_g_blk_frames;
 static double  xpad_g_blk_b0, xpad_g_blk_b1;
 
-/* Which frame of this block a beat falls on. Outside the block means now, which
- * is what a hit the DJ just played wants. */
+/* Which frame of this block a beat falls on. A beat outside the block maps to
+ * now. */
 static int32_t xp_frame_of(double beat)
 {
     double span = xpad_g_blk_b1 - xpad_g_blk_b0;
@@ -187,14 +171,9 @@ static int32_t xp_frame_of(double beat)
 
 int xpad_g_sel = -1;
 
-/* SELECT AND FIRE, and that is the whole of what a pad does. The selection is
- * what the X-PAD then rolls; the shot is handed to the next block rather than
- * started here, because the deck thread does not own a voice.
- *
- * NOT QUANTIZED. A pad is a drum: what a finger asks for is the sound now, and a
- * hit held back to the next boundary is a hit the DJ did not play. The grid
- * belongs to the roll, which is a machine and is meant to be on it. There is no
- * release either: nothing was held. */
+/* Select and fire. The selection is what the X-PAD rolls; the shot is handed to
+ * the next block because the deck thread does not own a voice. Not quantized,
+ * and there is no release. */
 void xpad_fire(int bank)
 {
     if (bank < 0 || bank >= XP_BANKS)
@@ -204,13 +183,9 @@ void xpad_fire(int bank)
     __atomic_add_fetch(&xpad_g_fired, 1, __ATOMIC_RELAXED);
 }
 
-/* The bar's own trigger. NOT xpad_fire, and the difference is the whole of why
- * the sequencer is correct: that one is the DECK's entry point and does two
- * things the bar must not. It marks the pad HELD, which would leave a sequenced
- * hit rolling with no finger on it; and it goes through the trigger counter,
- * which is what the mix RECORDS from -- so the bar would record its own replay
- * and double its length every pass. Measured before this existed: 1, 2, 3, 4, 5
- * events on consecutive bars from two presses. */
+/* The bar's and the roll's trigger. Not xpad_fire: presses posted there are
+ * recorded by the mix (xp_pending), so the bar would record its own replay and
+ * grow every pass. */
 void xpad_seq_fire_at(int bank, double beat)
 {
     struct xp_voice *v;
@@ -237,22 +212,17 @@ void xpad_silence(void)
     __atomic_store_n(&xpad_g_hush, 1, __ATOMIC_RELEASE);
 }
 
-/* THE PANEL'S THREE STATES, and the X-PAD owns all eight while it is open.
+/* Three pad states; the X-PAD owns all eight pads while the panel is open.
  *
- * Green lit for the bank the X-PAD is on or one that is making a sound -- which
- * is what puts a sequenced hit on the pads as OVERDUB replays it, with no extra
- * bookkeeping: a voice is sounding whether a finger, the roll or the bar started
- * it. Green dim for a bank that is loaded and quiet. GREY for a pad with no
- * sample behind it.
+ * Green lit: the selected bank, or any bank sounding, whether a finger, the
+ * roll or the bar started it (so OVERDUB replays show on the pads). Green dim:
+ * loaded and quiet. Grey: no sample.
  *
- * The grey matters more than it looks. Answering 0 for an empty pad hands it
- * back to the app, which lights it as a HOT CUE -- so an empty sample slot came
- * up wearing whatever colour that pad's cue happens to be, which reads as a
- * loaded bank of some other kind. While the panel is open the pads are sample
- * slots and every one of them says so, loaded or not.
+ * An empty pad must still return 1. Returning 0 hands it back to the app, which
+ * lights it in its HOT CUE colour, so it looks like a loaded bank.
  *
- * 0 only when the panel is shut, and that is exactly right: the pads go back to
- * being hot cues and their lamps back to the app's own. */
+ * Returns 0 only when the panel is shut, so the pads revert to hot cues with
+ * the app's own lamps. */
 
 int xpad_pad_lamp(int pad, struct lamp *out)
 {
@@ -260,10 +230,8 @@ int xpad_pad_lamp(int pad, struct lamp *out)
         return 0;
 
     if (!xpad_bank_ready(pad)) {
-        /* WHITE on the dim level, which this panel renders as its own
-         * near-neutral -- and which is the exact colour the deck puts on a pad
-         * holding no cue, so an empty bank looks like an empty slot rather than
-         * like anything of ours. */
+        /* White at the dim level, which this panel renders as near-neutral
+         * grey: the colour the deck uses for a pad with no cue. */
         lamp_set(out, 255, 255, 255, LAMP_DIM);
         return 1;
     }
@@ -295,12 +263,10 @@ void xpad_mix_stat(struct xpad_mix_stat *out)
 /* ---- the beat clock (audio) -----------------------------------------------
  *
  * The track's fractional beat index at a pool position, by whichever route the
- * track affords. The beat array is right for a track whose tempo moves or that
- * was gridded by hand; a single samples-per-beat is right while the tempo holds
- * still and is all an un-analysed grid can offer. Neither exists on a track with
- * no grid at all, and then there is no roll and no bar -- which is correct
- * rather than a fallback: a sampler with nothing to be in time with is a set of
- * one-shots, and that still works.
+ * track supports. The beat array handles a varying tempo or a hand-edited grid;
+ * a single samples-per-beat covers a steady tempo and is all an un-analysed grid
+ * offers. A track with no grid has neither, so there is no roll and no bar, and
+ * the pads still work as one-shots.
  *
  * `beats`/`count` are borrowed for the block by the caller, so this only reads. */
 struct xp_clock {
@@ -311,13 +277,11 @@ struct xp_clock {
     int32_t        cursor;
 };
 
-/* THE FLAT ROUTE COUNTS FROM beat0, NOT FROM ZERO. Pool position 0 is the head
- * of the file and has nothing to do with the grid, so pos/spb numbers the beats
- * of a bar that starts wherever the track was cut -- every boundary off it sits
- * a constant beat0/spb from the one the DJ can see. Measured on a 148 BPM track
- * with beat0 at 4483: 0.1152 beat, 47 ms, which is a roll that never lands on
- * the needle. The array route has the origin built in, since its own cell 0 is
- * that beat. */
+/* The flat route counts from beat0, not from zero. Pool position 0 is the start
+ * of the file, not a grid line, so pos/spb puts every boundary a constant
+ * beat0/spb off the visible grid (beat0 = 4483 at 148 BPM is 0.1152 beat,
+ * 47 ms). The array route needs no offset: its cell 0 is that
+ * beat. */
 static double xp_beat_at(struct xp_clock *c, int64_t pos)
 {
     if (c->beats)
@@ -332,17 +296,15 @@ static int xp_clock_ok(const struct xp_clock *c)
     return c->beats != NULL || c->spb > 0.0;
 }
 
-/* Advance `h` to `pos` and hand back the span of beats THIS BLOCK COVERS.
+/* Advance `h` to `pos` and return the span of beats this block covers.
  *
- * SELF-CONTAINED, and that is what makes a seek nothing to detect: the span is
- * [pos, pos + adv) where `adv` is how far the source moved for the last block --
- * the block's own length measured in the track, which is its output length
- * scaled by the tempo. A jump simply puts the span somewhere else, and nothing
- * is ever played across one because a span is never longer than a block.
+ * The span is [pos, pos + adv), where `adv` is how far the source moved over the
+ * last block: the block's output length scaled by the tempo. A seek needs no
+ * detection; it just moves the span, and a span is never longer than a block.
  *
- * `adv` is clamped, because the difference between two positions is a seek as
- * readily as it is a block, and it falls back to the output length -- right at
- * 1.0x, and the tempo cannot have moved before the first block. */
+ * `adv` is clamped, since the difference between two positions may be a seek,
+ * and falls back to the output length, which is correct at 1.0x and before the
+ * first block. */
 static void xp_head_step(struct xp_head *h, struct xp_clock *k, int64_t pos,
                          int64_t frames, double *b0, double *b1)
 {
@@ -368,8 +330,8 @@ static void xp_head_step(struct xp_head *h, struct xp_clock *k, int64_t pos,
         *b0 = h->beat;
         *b1 = *b0;
     } else if (k->spb > 0.0) {
-        /* Parked: our own, carried on from where the track left it, so the
-         * phase a stopped deck rolls at is still the phase it stopped on. */
+        /* Parked: our own clock, continuing from where the track stopped so
+         * the phase is preserved. */
         *b0 = h->beat;
         *b1 = *b0 + (double)frames / k->spb;
     } else {
@@ -381,13 +343,11 @@ static void xp_head_step(struct xp_head *h, struct xp_clock *k, int64_t pos,
 
 /* ---- the read heads ------------------------------------------------------- */
 
-/* The crossfade window, recovered from the DSP image and exact. Computed inline
- * because the firmware computes it inline: there is no window table anywhere in
- * the flash.
+/* The crossfade window, computed inline with no table.
  *
  * The two branches meet C0-continuously at x = 0.28348, where both evaluate to
- * 0.632145 = 1 - 1/e. The branch order is forced -- the quadratic form goes
- * negative past x = 0.5, so it can only be the lower segment. */
+ * 0.632145 = 1 - 1/e. The x^2 (1 - 2x) form must be the lower segment, since it
+ * goes negative past x = 0.5. */
 static inline float xp_xfade_window(float x)
 {
     if (x < 0.28348f)
@@ -398,8 +358,8 @@ static inline float xp_xfade_window(float x)
     }
 }
 
-/* What one block's worth of pitch comes to. Built PER VOICE, because a voice
- * holds the bend it was released at and two of them can be at different ones. */
+/* One block's pitch parameters. Built per voice, because each voice keeps the
+ * bend it was released at. */
 struct xp_pitch {
     float    w;             /* the crossfade window, in frames                  */
     float    wq;            /* ...times 2^-32, so a Q32 phase reads out in frames */
@@ -407,18 +367,15 @@ struct xp_pitch {
     uint32_t step;          /* what the phase advances by per frame, wrapping    */
 };
 
-/* One head, `d` frames from the playhead, linearly interpolated. SIGNED: the
- * anchor puts half a window of `d` in front of the playhead -- see xp_heads.
+/* One head, `d` frames from the playhead, linearly interpolated. `d` is signed:
+ * the anchor puts up to half a window of it ahead of the playhead (see
+ * xp_heads).
  *
- * LINEAR AND NOTHING BETTER. The firmware has no higher-order kernel and its
- * position-dependent lowpass is part of the character; a sinc kernel here would
- * be a different effect that happened to have the same pitch.
+ * Linear on purpose: its position-dependent lowpass is part of the sound.
  *
- * Off either end of the sample is SILENT rather than clamped. Before the start
- * there is nothing to hold, and holding the last frame past the end is a DC step
- * that stays until the voice ends. Both happen every time a voice plays: the
- * heads straddle the playhead by half a window either way, so the first half
- * window of a shot and the last are always partly off the end. */
+ * Reads off either end of the sample are silent, not clamped; holding the last
+ * frame would leave a DC step until the voice ends. This happens on every shot,
+ * since the heads straddle the playhead by half a window either way. */
 static inline void xp_tap(const int16_t *pcm, int64_t frames, int64_t base,
                           float d, float *l, float *r)
 {
@@ -433,10 +390,8 @@ static inline void xp_tap(const int16_t *pcm, int64_t frames, int64_t base,
         *r = 0.0f;
         return;
     }
-    /* THE FRAME BEFORE THE FIRST IS SILENCE, not out of range. Refusing i == 0
-     * outright drops the first frame of every shot -- inaudible on anything that
-     * fades in and a whole sample of level on anything gated, which a one-shot
-     * usually is. Interpolating towards zero is also what is actually there. */
+    /* The frame before the first is silence, not out of range. Refusing i == 0
+     * would drop the first frame of every shot, audible on gated one-shots. */
     if (i >= 1) {
         a  = (float)pcm[i * 2];
         b  = (float)pcm[(i - 1) * 2];
@@ -450,55 +405,44 @@ static inline void xp_tap(const int16_t *pcm, int64_t frames, int64_t base,
     }
 }
 
-/* BOTH HEADS, one frame, mixed. This is the whole pitch engine.
+/* Both heads, one frame, mixed. This is the whole pitch engine.
  *
- * The playhead advances at real time and never at the pitch ratio. What moves at
- * the ratio is the DELAY: head A sits `phi` of a window behind the playhead and
- * phi travels at (1 - r) / W, so the material coming out of head A advances at r
- * while the timeline it comes out on does not. Pitching up walks the delay down
- * to nothing and then wraps it back a whole window, which REPEATS a window of
- * material; pitching down walks it out to a window and wraps it to nothing,
- * which SKIPS one. Neither direction is special-cased -- both are which way the
- * delay was travelling when it hit the end.
+ * The playhead advances at real time, never at the pitch ratio. The delay moves
+ * at the ratio: head A sits `phi` of a window behind the playhead and phi moves
+ * at (1 - r) / W, so head A's material advances at r while the timeline does
+ * not. Pitching up shrinks the delay to zero and wraps it back a whole window,
+ * repeating a window of material; pitching down grows it to a window and wraps
+ * it to zero, skipping one. Neither direction is special-cased.
  *
- * TWO HEADS HALF A PHASE APART, which is measured and not assumed. A head reads
- * any given point of the sample once per wrap, and consecutive reads of it land
- * W/r apart; the second head's reads fall halfway between, so copies of one
- * transient come out W/(2r) apart. A 4 ms burst comes back off the hardware at
- * full pitch as THREE copies 6.67 ms apart, and W/(2r) is 6.67 -- one head would
- * give 13.3 and only two of them. The half phase is free here: it is the top bit
- * of the phase word.
+ * Two heads half a phase apart. A head reads a given point of the sample once
+ * per wrap, W/r apart; the second head's reads fall halfway between, so copies
+ * of one transient come out W/(2r) apart. At full pitch a short burst comes
+ * out as three copies 6.67 ms apart; one head would give two copies 13.3 ms
+ * apart. The half phase is the
+ * top bit of the phase word.
  *
- * The same halving is why the window is twice what the sidebands look like they
- * say. Two staggered heads wrap alternately, so the pattern repeats twice per
- * phase cycle and the comb spacing is 2|1 - r| / W, not |1 - r| / W.
+ * For the same reason the comb spacing is 2|1 - r| / W, not |1 - r| / W: the two
+ * heads wrap alternately, so the pattern repeats twice per phase cycle.
  *
- * ANCHORED HALF A WINDOW FORWARD, which is what makes the engine INERT AT UNITY.
- * The loud head is always the one near the middle of its sweep -- a head is
- * silent at both ends of its own, so it cannot be loud at delay zero -- which
- * would put half a window of delay on every shot including the ones with no bend
- * on them at all. Subtracting that half from both delays makes the taps straddle
- * the playhead instead of trailing it: at unity, on a voice that has not been
- * bent, head B reads the playhead exactly and head A is silent, so the sample
- * comes out bit for bit and a one-shot lands where it was fired. With a bend the
- * onset wanders half a window either side of the beat rather than a whole window
- * behind it. The RMX's pitch is an insert on a running loop, where a fixed delay
- * is invisible; ours fires one-shots on a quantized grid, where it is not.
+ * Anchored half a window forward, which makes the engine transparent at unity.
+ * A head is silent at both ends of its sweep, so the loud head is always near
+ * the middle, which would delay every shot by half a window. Subtracting that
+ * half from both delays makes the taps straddle the playhead: at unity on an
+ * unbent voice, head B reads the playhead exactly and head A is silent, so the
+ * sample plays bit for bit where it was fired. With a bend the onset moves up to
+ * half a window either side of the beat. A fixed delay would be invisible on a
+ * running loop, but these are one-shots fired on a grid.
  *
- * THE GAINS ARE COMPLEMENTARY AND EACH HEAD IS SILENT AT ITS OWN WRAP. That is
- * what makes the wrap inaudible: only one head jumps at a time, it is at zero
- * gain when it does, and the other one is carrying the signal. The window is a
- * fade-in curve, so it is used as one -- over each half of the phase the head
- * that is about to wrap fades out by 1 - w while the other fades in by w, and
- * the two swap roles at the half. The heads come out identical to each other,
- * shifted by half a phase, which is what a two-head design means.
+ * The gains are complementary and each head is silent at its own wrap, so the
+ * wrap is inaudible: only one head jumps at a time, at zero gain, while the
+ * other carries the signal. The window is a fade-in curve: over each half of
+ * the phase the head about to wrap fades out by 1 - w while the other fades in
+ * by w, and they swap roles at the half.
  *
- * WHAT THIS COSTS. Duration is preserved on AVERAGE, not per event: inside a
- * wrap the read runs at r, so a transient comes out scaled by 1/r and the wraps
- * put the timeline back around it. Pitching up gives every transient a triple
- * flam of compressed copies and pitching down stretches and thins it into one.
- * That is the character, measured on the hardware, and not an artefact to fix.
- * The hardware's own onsets move by 9 ms across the range for the same reason. */
+ * Cost: duration is preserved on average, not per event. Within a wrap the read
+ * runs at r, so a transient is scaled by 1/r. Pitching up gives each transient
+ * a triple flam of compressed copies; pitching down stretches it into one.
+ * Onsets move by about 9 ms across the range. */
 static inline void xp_heads(const int16_t *pcm, int64_t frames, int64_t base,
                            uint32_t phi, const struct xp_pitch *p,
                            float *l, float *r)
@@ -520,8 +464,7 @@ static inline void xp_heads(const int16_t *pcm, int64_t frames, int64_t base,
 
 /* ---- the mix -------------------------------------------------------------- */
 
-/* One block's worth of "what does the pad say". Read once so a finger moving
- * during the block cannot change the answer halfway down it. */
+/* The pad's state for one block, read once so it cannot change mid-block. */
 struct xp_gesture {
     int   div;              /* XP_DIV_NONE when nothing is engaged */
     float semis;
@@ -534,14 +477,12 @@ static void xp_gesture_read(struct xp_gesture *g)
     if (!xpad_g_open)
         return;
 
-    /* THE GESTURE IS ONLY LIVE WHILE A FINGER IS ON IT, unless HOLD is set --
-     * which is the whole of what HOLD means. The strip leaves `div` and `semis`
-     * where the finger left them so the readout can go on showing them; whether
-     * they act is decided here.
+    /* The gesture is live only while a finger is on it, or with HOLD set. The
+     * strip's values can briefly outlive both (HOLD going off is cleared on the
+     * next display tick), so whether they act is decided here.
      *
-     * A FINGER OUTRANKS THE BAR. What OVERDUB recorded plays the strip only
-     * while nobody is playing it: a DJ reaching for the pad is correcting the
-     * loop, not competing with it. */
+     * A finger takes priority over the bar: OVERDUB's recorded gesture plays
+     * the strip only while nobody is touching it. */
     if (xpad_gesture_live()) {
         g->div   = xpad_g_touch.div;
         g->semis = xpad_g_touch.semis;
@@ -550,9 +491,8 @@ static void xp_gesture_read(struct xp_gesture *g)
     xpad_seq_auto(&g->div, &g->semis);
 }
 
-/* The one-pole the bend glides through, as a per-block coefficient. Recomputed
- * only when the block or the rate moves, because the coefficient is
- * rate-dependent where the time constant is not. */
+/* The bend's one-pole glide as a per-block coefficient, derived from the fixed
+ * time constant. Recomputed only when the block length or the rate changes. */
 static float xp_pole(int64_t len, int rate)
 {
     if (len == xpad_g_pole_len && rate == xpad_g_pole_rate)
@@ -565,21 +505,18 @@ static float xp_pole(int64_t len, int rate)
     return xpad_g_pole;
 }
 
-/* The block's pitch: the window it wraps at, and the phase step that carries the
- * delay round it.
+/* The block's pitch: the window it wraps at, and the phase step that moves the
+ * delay through it.
  *
- * THE WINDOW IS A CONSTANT PER DIRECTION and the two differ -- see
- * XP_XFADE_UP_MS. It GLIDES between them on the bend's own time constant,
- * because W scales both tap positions and stepping it would step both heads at
- * once. What that costs is a sweep through unity dragging the taps by up to half
- * the difference over one time constant, which is a fraction of a semitone
- * underneath a sweep that is already moving; the alternative is a click at every
- * crossing.
+ * The window is a constant per direction, and the two differ (see
+ * XP_XFADE_UP_MS). It glides between them on the bend's time constant, because
+ * W scales both tap positions and a step would click at every crossing of
+ * unity. The glide drags the taps by up to half the difference over one time
+ * constant, a fraction of a semitone during a sweep.
  *
- * The step is SIGNED and kept in the phase's own unsigned arithmetic, so the
- * wrap is an overflow in both directions and there is no modulo and no branch.
- * At unity it is zero, which leaves the whole wrap mechanism inert -- which is
- * what the hardware does: at centre the sine comes back with no comb at all. */
+ * The step is signed but kept in the phase's unsigned arithmetic, so the wrap is
+ * an overflow in both directions with no modulo or branch. At unity it is zero
+ * and the wrap is inert, so a sine at centre comes back with no comb. */
 static void xp_pitch_block(struct xp_pitch *out, float *win, float ratio,
                            float a, int rate)
 {
@@ -594,19 +531,16 @@ static void xp_pitch_block(struct xp_pitch *out, float *win, float ratio,
     out->wq   = *win * (1.0f / 4294967296.0f);
     out->step = (uint32_t)(int32_t)((1.0 - (double)ratio) / (double)*win
                                     * 4294967296.0);
-    /* THE ANCHOR IS FIXED, not half of the gliding window: its whole job is to
-     * put the unbent read exactly on the playhead, and a moving anchor would
-     * drag both taps every time the window did. Half of the UP window, because
-     * that is the one unity resolves to. */
+    /* The anchor is fixed, not half of the gliding window: it puts the unbent
+     * read exactly on the playhead, and a moving anchor would drag both taps.
+     * Half of the up window, because unity resolves to that one. */
     out->half = XP_XFADE_UP_MS * 0.0005f * (float)rate;
 }
 
 /* Does a whole multiple of `L` beats fall in (b0, b1]?
  *
- * On the multiple's INDEX changing, so there is no modulo of a number that grows
- * all night: a track an hour in is the same arithmetic as one that just started.
- * Half-open at the low end, so a boundary landing exactly on a block edge fires
- * once rather than twice. */
+ * Compares the multiple's index, so there is no modulo of a growing number.
+ * Half-open at the low end, so a boundary exactly on a block edge fires once. */
 static int xp_crossed(double b0, double b1, double L)
 {
     if (!(b1 > b0) || !(L > 0.0))
@@ -614,20 +548,16 @@ static int xp_crossed(double b0, double b1, double L)
     return floor(b1 / L) > floor(b0 / L);
 }
 
-/* WHERE THE CLOCK IS, published as a POSITION and not as an edge.
+/* The clock, published as a position, not an edge.
  *
- * The sampler's own snapping asks "did a boundary fall inside this block", which
- * is right for it: the same call advances the clock and consumes the answer. It
- * is wrong for anyone else. The pre-stretch mix runs at its own cadence -- the
- * stretcher pulls its source in bursts, so it is called neither once per block
- * nor in step with this one -- and on most blocks the play head has not moved,
- * so the span is empty and an edge test rejects it outright. A caller sampling
- * that waits for a coincidence of two unrelated clocks, which is a wait that can
- * simply never end.
+ * The sampler's own snapping tests whether a boundary fell inside this block,
+ * which works because the same call advances the clock. Other callers cannot do
+ * that: the pre-stretch mix runs at its own cadence (the stretcher pulls its
+ * source in bursts), and on most blocks the play head has not moved, so the span
+ * is empty. An edge test there may never fire.
  *
- * A position needs no coincidence: whoever reads it compares the boundary it
- * falls in against the one they last saw, and acts on the first call after it
- * changes, whenever that call happens to be. */
+ * With a position, the reader compares the boundary it falls in against the one
+ * it last saw and acts on the first call after it changes. */
 static double xpad_g_beat_pub;
 static int    xpad_g_beat_pub_ok;
 
@@ -639,26 +569,18 @@ int xpad_beat_now(double *beat)
     return 1;
 }
 
-/* The roll re-triggers THE SELECTED BANK, which is the only one it could mean:
- * a pad is a selection, so what a finger on the strip repeats is whatever the
- * pads last picked. Through xpad_seq_fire for the same two reasons the bar uses
- * it -- nothing is held, and a roll is not something OVERDUB should record.
+/* The roll re-triggers the selected bank, i.e. whatever the pads last picked.
+ * It goes through xpad_seq_fire so OVERDUB does not record it.
  *
- * THE FIRST HIT OF A ZONE IS IMMEDIATE, everything after it is on the grid. A
- * zone taking the finger is a hit the DJ just played and it sounds now; the
- * repeats are the machine and belong on the beat. Sliding into another zone is
- * the same event again, so a sweep across the bricks stutters under the hand
- * instead of waiting a boundary per zone.
+ * The first hit of a zone is immediate; the repeats are on the grid. Sliding
+ * into another zone counts as a new first hit, so a sweep across the bricks
+ * stutters immediately instead of waiting for a boundary per zone.
  *
- * The repeats stay on the ABSOLUTE grid rather than counting from the first hit,
- * so a roll started late is still in time from its second hit onwards.
+ * The repeats follow the absolute grid, not the first hit, so a roll started
+ * late is in time from its second hit.
  *
- * AND THE FIRST HIT TAKES A BOUNDARY WITH IT. A finger landing a few
- * milliseconds before one fired twice inside that gap -- once for the touch and
- * once for the boundary -- which is not a flam anyone played, it is the control
- * stuttering under the hand. The immediate hit claims the nearest boundary and
- * the roll skips it, so whatever follows is a division away wherever inside the
- * division the finger came down. */
+ * The first hit claims the nearest boundary and the roll skips it. Otherwise a
+ * touch a few milliseconds before a boundary fires twice in that gap. */
 static void xp_roll(double b0, double b1, int div)
 {
     int sel   = __atomic_load_n(&xpad_g_sel, __ATOMIC_RELAXED);
@@ -682,21 +604,17 @@ static void xp_roll(double b0, double b1, int div)
         return;
     }
     xpad_g_roll_claim_ok = 0;
-    /* ON THE BOUNDARY ITSELF, which is a frame somewhere inside this block and
-     * not its edge -- the whole point of a repeat is that it is on the grid. */
+    /* On the boundary's own frame inside this block, not the block's edge. */
     xpad_seq_fire_at(sel, floor(b1 / L) * L);
 }
 
-/* The strip's own gesture, sampled onto XP_QUANTIZE_PAD while OVERDUB is armed,
- * so a sweep across the bricks becomes part of the loop. A quarter beat rather
- * than the pad's sixteenth -- see the note there for why a swept surface wants a
- * coarser grid than a button.
+/* The strip's gesture, recorded while OVERDUB is armed so a sweep becomes part
+ * of the loop. Sampled on the quantize grid, or XP_QUANTIZE_PAD when quantize is
+ * off.
  *
- * ONLY WHEN IT HAS MOVED. A finger held still costs the bar nothing and a sweep
- * costs it one event per audible step, which is what keeps four beats of
- * automation inside a bar that also has to hold the hits. The LIFT is recorded
- * too -- as XP_DIV_NONE -- or the bar would hold the last value it saw for ever
- * and the strip would never come back to rest. */
+ * Recorded only when it has moved, so a still finger costs nothing and a sweep
+ * costs one event per audible step. The lift is recorded too, as XP_DIV_NONE,
+ * or the bar would hold the last value forever. */
 static void xp_automate(double b0, double b1)
 {
     static int   was_div = XP_DIV_NONE;
@@ -726,8 +644,8 @@ static void xp_automate(double b0, double b1)
     xpad_seq_record_pad(div, semis, b1);
 }
 
-/* The presses the deck handed over, started here because [audio] owns the
- * voices. Taken on the very next block: a pad is not quantized. */
+/* Start the presses the deck posted; [audio] owns the voices. Taken on the
+ * next block, since a pad is not quantized. */
 static void xp_pending(double beat)
 {
     unsigned pend, i;
@@ -735,10 +653,9 @@ static void xp_pending(double beat)
     pend = __atomic_exchange_n(&xpad_g_pend, 0, __ATOMIC_RELAXED);
     if (!pend)
         return;
-    /* A PAD PRESS TAKES A BOUNDARY TOO, for the same reason a touchdown does: a
-     * press landing beside one while the roll is running is the same double in
-     * the same gap. It claims against whatever brick the roll is on, which is
-     * the grid the doubling would have happened against. */
+    /* A pad press also claims a boundary, as a touchdown does, so a press next
+     * to a boundary during a roll does not double. It claims on the grid of the
+     * brick the roll is on. */
     if (xpad_g_roll_div >= 0 && xpad_g_roll_div < XP_BRICKS)
         xp_claim_boundary(beat, (double)xpad_div_beats[xpad_g_roll_div]);
 
@@ -746,8 +663,8 @@ static void xp_pending(double beat)
         if (!(pend & (1u << i)))
             continue;
         xpad_seq_fire((int)i);
-        /* Recorded HERE, at the moment it sounds, so the bar replays it at the
-         * phase it was heard at rather than the one the press was posted at. */
+        /* Recorded here, when it sounds, so the bar replays it at the phase it
+         * was heard rather than when the press was posted. */
         xpad_seq_record((int)i, beat);
     }
 }
@@ -775,18 +692,16 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
     if (rate <= 0)
         return;
 
-    /* THE CLOCK. See XP_STILL_BLOCKS: the track's own beat position while the
-     * play head moves, our own at the track's tempo once it has stopped. It is
-     * the TRACK'S beat index either way -- boundaries off it are the grid the DJ
-     * is looking at, which is the whole point of quantizing to it.
+    /* The clock (see XP_STILL_BLOCKS): the track's beat position while the play
+     * head moves, our own at the track's tempo once it stops. Either way it is
+     * the track's beat index, so boundaries match the grid on screen.
      *
-     * `pos` IS THIS BLOCK'S OWN PLACE IN THE TRACK, handed in by the caller
-     * because only the caller knows it: the sampler sums into audio that has
-     * already been through the stretcher, and where the stretcher last READ is
-     * most of a tenth of a second further on. Advanced even when there is
-     * nothing to mix, because it is a difference: skipping quiet blocks would
-     * leave the first one after a press spanning however long the panel was
-     * shut, and the bar would fire every event it holds at once. */
+     * `pos` is this block's place in the track, passed in by the caller: the
+     * sampler sums into post-stretch audio, and the stretcher's last read
+     * position is up to 0.1 s further on. Advanced even when there is nothing
+     * to mix, because the span is a difference: skipping quiet blocks would
+     * make the first block after a press span the whole time the panel was
+     * shut, and the bar would fire every event at once. */
     clk.spb   = stem_grid_spb();
     clk.beat0 = stem_grid_beat0();
     if (stem_grid_beats_acquire(&gv)) {
@@ -797,38 +712,32 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
     xpad_g_clock_kind = clk.beats ? 2 : clk.spb > 0.0 ? 1 : 0;
     if (xp_clock_ok(&clk)) {
         xp_head_step(&xpad_g_out, &clk, pos, frames, &b0, &b1);
-        /* AND THE OTHER END OF THE PIPELINE, for whoever edits the block the
-         * stretcher is about to read rather than the one it just wrote. */
+        /* The other end of the pipeline, for callers that edit the block the
+         * stretcher is about to read. */
         xp_head_step(&xpad_g_in, &clk, stem_source_pos(), frames, &pub0, &pub1);
         have_now = 1;
     }
     xpad_g_blk_frames = frames;
     xpad_g_blk_b0     = b0;
     xpad_g_blk_b1     = b1;
-    /* RELEASED THE MOMENT THE CLOCK IS READ, and not at the end of the mix.
-     * Nothing below this line touches the array -- the rest of the block works
-     * off b0 and b1 -- and holding it any longer is a deadlock waiting for a
-     * track change: the writer takes the array out of the mix's reach and then
-     * SPINS until every reader has gone, so one reader left behind by any
-     * early-out below stalls whichever thread publishes. That thread is the
-     * deck's, which is the one that answers the panel, so the symptom is the
-     * whole front of the deck going dead while the screen carries on drawing. */
+    /* Released as soon as the clock is read; nothing below touches the array.
+     * Holding it longer risks a deadlock on track change: the writer unpublishes
+     * the array and spins until every reader has gone, so a reader leaked by an
+     * early-out below stalls the deck thread, and the deck's controls go dead
+     * while the screen keeps drawing. */
     if (have_beats) {
         stem_grid_beats_release();
         have_beats = 0;
     }
 
-    /* Published BEFORE the sampler's own early-out, because the stem row's mute
-     * rides this clock too and it must keep running whether or not the X-PAD is
-     * doing anything. The IN head, because a mute is applied to the block the
-     * stretcher is about to read. */
+    /* Published before the sampler's early-out, because the stem row's mute uses
+     * this clock whether or not the X-PAD is active. The in head, because a mute
+     * applies to the block the stretcher is about to read. */
     xpad_g_beat_pub    = pub1;
     xpad_g_beat_pub_ok = have_now;
 
-    /* Is anything to do at all? A voice sounding, a press waiting for its
-     * boundary, a bar to replay, or a finger on the strip with a bank selected
-     * -- the last because the roll needs the clock running before anything is
-     * audible. */
+    /* Anything to do? A voice sounding, a press pending, a bar to replay, or a
+     * finger on the strip (the roll must run before anything is audible). */
     for (i = 0; i < XP_BANKS; i++)
         if (xpad_g_voice[i].sounding) {
             any = 1;
@@ -839,28 +748,26 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
         !(xpad_g_open && xpad_g_touch.div != XP_DIV_NONE))
         return;
 
-    /* THE BAR FIRST, THEN THE ROLL, THEN THE FRESH PRESSES -- newest last, so a
-     * press the DJ just made wins the boundary it shares with either.
+    /* The bar first, then the roll, then new presses, so a fresh press wins a
+     * boundary it shares with either.
      *
-     * The gesture is read between the two, because the bar's own replay may have
-     * just moved it: automation that arrived this block should roll this block. */
+     * The gesture is read after the bar, whose replay may have just moved it,
+     * so automation rolls in the block it arrives. */
     if (b1 > b0)
         xpad_seq_play(b0, b1);
     xp_gesture_read(&g);
 
-    /* WHERE THE STRIP IS, and whether it is being played at all. A voice takes
-     * both in the loop below; nothing is glided here, because the glide belongs
-     * to the voice and not to the control. */
+    /* The strip's target ratio and whether it is engaged. The glide is per
+     * voice, in the loop below. */
     target  = exp2f(g.semis / 12.0f);
     engaged = g.div != XP_DIV_NONE;
     a       = xp_pole(frames, rate);
 
-    /* NOT under the b1 > b0 guard, because a zone taking the finger fires on the
-     * spot and the clock may not have moved this block. The crossing test inside
-     * needs the span and gets it. */
+    /* Not under the b1 > b0 guard: a zone's first hit fires immediately even if
+     * the clock has not moved. The crossing test inside checks the span. */
     xp_roll(b0, b1, g.div);
-    /* AFTER the replay, so a live finger's sample overwrites the automation the
-     * bar just laid down rather than being overwritten by it. */
+    /* After the replay, so a live finger's sample overwrites the automation the
+     * bar just replayed, not the reverse. */
     if (b1 > b0)
         xp_automate(b0, b1);
     xp_pending(b1);
@@ -885,19 +792,14 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
             continue;
         }
 
-        /* A SHOT KEEPS THE BEND IT WAS PLAYED AT. The strip moves a voice only
-         * while a finger is on it (or HOLD, or the bar); the moment it is let
-         * go every sounding voice stays where it was left, and the shot rings
-         * out at the pitch the DJ heard it start at. Sliding back to unity
-         * instead would retune a tail nobody is touching any more.
+        /* A shot keeps the bend it was played at. The strip moves a voice only
+         * while engaged (finger, HOLD or the bar); once released, sounding
+         * voices keep their pitch and ring out instead of sliding back to
+         * unity. The next shot is seeded from the strip, so a pad hit with no
+         * finger down plays at unity.
          *
-         * It costs nothing, because the next shot is seeded from the strip: a
-         * pad hit with no finger down is unity whatever the last one froze at.
-         *
-         * A FRESH SHOT TAKES THE VALUE WHOLE and glides to nothing -- there is
-         * no continuity to protect on a voice that has not sounded yet, and
-         * gliding up to a bend would put the attack at the wrong pitch, which is
-         * the part of a one-shot that carries it. */
+         * A fresh shot takes the target without gliding, so the attack is at
+         * the right pitch. */
         if (v->fresh) {
             v->fresh = 0;
             v->ratio = engaged ? target : 1.0f;
@@ -907,15 +809,15 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
         }
         xp_pitch_block(&pitch, &v->win, v->ratio, a, rate);
 
-        /* THE PLAYHEAD RUNS PAST THE LAST FRAME by whatever the trailing head is
-         * behind it, because the end of the sample is still coming out of that
-         * head. Stopping at the last frame would cut the tail off every shot. */
+        /* The playhead runs past the last frame by the trailing head's delay,
+         * which is still playing the end of the sample; stopping at the last
+         * frame would cut the tail. */
         tail = bv.frames + (int64_t)(pitch.w - pitch.half) + 2;
         ph   = v->pos;
         phi  = v->phi;
-        /* FROM THE FRAME THE BOUNDARY FELL ON, not from the block's edge. See
-         * xp_frame_of: a block is 64 frames and rounding every hit down to its
-         * start is 0.67 ms of the sampler being early, every time. */
+        /* From the frame the boundary fell on, not the block's edge (see
+         * xp_frame_of): a block is 64 frames, so rounding down would play up
+         * to 0.67 ms early. */
         for (k = v->start; k < frames; k++) {
             float sl, sr, a;
 
@@ -937,7 +839,7 @@ void xpad_mix(float *dst, int64_t frames, int64_t pos)
         }
         v->pos   = ph;
         v->phi   = phi;
-        v->start = 0;           /* the wait is this block's alone */
+        v->start = 0;           /* the offset applies to this block only */
         xpad_bank_release();
         xpad_g_mix_peak = pk;
         mixed = 1;

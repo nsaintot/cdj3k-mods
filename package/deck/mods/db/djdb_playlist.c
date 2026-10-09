@@ -6,40 +6,32 @@
 
 static void djdb_count_playlists(void);
 
-/* Which list the browser has open, and whether this deck has only one. */
-/* Set while this file is querying on its own behalf. The playlist latch watches
- * the same hook our own reads go through, so without this the reorder's idea of
- * "the playlist on screen" is really "the one djdb_try_walk asked for". */
+/* Set while this file runs its own queries, which go through the same hook as
+ * the playlist latch; otherwise the latch would record our own query. */
 static int djdb_g_ours;
 /* The medium's only playlist, when it has exactly one -- see
  * djdb_count_playlists and mod_djdb_playlist_now. */
 static uint32_t djdb_g_sole_playlist;
 static int      djdb_g_playlists;
-/* ---- the playlist the deck is showing, and a move waiting for a thread ----
+/* ---- the playlist the deck is showing --------------------------------------
  *
- * A reorder needs a PLAYLIST ID and the UI has none: the browse view knows a
- * hierarchy, not a table key. The id comes off the list cache the deck is
- * serving the list from -- see djdb_playlist_from_caches -- and this latch is
- * only what a djdbSongPlaylist cursor happened to name, kept as a fallback for
- * before any cache has been seen.
+ * A reorder needs a playlist id; the browse view only knows a hierarchy. The id
+ * comes from the list cache the deck serves the list from (see
+ * djdb_playlist_from_caches). This latch holds the last id a djdbSongPlaylist
+ * cursor named (idxSongPlaylist takes it as its only key); it is never cleared
+ * and is only a fallback before a cache has been seen.
  *
- * The move itself is QUEUED, never tried inline: it is asked for from the
- * message thread, which has no djdb context by construction, so an inline
- * attempt could only fail. It lands on the next library message, the same way a
- * held tempo does. */
+ * The move is queued, never tried inline: it comes from the message thread,
+ * which has no djdb context. It runs on the next library message, like a held
+ * tempo. */
 static uint32_t djdb_g_seen_playlist;
 
-/* Once per run, from whichever TABLE-LEVEL hook first brings a context. Not from
- * the page writer: that is a layer below, and a query nested inside a page flush
- * re-enters the pool underneath it. The guard matters because the query itself is
- * hooked and would otherwise re-enter here.
+/* Once per run, from the first table-level hook that has a context. Not from
+ * the page writer: a query nested inside a page flush re-enters the pool below
+ * it. The guard is needed because the query itself is hooked.
  *
- * READ-ONLY, and that is the point. This walk once ended with a move -- swap
- * entries 7 and 8 of playlist 1 -- as the smallest proof that the write worked.
- * It did prove it, and it also REORDERED THE DJ'S PLAYLIST ON EVERY BOOT, which
- * is what the order that differed between two mounts of an untouched stick was.
- * A probe on the library's read side is free; one on its write side is a change
- * to somebody's media that nobody asked for. The gesture proves the write now. */
+ * Keep this read-only. Do not add a test write: it would reorder the DJ's
+ * playlist on every boot. */
 void djdb_try_walk(void)
 {
     static int done;
@@ -47,13 +39,11 @@ void djdb_try_walk(void)
     if (done || !djdb_ctx())
         return;
     done = 1;
-    /* The convention test: ID and BPM of a track we know cold. */
+    /* The column convention: ID and BPM of content id 7. */
     djdb_walk("content", DJDB_CONTENT_TABLE, DJDB_CONTENT_INDEX, 7,
               0, DJDB_COL_BPM, 15, -1);
-    /* And the playlist, for its row count and its constant column. Marked as
-     * OURS while it runs: this query goes through the same hook that watches
-     * for the deck's playlist cursor, so without the guard the reorder's idea of
-     * "which playlist is on screen" is really "the one this probe asked for". */
+    /* And the playlist, for its row count and its constant column. Flagged as
+     * ours so the playlist latch ignores it. */
     djdb_g_ours = 1;
     djdb_walk("songplaylist", DJDB_PLAYLIST_TABLE, DJDB_PLAYLIST_INDEX, 1,
               0, 1, 2, -1);
@@ -106,12 +96,10 @@ static void djdb_count_playlists(void)
 
 uint32_t mod_djdb_playlist_now(void)
 {
-    /* THE CACHE THE LIST IS BEING SERVED FROM, which is the only one of these
-     * three that can name a playlist among several. The other two are fallbacks
-     * for a collector that has not been seen yet: the deck's own cursor if it
-     * ever named one -- it does not, while browsing -- and otherwise the
-     * medium's ONLY playlist, which needs no naming. Zero when none holds, which
-     * is a write that refuses rather than guesses. */
+    /* The list cache is the only source that can pick among several
+     * playlists. Before a collector is seen, fall back to the deck's cursor (it
+     * does not query while browsing) and then to the medium's only playlist.
+     * 0 when none applies, so the write is refused. */
     uint32_t id = djdb_playlist_from_caches();
 
     if (id)
@@ -125,17 +113,14 @@ void djdb_note_playlist(const char *table, int nkeys, void **keyvals)
 {
     if (djdb_g_ours)
         return;
-    /* Wide enough to hold a name the log can be read from, not just wide
-     * enough to compare: a buffer the length of the one table we recognise
-     * truncates every other one to the same 16 characters. */
+    /* Wider than the one name compared, so other table names log in full. */
     char name[24];
     uint32_t pid = 0;
 
     if (!table)
         return;
-    /* The pointer is the deck's argument read positionally, so it is INPUT:
-     * probed rather than dereferenced, and over a fixed length so a shorter
-     * name cannot run off the end of the mapping. */
+    /* The deck's argument, read positionally and untrusted: probed with a
+     * fixed length rather than dereferenced. */
     if (mod_safe_read((uintptr_t)table, name, sizeof(name)) != 0)
         return;
     name[sizeof(name) - 1] = '\0';

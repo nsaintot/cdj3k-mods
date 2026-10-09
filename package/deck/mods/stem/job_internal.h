@@ -20,9 +20,9 @@ extern int g_stems_was_on;
 void addr_changed(void);
 void * loader_main(void *arg);
 
-/* A job that could not run for a passing reason is re-run, not abandoned. Long
- * enough that a deck sitting at the cue point is not re-probed constantly,
- * short enough that pressing play is followed by stems rather than by a wait. */
+/* Retry delay for a job that could not run for a transient reason. Long enough
+ * not to re-probe a deck parked at the cue point constantly, short enough that
+ * stems follow soon after PLAY. */
 #define JOB_RETRY_SEC 5
 
 /* The job state the loader thread reads. Defined in job.c. */
@@ -59,77 +59,65 @@ void sep_request(const char *path, int64_t frames);
 int track_is_current(const char *path);
 void ui_publish(int stage, int percent, int queue_position);
 
-/* Block until the sidecar has probed the server and reported back.
+/* How long to block until the sidecar has probed the server and reported back.
  *
- * Generous, because AUTO discovery browses mDNS before it can probe anything and
- * that legitimately takes seconds on a cold LAN. Returns 0 when the server is
- * usable, -1 otherwise -- including "reachable but incompatible", which is a
- * reason not to upload rather than a reason to try and be told later. */
+ * Generous because AUTO discovery browses mDNS first, which can take seconds on
+ * a cold LAN. await_sidecar_ready returns 0 when the server is usable, -1
+ * otherwise, including "reachable but incompatible", so nothing is uploaded. */
 #define JOB_READY_TIMEOUT_MS  20000
 
-/* How long the worker waits for a sidecar frame before looping to re-check the
- * cancel flag. Short enough that a track change is acted on promptly, long
- * enough that an idle job is not a spin. */
+/* How long the worker waits for a sidecar frame before re-checking the cancel
+ * flag: prompt on a track change without spinning when idle. */
 #define JOB_RECV_TIMEOUT_MS 250
 
 #define SEP_RATE_POLL_MS    250
 
-/* The rate to ask the server to deliver stems at: the pool's, when we can
- * establish it.
+/* How long to wait for the pool's rate, which the server is asked to deliver
+ * stems at.
  *
- * Stems that arrive already on the pool's timeline are opened by the deck's own
- * decoder and passed through, so the 44.1 -> 96 k conversion never runs here.
- * Measured on this deck it is most of what a cached load costs -- a whole track
- * decodes at 907x realtime when the rates match and 102x when they do not.
+ * Stems already at the pool's rate are passed through by the deck's own decoder,
+ * skipping the 44.1 -> 96 k conversion, which is most of a cached load's cost:
+ * a whole track decodes about nine times faster when the rates match.
  *
- * This is only safe because the server converts with the DECK's filter.
+ * This is only safe because the server converts with the deck's filter. Drums
+ * is derived as `mix - harmonics - vocals` and the pool resamples that mix, so a
+ * different filter leaves the difference on the drums fader, plainly audible
+ * with a generic resampler. stemd reproduces the deck's converter (LTI, 320/147
+ * polyphase, 18880 taps) to -141.5 dB, below the
+ * 16 bits a stem is stored at.
  *
- * Drums is derived as `mix - harmonics - vocals` and that mix is resampled by
- * the pool, so a stem converted by a different filter leaves the difference
- * between the two on the drums fader -- measured at -36 dB of that part when
- * stemd used its own rubato, and plainly audible. The deck's converter was
- * identified instead (LTI, 320/147 polyphase, 18880 taps, see
- * docs/ep122-resampler.md) and stemd reproduces it to -141.5 dB, which is below
- * the 16 bits a stem is stored at.
+ * The filter is not negotiated: the shim and stemd ship together. A stemd built
+ * without ep122.rs returns stems at the right rate and the wrong phase, audible
+ * only on the drums fader.
  *
- * Nothing negotiates the filter and nothing should: the shim and stemd are the
- * two halves of one design and ship together, so a version of one that disagrees
- * with the other is not a configuration to detect at runtime. Read as a warning
- * instead -- a stemd built without ep122.rs answers this request with stems at
- * the right rate and the wrong phase, and only the drums fader will say so.
+ * The rate is waited for, not sampled once: on the first separation after a
+ * restart nothing has measured it yet (the position measurement needs playback,
+ * the stretcher needs the engine running, which it is not 250 ms after a load
+ * on a paused deck). Sampling once can return 0 and silently fall back to the
+ * slow native-rate path. The wait is negligible next to tens of seconds of
+ * model time.
  *
- * Waited for rather than sampled once. The rate is a property of the deck, not
- * of the track, but nothing has measured it yet on the first separation after a
- * restart: the position measurement needs playback, and the stretcher needs the
- * engine to be running, which it is not a quarter of a second after a load on a
- * paused deck. Sampling once got a 0 there and quietly asked for the native
- * rate, which is correct and slow -- exactly the failure that is hardest to
- * notice. Waiting is free on this path for the same reason the deck-quiet defer
- * is: the job behind it is tens of seconds of model time.
- *
- * Zero when the rate still cannot be established, which asks for the server's
- * default and leaves the conversion on the deck. Slower, never wrong: stem files
- * are self-describing and stem_decode_pull converts whatever it opens. */
+ * Zero when the rate cannot be established: the server uses its default and the
+ * deck converts. Slower but correct, since stem files are self-describing and
+ * stem_decode_pull converts whatever it opens. */
 #define SEP_RATE_WAIT_MS   8000
 
-/* Ask the sidecar again whether it can see a server.
+/* Interval at which to ask the sidecar again whether it can see a server.
  *
- * The warning under STEMS is only worth showing if it is current, and STATUS
- * arrives exactly once, at connect. Without this the answer is as old as the last
- * cache miss: a server that came up an hour ago still reads as absent, and one that
- * went away still reads as present -- and the second is the one that matters,
- * because it is the state where pressing STEMS gets you nothing.
+ * STATUS arrives only once, at connect, so without this the warning under STEMS
+ * is as old as the last cache miss and can show a server that has since gone
+ * away as present.
  *
- * Idle branch only. A HELLO puts the sidecar into a blocking probe for about a
- * second, which is safe here precisely because nothing is in flight to be starved.
- * The whole exchange is bounded: no answer, no update, try again next interval. */
+ * Idle branch only: a HELLO puts the sidecar into a blocking probe of about a
+ * second, safe only with nothing in flight. No answer means no update; it is
+ * retried next interval. */
 #define STATUS_REFRESH_SEC   30
 
 struct upload_ctx {
     int64_t sent;
     int64_t total;
-    /* Why the sink stopped. A track change and a dead socket both abort the decode the
-     * same way, and the sidecar needs to be told which -- see run_one_job. */
+    /* Why the sink stopped: a track change and a dead socket abort the decode the
+     * same way, and the sidecar must be told which (see run_one_job). */
     int     cancelled;
 };
 
@@ -143,10 +131,10 @@ extern volatile uint32_t g_want_gen;
 void job_failed(void);
 void job_progress(int stage, int pct);
 void refresh_status(void);
-/* Act on a server that has just become usable. The edge is latched at the publish
- * (see ui_publish_status), so this is safe to call every idle turn: it does nothing
- * until one is waiting, and consumes it when it is. Idle branch only -- it re-serves
- * the loaded track, which must not happen with a job in flight. */
+/* Act on a server that has just become usable. The edge is latched in
+ * ui_publish_status, so this is safe to call every idle turn; it consumes the
+ * edge once. Idle branch only: it re-serves the loaded track, which must not
+ * happen with a job in flight. */
 void server_arrived(void);
 void run_separation(void);
 void ui_publish_status(int reachable, int compatible);

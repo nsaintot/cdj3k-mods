@@ -12,8 +12,8 @@ defineEmits<{ openSearch: [] }>()
 const route = useRoute()
 const menuOpen = ref(false)
 
-/* Navigating is the only thing that closes it -- there is no overlay to click,
- * because the panel pushes the page down rather than covering it. */
+/* Only navigating closes it. There is no overlay to click, because the panel
+ * pushes the page down instead of covering it. */
 watch(() => route.fullPath, () => (menuOpen.value = false))
 </script>
 

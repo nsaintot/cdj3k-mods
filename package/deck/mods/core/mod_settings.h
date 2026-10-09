@@ -6,17 +6,17 @@
  * mount that survives a reboot. Loaded once from the constructor, rewritten
  * whenever a row is committed.
  *
- * The values are not here: each is declared by the feature that owns it --
- * g_theme_id in theme/theme.h, the stem settings in stem/stem.h, the cue
- * behaviours' flags in cue/cue.h. The record layout and the rules for changing it are at
- * struct mod_settings_v1 in common.c.
+ * Each value is declared by the feature that owns it: g_theme_id in
+ * theme/theme.h, the stem settings in stem/stem.h, the cue behaviours' flags in
+ * cue/cue.h. The record layout and the rules for changing it are at struct
+ * mod_settings_v1 in common.c.
  */
 #ifndef EP122_MOD_SETTINGS_H
 #define EP122_MOD_SETTINGS_H
 
 /* Read the saved record into the feature globals. A file that is absent, the
  * wrong size, the wrong version, or fails its CRC leaves every default in
- * place; there is no partial adopt. */
+ * place; a record is never partly applied. */
 void mods_settings_load(void);
 
 /* Write the current values: temp file, fsync, rename, previous copy kept as

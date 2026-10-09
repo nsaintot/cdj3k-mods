@@ -9,27 +9,21 @@
  *     Contents/pads/Am.wav, 4, h, 124
  *     loops/shout.wav,      8, v, 90
  *
- * Slot 1..8 is pad A..H and the letter says which stem goes: d drums, h
- * harmonics, v vocals. A pad no entry names is left alone and is a hot cue
- * exactly as it always was, so the DJ decides which pads the circuit owns.
+ * Slot 1..8 is pad A..H and the letter says which stem is replaced: d drums,
+ * h harmonics, v vocals. A pad with no entry stays a normal hot cue.
  *
- * A LIST RATHER THAN A NAMING RULE, because the audio is the DJ's and lives
- * where they keep it -- a path in a file lets a loop stay in the folder it came
- * in, be used by two slots, and carry its BPM, none of which a filename can do
- * without becoming a language.
+ * A config list instead of a file naming rule lets a loop stay in its own
+ * folder, be used by two slots, and carry its BPM.
  *
- * ONE AT A TIME across the whole feature. Two replacements would be two answers
- * to "what is the drums part", and even for different stems it is one gesture
- * the DJ is making -- so arming a slot disarms the one before it.
+ * One slot at a time across the whole feature: arming a slot disarms the
+ * previous one, even for a different stem.
  *
- * WHY A FILE AND NOT A REGION of the track: a region can only be a stem the deck
- * already has, which rules out the drums (the residual exists at the play head
- * and nowhere else) and rules out anything the track does not contain. A file is
- * neither, costs a few MB, and is the DJ's own material.
+ * A file, not a region of the track: a region could only be a stem the deck
+ * already has, which excludes drums (the residual exists only at the play head)
+ * and anything the track does not contain. A file costs a few MB.
  *
- * THE FIRST BANK ONLY. These belong to the deck rather than to a track, so there
- * is no track to break a tie with if two sticks disagreed about slot 3 -- see
- * stem_media_first_root.
+ * First bank only: slots belong to the deck, not a track, so there is no track
+ * to decide between two sticks (see stem_media_first_root).
  *
  * Threading. [worker] scans and decodes and is the only writer of the table;
  * [audio] reads it under the same acquire/release discipline the stems use, and
@@ -42,18 +36,17 @@
 
 /* ---- what a slot is ------------------------------------------------------- */
 
-/* The subdirectory is ours, so the DJ's own folders cannot collide with it and a
- * stick with no `mods` is simply a stick with no slots. */
+/* Our own subdirectory, so it cannot collide with the DJ's folders; a stick
+ * without `mods` has no slots. */
 #define GC_DIR          "mods/gc"
 #define GC_CONFIG       GC_DIR "/gc-config.txt"
 #define GC_PATH_MAX     STEM_CACHE_PATH_MAX
 #define GC_LINE_MAX     512
 
-/* A loop is bars, not minutes. The cap is what stops a mis-named full track
- * eating the memory the stems need: at the pool's 96 kHz stereo s16 this is
- * about 11 MB a slot, 92 MB if a DJ fills all eight, against stems that are
- * already ~350 MB of a 3 GiB guest. Longer files load truncated rather than
- * refused, because a truncated loop still plays. */
+/* Cap per loop, so a mis-named full track cannot take the stems' memory: at the
+ * pool's 96 kHz stereo s16 this is about 11 MB a slot, 92 MB for all eight,
+ * next to ~350 MB of stems. Longer files are truncated, not
+ * refused, since a truncated loop still plays. */
 #define GC_MAX_SECONDS  30
 
 struct gc_slot {
@@ -66,32 +59,26 @@ struct gc_slot {
 
 static struct gc_slot gc_g_slot[CUE_PADS];
 
-/* What the table was built for. A pool rate change or a different stick means
- * the buffers are wrong rather than stale, so both are re-scanned. */
+/* What the table was built for; a change of either triggers a re-scan. */
 static char gc_g_root[GC_PATH_MAX];
 static int  gc_g_rate;
 
-/* Readers in the mix, so a scan cannot free a buffer under one. Same shape as
- * the stem store's, and for the same reason: the audio thread must never wait
- * and the worker must never free early. */
+/* Readers in the mix, so a scan cannot free a buffer in use. Same scheme as the
+ * stem store: the audio thread never waits and the worker never frees early. */
 static int gc_g_readers;
 static int gc_g_live;
 
-/* The armed slot and where the track was when it was armed. `active` is
- * published LAST and cleared FIRST, which is the whole of the synchronisation:
- * a reader that sees a slot sees the position written before it, and one that
- * catches a writer mid-update sees -1 and mixes the track live for a block.
+/* The armed slot and its phase anchor. `active` is published last and cleared
+ * first: a reader that sees a slot sees the position written before it, and one
+ * that catches a writer mid-update sees -1 and mixes the track for a block.
  *
- * THE POSITION IS THE PHASE. The file's index is (track pos - engage) at the
- * loop's own tempo, wrapped over its length, so there is no cursor to keep and
- * no state to drift: every block computes where the loop is from where the track
- * is. Seek, and the loop lands wherever the track did, which is what a loop
- * locked to the timeline should do.
+ * The file's index is (track pos - engage) at the loop's tempo, wrapped over its
+ * length, so there is no cursor to drift and a seek moves the loop with the
+ * track.
  *
- * `engage` is the GRID's first downbeat, not the moment the pad went down, so
- * the phase reduces to how many beats into the track we are -- and the loop's
- * downbeat lands on the track's rather than on the DJ's reaction time. Only a
- * track with no readable grid falls back to the play head.
+ * `engage` is the grid's first downbeat, not the moment of the press, so the
+ * loop's downbeat lands on the track's. A track with no readable grid falls
+ * back to the play head.
  *
  * [deck] writes, [audio] and [message] read. */
 static int64_t gc_g_engage;
@@ -121,27 +108,19 @@ void gc_release(void)
     __atomic_fetch_sub(&gc_g_readers, 1, __ATOMIC_ACQ_REL);
 }
 
-/* ONE predicate for "this slot can run", asked by the pad that would claim the
- * press and by the lamp that would colour it. Splitting them is how a pad ends
- * up lit for something it will not do -- the stems have to be resident too,
- * because every replacement is expressed against the track's harmonics and
- * vocals and there is nothing to express without them.
+/* The single "this slot can run" test, used by both the pad claim and the lamp
+ * so they never disagree. The stems must be resident, since every replacement
+ * is expressed against the track's harmonics and vocals.
  *
- * GATED ON THE STEMS ROW, which is the whole of the mode. Eight slots would
- * otherwise take all eight hot cues away for as long as the stick is in, and a
- * hot cue is not something to spend without asking. With the row closed every
- * pad is stock -- no claim, no colour, and nothing of ours in the way; open it
- * and the pads become the circuit's. The lamp says which state the deck is in,
- * so there is nothing to remember.
+ * Gated on the STEMS row: otherwise the slots would take the hot cues for as
+ * long as the stick is in. With the row closed every pad is stock; open, the
+ * pads belong to the circuit.
  *
- * THE GATE IS ON THE PADS, NOT ON THE CIRCUIT. Closing the row hands the pads
- * back and leaves a running replacement running, exactly as it leaves the stem
- * levels where the DJ put them: the row is where the controls live, not what the
- * feature is. So this answers -1 for a pad whose slot is at that moment
- * REPLACING a stem, which is correct -- the pad will not toggle it while the row
- * is closed, and a lamp lit for something the pad will not do is worse than no
- * lamp. The cost is that a replacement is not visible on the pads until the row
- * is open again; the row itself is where it shows. */
+ * The gate applies to the pads, not the circuit: closing the row leaves a
+ * running replacement running, like the stem levels. So this returns -1 even
+ * for the slot currently replacing a stem, since the pad cannot toggle it while
+ * the row is closed; the replacement shows on the row (and the title bar badge,
+ * see gc_active_part) instead. */
 int gc_slot_part(int slot)
 {
     if (slot < 0 || slot >= CUE_PADS)
@@ -162,18 +141,12 @@ int gc_active_slot(void)
 
 /* ---- the pads' colours ---------------------------------------------------
  *
- * A slot's colour IS the stem it takes away, so a glance at the pads says what
- * the circuit is holding rather than merely which pads are loaded. Red drums,
- * blue harmonics, green vocals, indexed by STEM_PART_*.
+ * A slot's colour is the stem it replaces: red drums, blue harmonics, green
+ * vocals, indexed by STEM_PART_*. Unlit when gc_slot_part() returns -1 (row
+ * closed, no file, or no stems resident), the same test the press uses.
  *
- * gc_slot_part() answers -1 for a slot that could not run -- the stems row
- * closed, no file, or no stems resident to express a replacement against -- so
- * a lamp is never lit for something the pad will not do. It is the same
- * predicate the press asks, which is what keeps the two from disagreeing.
- *
- * The blink is off the monotonic clock rather than a count of draws: the lamp
- * is redrawn at whatever rate the panel runs at, so counting frames would make
- * the rate a property of how busy the deck is. */
+ * The blink uses the monotonic clock, not a draw count, because the lamp's
+ * redraw rate varies with deck load. */
 #define GC_BLINK_MS 350
 
 static const uint8_t k_gc_part_hue[N_STEMS][3] = {
@@ -199,10 +172,8 @@ int gc_pad_lamp(int pad, struct lamp *out)
 
 /* Which stem the running replacement stands in for, or -1 when none is running.
  *
- * UNGATED, unlike gc_slot_part: the row gate is about what a PAD does, and this
- * answers for the badge on the title bar, which is the one thing that says a
- * replacement is running while the row is closed. Gating it would blank exactly
- * the indicator the gate creates the need for. */
+ * Not gated on the row, unlike gc_slot_part: it drives the title bar badge,
+ * the only indicator of a running replacement while the row is closed. */
 int gc_active_part(void)
 {
     int slot = __atomic_load_n(&gc_g_active, __ATOMIC_ACQUIRE);
@@ -235,9 +206,8 @@ void gc_disarm(void)
 
 /* ---- loading (worker) ----------------------------------------------------- */
 
-/* One decode's worth of state. stem_decode_pull hands over chunks of float and
- * this converts to s16 as they arrive, so the peak is the s16 buffer plus one
- * chunk rather than a whole float copy of the file. */
+/* One decode's state. Float chunks are converted to s16 as they arrive, so the
+ * peak is the s16 buffer plus one chunk, not a float copy of the file. */
 struct gc_load {
     int16_t *pcm;
     int64_t  cap;        /* frames the buffer holds */
@@ -254,9 +224,7 @@ static int gc_sink(const float *in, int64_t frames, void *user)
     for (i = 0; i < take * 2; i++) {
         float v = in[i] * 32767.0f;
 
-        /* The DJ's own file, so it is already whatever level they made it --
-         * clipped rather than scaled, because quietening someone's loop to fit
-         * a sample they will never see is a decision that belongs to them. */
+        /* Clipped, not scaled: the level of the DJ's file is theirs to set. */
         if (v >  32767.0f) v =  32767.0f;
         if (v < -32768.0f) v = -32768.0f;
         l->pcm[l->n * 2 + i] = (int16_t)v;
@@ -292,8 +260,8 @@ static int gc_load_one(const char *path, int rate, int part, float bpm,
     struct gc_load l;
     int64_t frames;
 
-    /* What the DECODER will produce, which is not the file's own count: the
-     * deck's chain pads, and the length is what the buffer has to hold. */
+    /* The decoder's frame count, which includes the deck chain's padding; that
+     * is what the buffer must hold. */
     frames = stem_decode_pull(path, rate, NULL, NULL);
     if (frames <= 0) {
         MDBG("gc: %s will not decode\n", path);
@@ -324,16 +292,13 @@ static int gc_load_one(const char *path, int rate, int part, float bpm,
     s->spb    = 0.0;
     s->span   = l.n;
 
-    /* THE LOOP IS WHOLE BEATS, NOT THE BUFFER. What came back is the file plus
-     * whatever the decoder padded it with -- an encoder delay is tens of
-     * milliseconds, which is a hole at the end of every bar. A stated BPM says
-     * how long a beat is, the nearest whole number of them is what the DJ
-     * exported, and rounding to it puts the wrap back on the beat and leaves the
-     * padding beyond the end of the loop where it is never read.
+    /* The loop length is a whole number of beats, not the buffer: the buffer
+     * includes decoder padding (an encoder delay is tens of milliseconds, a gap
+     * at the end of every bar). With a stated BPM, rounding to the nearest whole
+     * beat puts the wrap on the beat and leaves the padding unread.
      *
-     * Nearest, not floor: the padding makes the buffer longer than the loop, so
-     * rounding down would drop a real beat off any file whose padding happens to
-     * exceed half of one. */
+     * Nearest, not floor: padding makes the buffer longer than the loop, so
+     * floor would drop a real beat when padding exceeds half a beat. */
     if (bpm > 0.0f) {
         double spb = (double)rate * 60.0 / (double)bpm;
         int64_t beats = (int64_t)((double)l.n / spb + 0.5);
@@ -374,16 +339,14 @@ static void gc_unload(void)
  *     # audio path, slot, stem, bpm
  *     loops/hard-kick.wav, 1, d, 124
  *
- * Comma-separated because a path may contain spaces and a DJ should not have to
- * quote one. `#` to end of line is a comment, blank lines are skipped, and
- * surrounding whitespace on every field is trimmed -- this is a file people
- * edit, so the format forgives what a person would naturally type.
+ * Comma-separated, so paths may contain spaces without quoting. `#` starts a
+ * comment to end of line, blank lines are skipped, and whitespace around each
+ * field is trimmed.
  *
- * A relative path is relative to the VOLUME ROOT, not to mods/gc: the audio is
- * the DJ's own and belongs wherever they keep it, which is usually beside their
- * tracks rather than beside our config. An absolute path is taken as given.
+ * A relative path is relative to the volume root, not mods/gc, since the audio
+ * usually sits with the DJ's tracks. An absolute path is used as given.
  *
- * BPM may be omitted or 0, which means the loop's tempo is simply not stated. */
+ * BPM may be omitted or 0, meaning the loop's tempo is not stated. */
 
 static char *gc_trim(char *p)
 {
@@ -454,11 +417,8 @@ static int gc_config_line(const char *root, char *line, int rate)
     if (!gc_load_one(path, rate, part, bpm, &gc_g_slot[slot - 1]))
         return 0;
 
-    /* Both lengths, because the difference between them is the whole story: the
-     * beats are what the loop is, the frames are what the decoder handed over,
-     * and a gap between them that is not a few milliseconds of padding is a
-     * wrong BPM -- caught here, rather than as a loop drifting on a dance
-     * floor. */
+    /* Log both lengths: a gap between the beat span and the decoded frames
+     * larger than a few milliseconds of padding means a wrong BPM. */
     if (bpm > 0.0f)
         MDBG("gc: slot %d = %s (%s, %.1f BPM, %.2f beats -> %lld of %lld frames)\n",
              slot, path, gc_part_name(part), (double)bpm,
@@ -484,9 +444,8 @@ static void gc_scan(const char *root, int rate)
         return;
     fp = fopen(path, "r");
     if (!fp) {
-        /* No config is a stick with no slots, which is most sticks. Said once
-         * per scan rather than silently, because "the pads are not coloured" is
-         * otherwise indistinguishable from a bug. */
+        /* No config means no slots, the usual case. Logged once per scan so
+         * uncoloured pads can be told apart from a bug. */
         MDBG("gc: no %s -> no slots\n", path);
         snprintf(gc_g_root, sizeof(gc_g_root), "%s", root);
         gc_g_rate = rate;
@@ -504,8 +463,8 @@ static void gc_scan(const char *root, int rate)
          n, n == 1 ? "" : "s", path, rate);
 }
 
-/* Called from the worker's idle branch. Cheap when nothing has moved: two
- * string compares against what the table was built for. */
+/* Called from the worker's idle branch. Cheap when nothing changed: a rate
+ * compare and a string compare. */
 void mod_stem_gc_poll(void)
 {
     char root[GC_PATH_MAX];
@@ -529,10 +488,8 @@ void mod_stem_gc_poll(void)
 
 /* ---- the gesture (deck) --------------------------------------------------- */
 
-/* A pad the DJ has put a file behind is the circuit's; every other pad is a hot
- * cue and never sees this. That is the whole gating rule -- there is no mode to
- * enter and no panel to open, because the lamp already says which pads are
- * which and the stick is where the DJ decided it. */
+/* Claim a press on a pad whose slot can run (gc_slot_part); every other pad
+ * stays a hot cue. */
 static int gc_claim(const struct cue_event *ev)
 {
     return gc_slot_part(ev->pad) >= 0;
@@ -542,8 +499,7 @@ static void gc_pad(const struct cue_event *ev, enum cue_phase phase)
 {
     int64_t at;
 
-    /* The press carries the whole gesture; the release is the DJ letting go of
-     * a switch that is already thrown. */
+    /* The press does everything; the release is ignored. */
     if (phase != CUE_PAD_PRESSED)
         return;
 
@@ -556,35 +512,25 @@ static void gc_pad(const struct cue_event *ev, enum cue_phase phase)
         MDBG("gc: slot %d takes over from slot %d\n",
              ev->pad + 1, gc_active_slot() + 1);
 
-    /* HERE, because a pad press is the one moment a cue slot is in reach, and
-     * because the answer is only wanted while a slot is armed. Re-read on every
-     * arm rather than cached: it costs a handful of reads and it cannot then be
-     * the previous track's. */
+    /* Read the grid here: a pad press is when a cue slot is reachable, and the
+     * grid is only needed while a slot is armed. Re-read on every arm, which
+     * costs a few reads and can never return the previous track's grid. */
     stem_grid_take(ev);
 
-    /* THE GRID IS THE PHASE, not the moment the pad went down.
+    /* Anchor the phase to the grid's first downbeat, not the press: anchoring to
+     * the play head would offset the bar by however late the press was. The
+     * phase is then beats into the track modulo the loop, so every press,
+     * re-press and takeover lands in the same alignment. A press therefore does
+     * not restart the loop from its first frame.
      *
-     * Anchoring to the play head makes the loop run at the track's tempo and
-     * start wherever the finger landed, which is a bar turned by however late
-     * the press was -- in time and out of place. Anchoring to the grid's first
-     * downbeat instead makes the loop's own downbeat land on the track's: the
-     * phase becomes how many beats into the track we are, modulo the loop, and
-     * every press, re-press and takeover drops into the same alignment.
-     *
-     * The cost is that a press does not restart the loop from its first frame.
-     * That is the right way round for a part standing in for a stem, which has
-     * to sit in the track's bar rather than in the DJ's reaction time.
-     *
-     * Without a grid there is nothing to align to, and the play head is the only
-     * reference left. */
+     * Without a grid, the play head is the only reference. */
     at = stem_grid_spb() > 0.0 ? stem_grid_beat0() : stem_source_pos();
     if (at < 0)
         at = 0;                     /* nothing has been read yet; phase from 0 */
     gc_arm(ev->pad, at);
 
-    /* Both tempos, because "the loop is not in time" has two causes that look
-     * identical: a BPM the config states wrongly, and a track whose grid was not
-     * readable. One line separates them. */
+    /* Log both tempos to tell a wrong BPM in the config from an unreadable
+     * track grid. */
     {
         double file_spb  = gc_g_slot[ev->pad].spb;
         double track_spb = stem_grid_spb();
@@ -604,13 +550,11 @@ static void gc_pad(const struct cue_event *ev, enum cue_phase phase)
     }
 }
 
+/* Ahead of the handlers that react to the deck's press (gate at 10, smart at
+ * 20, preview at 30), since this one replaces the press. */
 CUE_HANDLER(k_cue_gc,
             .name = "groove", .prio = 5,
             .pad = gc_pad, .pad_claim = gc_claim);
-
-/* Ahead of the behaviours that react to the deck's press (gate at 10, smart at
- * 20, preview at 30): this one replaces that press rather than following it, so
- * it has to be asked before anything is built on top of one. */
 
 static int gc_install(void)
 {
@@ -627,17 +571,12 @@ KIT_MOD(k_mod_stem_gc,
 
 /* ---- what takes a slot off ------------------------------------------------
  *
- * ONE THING: the track changing, from stem_job_set_track. A replacement is
- * expressed against a particular track's stems and phased against its grid, so
- * it cannot survive one; everything else leaves it alone.
+ * Besides the pad itself and a re-scan (gc_unload), only a track change
+ * (stem_job_set_track): a replacement is tied to a track's stems and grid.
  *
- * PAUSING IS NOT A STOP. The DJ pausing has thrown no switch, and a slot that
- * comes off under the finger is a slot that has to be re-armed before the next
- * press of PLAY. The pad and the lamp say what is engaged; the transport does
- * not get a vote.
+ * Pausing does not disarm a slot; the pad and lamp show what is engaged.
  *
- * There is no play-state call in the layer, and the play head is not a stand-in
- * for one: stem_source_pos() is the stretcher's last read position, so it also
- * sits still whenever the audio thread does. Deciding "stopped" from it turned
- * every stall -- and a resample is most of a load -- into a slot switching
- * itself off. */
+ * There is no play-state call here, and the play head cannot stand in for one:
+ * stem_source_pos() is the stretcher's last read position and also stops
+ * whenever the audio thread stalls (e.g. during a resample on load), so using
+ * it to detect "stopped" would disarm slots spuriously. */

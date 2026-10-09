@@ -9,7 +9,8 @@
 /* Row rendering (mirrors stock paintCell field styling)              */
 /* ================================================================== */
 
-/* Fetch a live .bss theme colour (juce ARGB); opaque-white fallback. */
+/* Draw one text field: font height read off the model at `fonth_off`, colour as
+ * juce ARGB with an opaque-white fallback. */
 void menu_draw_field(void *self, void *g, uintptr_t fonth_off, uint32_t colour,
                        const char *text, int x, int w, int h, int justif)
 {
@@ -24,12 +25,10 @@ void menu_draw_field(void *self, void *g, uintptr_t fonth_off, uint32_t colour,
     ((void (*)(void *))FN_FONT_DTOR)(&font);
 
     if (colour == 0) colour = 0xffffffffu;                 /* fallback: opaque white */
-    /* THROUGH THE DRAW KIT, not setColour directly. setColour IS the theme's setFill
-     * hook, and `colour` came out of mod_ui() already resolved through the theme once --
-     * so calling it raw applied the palette a SECOND time. Measured on SANDSTONE: our
-     * row labels came out #7b809d against the deck's own #262944 in the same list, a
-     * washed blue-grey where every row above them was near-black. mod_gfx_colour
-     * brackets the call, which is the whole reason it exists. */
+    /* Through the draw kit, not setColour directly: setColour is the theme's setFill
+     * hook and `colour` from mod_ui() is already theme-resolved, so a raw call applies
+     * the palette twice (on SANDSTONE, #7b809d instead of #262944). mod_gfx_colour
+     * brackets the call to avoid that. */
     mod_gfx_colour(g, colour);
 
     uint8_t s[16] __attribute__((aligned(16)));
@@ -46,25 +45,21 @@ void menu_draw_mod_row(void *self, void *g, int w, int h, const char *label,
 
     if (!menu_g_render_ok) return;
     menu_draw_field(self, g, MODEL_LBL_FONTH_OFF, ui->text_deck, label, 0xe, w, h, 1);
-    /* THE VALUE GOES TO FULL INK ON THE SELECTED ROW. That is what the deck does and it
-     * is a state this ignored: measured on its own rows, the dim #7d7d7d becomes the
-     * label's #ffffff the moment a row is selected, on the focused blue and on the
-     * unfocused grey alike. Ours stayed dim, so our selected row read as a row that was
-     * not quite selected next to the deck's. */
+    /* On the selected row the value uses the label colour, as on the deck's own rows:
+     * the dim #7d7d7d becomes #ffffff on both the focused blue and unfocused grey. */
     menu_draw_field(self, g, MODEL_VAL_FONTH_OFF, sel ? ui->text_deck : ui->text_value,
                     value, 0, w - 0xe, h, 2);
 }
 
-/* The overlay title row: "MOD SETTINGS" in the accent colour, so the collapsed
- * list clearly reads as the mod pane rather than a stray DJ SETTING row. */
+/* The overlay title row: "MOD SETTINGS" in the accent colour, so the list is
+ * recognisable as the mod pane. */
 void menu_draw_mod_header(void *self, void *g, int w, int h, const char *text)
 {
     if (!menu_g_render_ok) return;
     menu_draw_field(self, g, MODEL_LBL_FONTH_OFF, MOD_HEADER_COLOUR, text, 0xe, w, h, 1);
-    /* The build, right-aligned where every row below puts its value. This is the
-     * only place a DJ can read which mods they are running without a shell, which
-     * is what makes a report from a booth actionable. drawText ellipsises, so a
-     * long version degrades rather than colliding with the title. */
+    /* The build version, right-aligned in the value column; the only place a DJ
+     * can see it without a shell. drawText ellipsises a long version instead of
+     * overlapping the title. */
     menu_draw_field(self, g, MODEL_VAL_FONTH_OFF, MOD_HEADER_COLOUR,
                EP122_MOD_VERSION, 0, w - 0xe, h, 2);
 }

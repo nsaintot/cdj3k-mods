@@ -2,9 +2,9 @@
 /*
  * menu/editor.c - text rows: our own juce::TextEditor on the deck's keyboard.
  *
- * The keyboard is the deck's, the editor is not: typing into the view's own
- * editor would rewrite the stock HISTORY NAME setting, so we own the keyboard's
- * listener slot and commit into our own buffer. See menu_editor_get().
+ * The keyboard is the deck's, the editor is ours: typing into the view's own
+ * editor would rewrite the stock HISTORY NAME setting, so we hook the keyboard's
+ * listener slot and edit our own buffer. See mod_editor_get().
  */
 #include "menu/internal.h"
 
@@ -15,10 +15,7 @@
 static int g_kbd_up;                    /* our text row currently owns the keyboard */
 static const struct kit_row *g_kbd_row; /* the row it is editing                   */
 
-/* Both read by the paint hook, which must not draw a value the editor is already
- * drawing over. Accessors rather than externs: what is being edited is this
- * file's business, and everywhere else only needs to ask whether a given row is
- * the one. */
+/* Read by the paint hook, which must not draw a value the editor is drawing over. */
 int menu_kbd_is_up(void)
 {
     return g_kbd_up;
@@ -29,14 +26,12 @@ const struct kit_row *menu_kbd_row(void)
     return g_kbd_row;
 }
 static uintptr_t g_editor;        /* our juce::TextEditor, built once and kept   */
-/* The value on open, to tell a real edit apart. Sized for any text row rather
- * than for one feature's field. */
+/* The value on open, to detect a real edit. Sized for any text row. */
 static char g_kbd_orig[KIT_ROW_TEXT_MAX];
 
 /* Build our editor on first use and keep it: it is parented to the UTILITY view, which
- * outlives every visit, and the constructor allocates a caret and a viewport that tearing
- * it down again would only have to unwind. It takes the view editor's own bounds, so
- * standing one in for the other moves nothing on screen. */
+ * outlives every visit. It takes the view editor's bounds, so swapping them moves nothing
+ * on screen. */
 static uintptr_t mod_editor_get(void)
 {
     static const int k_fg[] = { ED_COL_TEXT, ED_COL_CARET };
@@ -88,8 +83,8 @@ static uintptr_t mod_editor_get(void)
 }
 
 /* Copy the characters of a juce::String. It is one pointer to its UTF-8 bytes (the
- * refcount/length header sits BEFORE them), so they are readable directly -- probed
- * rather than dereferenced, as everywhere else here. Returns the length written. */
+ * refcount/length header sits before them), read with mod_safe_read. Returns the
+ * length written. */
 size_t menu_str_copy(uintptr_t sp, char *out, size_t cap)
 {
     size_t i;
@@ -106,8 +101,8 @@ size_t menu_str_copy(uintptr_t sp, char *out, size_t cap)
     return i;
 }
 
-/* Put our buffer on screen. Our editor is only ever written from `g_kbd_target`, which
- * is the row's own value, so the buffer stays the single source of truth. */
+/* Put our buffer on screen. Our editor is only written from the row's own buffer, so
+ * that buffer stays the single source of truth. */
 static void mod_editor_show_text(const char *text)
 {
     uint8_t s[8] __attribute__((aligned(8)));
@@ -118,11 +113,9 @@ static void mod_editor_show_text(const char *text)
     ((str_dtor_t)FN_STR_DTOR)(s);
 }
 
-/* The keyboard's listener callback. While our row owns the keyboard we do the edit the
- * stock body would have done, but against our own buffer and our own editor -- and we do
- * NOT chain, which is the whole point: the stock body ends by committing the text to
- * HISTORY NAME, and not running it is the only thing that stops that. Every other key,
- * and every stock use of this keyboard, falls straight through. */
+/* The keyboard's listener callback. While our row owns the keyboard, do the stock edit
+ * against our own buffer and editor, and do not chain: the stock body ends by committing
+ * the text to HISTORY NAME. Stock uses of the keyboard fall through. */
 void menu_kbd_key(void *self, long key)
 {
     char *text;
@@ -152,9 +145,9 @@ void menu_kbd_key(void *self, long key)
     ((void (*)(void *))FN_EDITOR_FOCUS)((void *)g_editor);
 }
 
-/* Park the editor on `row` (KBD_STOCK_ROW restores the stock spot). The stock y is
- * captured on first sight, so repeated opens shift from that baseline instead of
- * creeping, and nothing needs to know where the SYSTEM pane happens to put it. */
+/* Move the editor to `row` (KBD_STOCK_ROW restores the stock spot). The stock y is
+ * captured on first use, so repeated opens shift from that baseline instead of
+ * accumulating. */
 static void mod_kbd_move_editor(uintptr_t editor, int row)
 {
     static int32_t stock_y = -1;
@@ -167,22 +160,19 @@ static void mod_kbd_move_editor(uintptr_t editor, int row)
         ((void *)editor, b[0], stock_y + (row - KBD_STOCK_ROW) * menu_list_row_h());
 }
 
-/* Clear the right pane for the duration of the edit, the way the stock text setting does:
- * with the keyboard up there is no value to choose, so leaving two radio buttons there
- * reads as a live control. Stock gets this by handing its own pane ten empty strings and
- * setting a byte at model+0x48 -- but that is the SYSTEM pane's model (view+0x3e8) and a
- * different class from the one our overlay drives (view+0x3c8), so rather than poke an
- * offset into a layout we have not established, take the list off screen. Same flat
- * result, and nothing of the model's is touched. */
+/* Hide the right pane during the edit, as the stock text setting does, so no radio
+ * buttons show while there is no value to choose. Stock hands its pane ten empty strings
+ * and sets a byte at model+0x48, but that is the SYSTEM pane's model (view+0x3e8), a
+ * different class from ours (view+0x3c8) with an unknown layout, so the list is hidden
+ * instead and the model is untouched. */
 void menu_pane_show(uintptr_t view, int visible)
 {
     juce_comp_set_visible(menu_view_ptr(view, VIEW_RIGHT_LIST_OFF), visible);
 }
 
-/* Open the keyboard on `r`'s buffer. The stock show runs untouched -- it seeds and reveals
- * the view's OWN editor and raises the keyboard -- and we then simply take that editor's
- * place on screen. The view's editor keeps the real HISTORY NAME the whole time; nothing
- * of the view's is written, because the keys come to us instead (menu_kbd_key). */
+/* Open the keyboard on `r`'s buffer. The stock show seeds and reveals the view's own
+ * editor and raises the keyboard; ours then replaces that editor on screen. The view's
+ * editor keeps the real HISTORY NAME, since the keys come to menu_kbd_key instead. */
 void menu_kbd_open(const struct kit_row *r)
 {
     uintptr_t ours;
@@ -203,9 +193,8 @@ void menu_kbd_open(const struct kit_row *r)
     g_kbd_row = r;
     mod_editor_show_text(r->text);
     {
-        /* A row under the keyboard is scrolled up first; the editor then sits on
-         * the slot it lands in. The scroll rebuilds the right pane, hence the
-         * second hide. */
+        /* A row under the keyboard is scrolled up first and the editor placed on
+         * its new slot. The scroll rebuilds the right pane, hence the second hide. */
         int shown = menu_list_fit_above_kbd(
             menu_view_ptr(menu_g_view, VIEW_DJLIST_OFF), menu_g_setting_row);
 
@@ -221,9 +210,8 @@ void menu_kbd_open(const struct kit_row *r)
          r->label, r->text, (unsigned long)ours);
 }
 
-/* Close it. The row's value is already current -- each key edits it in place -- so the
- * only thing left is to persist it if it moved. Called from every path that navigates
- * away, so it must be idempotent and must not care why it was called. */
+/* Close the keyboard. Each key edits the row's value in place, so only persisting a
+ * change is left. Called from every path that navigates away, so it is idempotent. */
 void menu_kbd_close(void)
 {
     const struct kit_row *r = g_kbd_row;
@@ -232,24 +220,23 @@ void menu_kbd_close(void)
     g_kbd_up = 0;
     g_kbd_row = NULL;
 
-    /* The keyboard comes down BEFORE the commit: a feature's changed() may put a
-     * message on the glass, and a popup raised while the keyboard is up appears
-     * behind it. The stock hide only knows about the view's own editor, so ours
-     * comes off separately. */
+    /* Hide the keyboard before the commit: a feature's changed() may show a popup,
+     * which would appear behind the keyboard. The stock hide only handles the view's
+     * own editor, so ours is hidden separately. */
     juce_comp_set_visible(g_editor, 0);
     menu_pane_show(menu_g_view, 1);
     ((void (*)(void *))FN_KBD_HIDE)((void *)menu_g_view);
-    /* Back to full height if the open cut it down for the keyboard. The whole
-     * refresh, not just the resize: a list that was scrolled and overflowing
-     * keeps its scroll indicators and offset until updateContent re-lays it out. */
+    /* Restore full height if the open cut the list down. A full refresh is needed:
+     * a scrolled, overflowing list keeps its scrollbars and offset until
+     * updateContent re-lays it out. */
     menu_refresh_djlist((void *)menu_g_view);
 
     if (!r || strcmp(g_kbd_orig, r->text) == 0) {
         MDBG("keyboard: closed, value unchanged\n");
         return;
     }
-    /* changed() first: it is where a feature refuses what was typed, so the value
-     * that lands on disk is the corrected one and never the bad one. */
+    /* changed() first: a feature may reject the input there, so the corrected value
+     * is what gets saved. */
     if (r->changed) r->changed();
     mods_settings_save();
     MDBG("keyboard: committed \"%s\"\n", r->text);

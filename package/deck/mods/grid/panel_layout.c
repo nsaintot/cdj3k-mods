@@ -36,12 +36,20 @@ static void gp_place(uintptr_t comp, int x, int y, int w, int h)
     ((void (*)(void *, int, int, int, int))FN_SET_BOUNDS)((void *)comp, x, y, w, h);
 }
 
+/* How far a button's artwork stops inside its bounds. The deck's are PNGs that
+ * fill theirs; everything we draw is inset. */
 static int gp_inset(int i, int ours)
 {
     return (ours || i == GP_RESET) ? GP_PLATE_INSET : 0;
 }
 
-/* Bounds gap before button i, from the SEEN gap the design asks for. */
+/* Bounds gap before button i, from the seen gap the design asks for. Because
+ * the deck's artwork fills its bounds and ours is inset, one bounds gap renders
+ * differently depending on its neighbours (at a bounds gap of 12: 12px
+ * between two of the deck's, 13px against a drawn RESET, 14px between two of
+ * ours). So the GP_V* constants are seen distances and the insets in the way are
+ * subtracted here. Zero at 3 for the deck's flush 1/2 pair; GP_VRESET at 4 for
+ * our RESET, which stands off the plate. */
 static int gp_gap_before(int i, int ours)
 {
     if (i == 0)
@@ -62,6 +70,14 @@ int gp_btn_x(int first, int i, int ours)
     return x;
 }
 
+/* Re-asserted whenever the panel is shown, not on every paint: a panel being
+ * re-laid out does so in resized(), which runs on the way back up, and a
+ * setBounds inside a paint schedules another paint.
+ *
+ * The panel's own height is part of the layout: the 84px strip is grown by
+ * GP_PAD so the plate has a margin around deck-height buttons (the strip sits
+ * 8px above the bottom of the waveform view). Guarded against re-entry because
+ * setBounds runs resized(). */
 void gp_layout(void)
 {
     static int busy;

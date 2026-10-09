@@ -4,9 +4,9 @@
  *
  * The mix indexes the loop buffer with what this returns and interpolates
  * between that frame and its successor, so a result that reaches the span is an
- * out-of-bounds read on the audio thread. The cases that matter are the
- * boundaries: the wrap itself, a position before the loop was engaged, a ratio
- * that is not 1, and the rounding at the top of the range.
+ * out-of-bounds read on the audio thread. The cases cover the boundaries: the
+ * wrap, a position before the loop was engaged, a ratio other than 1, and the
+ * rounding at the top of the range.
  */
 #include "mods/stem/loop.h"
 
@@ -41,8 +41,7 @@ int main(void)
     {
         struct stem_loop l = { 0, 0 };
 
-        /* span 0 is a slot with no file: there is nothing to index, and 0 is
-         * the only answer that cannot be out of bounds. */
+        /* span 0 is a slot with no file; 0 is the only in-bounds answer. */
         CHECK_NEAR(stem_loop_phase(&l, 0, 1.0), 0.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 12345, 1.0), 0.0, 0.0);
         l.from = 999;                       /* ignored while span is 0 */
@@ -53,8 +52,8 @@ int main(void)
     {
         struct stem_loop l = { 1000, 400 };
 
-        /* ratio 1 is integer arithmetic in disguise: the file advances one
-         * frame per track frame, so every phase is exact. */
+        /* At ratio 1 the file advances one frame per track frame, so every
+         * phase is exact. */
         CHECK_NEAR(stem_loop_phase(&l, 1000, 1.0), 0.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 1001, 1.0), 1.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 1399, 1.0), 399.0, 0.0);
@@ -74,14 +73,13 @@ int main(void)
     {
         struct stem_loop l = { 1000, 400 };
 
-        /* The cast truncates toward zero, so this is where a plain remainder is
-         * wrong. The loop is a line extended backwards, not something that
-         * starts when the play head arrives. */
+        /* The cast truncates toward zero, so a plain remainder is wrong here.
+         * The loop extends backwards from where it was engaged. */
         CHECK_NEAR(stem_loop_phase(&l, 999, 1.0), 399.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 600, 1.0), 0.0, 0.0);       /* one span back */
         CHECK_NEAR(stem_loop_phase(&l, 601, 1.0), 1.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 200, 1.0), 0.0, 0.0);       /* two spans back */
-        /* 1000 frames back is 2.5 spans, so this lands in the MIDDLE. */
+        /* 1000 frames back is 2.5 spans, so this lands in the middle. */
         CHECK_NEAR(stem_loop_phase(&l, 0, 1.0), 200.0, 0.0);
     }
 
@@ -91,7 +89,7 @@ int main(void)
         double a = stem_loop_phase(&l, 500000, 1.0);
 
         /* Engaging, releasing and re-engaging must land in the same place: the
-         * phase is a function of the position alone. */
+         * phase depends on the position alone. */
         CHECK_NEAR(stem_loop_phase(&l, 500000 + 12000, 1.0), a, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 500000 - 12000, 1.0), a, 0.0);
     }
@@ -116,8 +114,8 @@ int main(void)
         CHECK_NEAR(stem_loop_phase(&l, 1, 2.0), 2.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 499, 2.0), 998.0, 0.0);
         CHECK_NEAR(stem_loop_phase(&l, 500, 2.0), 0.0, 1e-9);
-        /* Backwards past the start at a ratio that is not 1 is where the sign
-         * of the remainder and the wrap have to agree. */
+        /* Backwards past the start at a ratio other than 1: the sign of the
+         * remainder and the wrap must agree. */
         CHECK_NEAR(stem_loop_phase(&l, -1, 2.0), 998.0, 1e-9);
         CHECK_NEAR(stem_loop_phase(&l, -500, 2.0), 0.0, 1e-9);
     }
@@ -129,8 +127,8 @@ int main(void)
         double ratio = 126.0 / 124.0;
 
         walk(&l, 480000, ratio, 96000);         /* a second of it */
-        /* Far from the engage point the phase is still inside the span: this is
-         * the case a carried cursor gets right and a re-derived one has to. */
+        /* Far from the engage point the re-derived phase must still be inside
+         * the span. */
         {
             double u = stem_loop_phase(&l, 480000 + 96000 * 600, ratio);
 
@@ -192,8 +190,8 @@ int main(void)
     {
         int64_t one[1] = { 500 };
 
-        /* No array and a one-beat array are both "no interval", and 0 is the
-         * only answer that cannot make a caller index outside a buffer. */
+        /* No array and a one-beat array both have no interval; 0 is the only
+         * in-bounds answer. */
         CHECK_NEAR(stem_beat_at(NULL, 0, 1000, NULL), 0.0, 0.0);
         CHECK_NEAR(stem_beat_at(one, 1, 1000, NULL), 0.0, 0.0);
         CHECK_NEAR(stem_beat_at(one, 0, 1000, NULL), 0.0, 0.0);
@@ -212,10 +210,9 @@ int main(void)
         CHECK_NEAR(stem_beat_at(g, 10, 1000 + 12000, NULL), 0.5, 1e-12);
         CHECK_NEAR(stem_beat_at(g, 10, 1000 + 24000, NULL), 1.0, 0.0);
         CHECK_NEAR(stem_beat_at(g, 10, 1000 + 24000 * 7, NULL), 7.0, 0.0);
-        /* Every position in the covered range: the beat index is exactly the
-         * elapsed frames over the beat length, which is what the fixed-tempo
-         * ratio computes. Agreeing here is what makes the two routes the same
-         * feature rather than two behaviours. */
+        /* Across the covered range the beat index is exactly the elapsed frames
+         * over the beat length, which is what the fixed-tempo ratio computes,
+         * so both routes behave the same. */
         for (i = 0; i < 9 * 24000; i += 997)
             CHECK_NEAR(stem_beat_at(g, 10, 1000 + i, NULL), (double)i / 24000.0, 1e-9);
     }
@@ -224,8 +221,8 @@ int main(void)
     {
         int64_t g[4] = { 1000, 3000, 5000, 7000 };
 
-        /* Before the first beat the answer goes negative -- the caller wraps
-         * it, and a track has audio before its analysis starts. */
+        /* Before the first beat the result goes negative (the caller wraps
+         * it); a track has audio before its analysis starts. */
         CHECK_NEAR(stem_beat_at(g, 4, 0, NULL), -0.5, 1e-12);
         CHECK_NEAR(stem_beat_at(g, 4, -1000, NULL), -1.0, 1e-12);
         /* After the last, the last interval carries on. */
@@ -237,7 +234,7 @@ int main(void)
     T_CASE("beats: a tempo that moves");
     {
         /* Beats that get shorter: 4000, then 2000, then 1000. A single ratio
-         * cannot describe this, and that is the whole point of the array. */
+         * cannot describe this. */
         int64_t g[5] = { 0, 4000, 6000, 7000, 8000 };
 
         CHECK_NEAR(stem_beat_at(g, 5, 2000, NULL), 0.5, 1e-12);
@@ -278,10 +275,9 @@ int main(void)
 
     T_CASE("beats: an interval that is not a length");
     {
-        /* Two beats in the same place is a beat of no duration. The index steps
-         * by a whole one across it -- which is what the grid says -- rather than
-         * dividing by the interval, and a NaN on the audio thread is an index
-         * that is neither in bounds nor out of them. */
+        /* Two beats in the same place are a beat of no duration. The index
+         * steps a whole beat across it instead of dividing by the zero
+         * interval, which would put a NaN index on the audio thread. */
         int64_t g[4] = { 0, 1000, 1000, 2000 };
 
         CHECK_NEAR(stem_beat_at(g, 4, 999, NULL), 0.999, 1e-12);
@@ -301,9 +297,9 @@ int main(void)
 
     T_CASE("beats: the phase built out of one stays in bounds");
     {
-        /* What the mix actually computes: (beat now - beat engaged) times the
-         * FILE's beat length, wrapped. Swept across a wrap on a drifting grid,
-         * which is where an off-by-one is an out-of-bounds read. */
+        /* What the mix computes: (beat now - beat engaged) times the file's
+         * beat length, wrapped. Swept across a wrap on a drifting grid, where
+         * an off-by-one would read out of bounds. */
         int64_t g[32];
         double span = 4.0 * 18000.0;        /* a four-beat file at 18000/beat */
         double b0;
@@ -327,9 +323,9 @@ int main(void)
     T_CASE("beats: the cursor is a hint and never an answer");
     {
         /* The mix carries a cursor across a block so the interval is bisected
-         * once instead of per frame. It is only ever allowed to be FASTER: any
-         * cursor, in any state, must give exactly what NULL gives -- otherwise
-         * the loop's phase depends on how the blocks happened to be cut. */
+         * once instead of per frame. The cursor only speeds the lookup: any
+         * cursor, in any state, must give exactly what NULL gives, or the
+         * loop's phase would depend on where the blocks were cut. */
         int64_t g[48];
         int32_t cur = -1;
         int64_t at;
@@ -344,14 +340,14 @@ int main(void)
             CHECK_NEAR(stem_beat_at(g, 48, at, &cur),
                        stem_beat_at(g, 48, at, NULL), 0.0);
 
-        /* Jumped backwards past the hint -- a seek, or a new track under an old
-         * cursor. The hint no longer brackets and must be discarded. */
+        /* Jumped backwards past the hint (a seek, or a new track under an old
+         * cursor). The hint no longer brackets and must be discarded. */
         cur = 40;
         CHECK_NEAR(stem_beat_at(g, 48, g[2] + 5, &cur),
                    stem_beat_at(g, 48, g[2] + 5, NULL), 0.0);
         CHECK(cur == 2);
 
-        /* Jumped far forward -- past the walk limit, so it bisects. */
+        /* Jumped far forward, past the walk limit, so it bisects. */
         cur = 1;
         CHECK_NEAR(stem_beat_at(g, 48, g[44] + 5, &cur),
                    stem_beat_at(g, 48, g[44] + 5, NULL), 0.0);
@@ -372,8 +368,8 @@ int main(void)
             }
         }
 
-        /* A hint carried across the ends, where the answer does not come from
-         * an interval at all and the cursor must simply not be consulted. */
+        /* A hint carried past either end, where the answer does not come from
+         * an interval and the cursor must not be consulted. */
         cur = 20;
         CHECK_NEAR(stem_beat_at(g, 48, -100000, &cur),
                    stem_beat_at(g, 48, -100000, NULL), 0.0);
@@ -390,7 +386,7 @@ int main(void)
         CHECK_NEAR(stem_loop_wrap(-0.5, 400), 399.5, 0.0);
         CHECK_NEAR(stem_loop_wrap(-400.0, 400), 0.0, 0.0);
         CHECK_NEAR(stem_loop_wrap(1234.5, 400), 34.5, 1e-9);
-        /* Not a span: there is nothing to index, so 0 is the answer. */
+        /* A span of 0 or less returns 0. */
         CHECK_NEAR(stem_loop_wrap(37.0, 0), 0.0, 0.0);
         CHECK_NEAR(stem_loop_wrap(37.0, -5), 0.0, 0.0);
     }

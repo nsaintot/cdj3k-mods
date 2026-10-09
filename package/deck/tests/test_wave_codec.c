@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
  * test_wave_codec.c - the CDJ-3000 3-band column codec, against the format
- * documented at the top of mods/wave_codec.c and the Python reference in
- * scripts/codec3band.py.
+ * documented at the top of mods/wave/codec.c.
  */
 #include "mods/wave/wave.h"
 
@@ -37,8 +36,8 @@ static void col_decode(const uint8_t *col, uint8_t *bands)
     mod_wave_decode(hdr, h, bands);
 }
 
-/* A track's worth of columns from a fixed sequence: every test that wants real
- * input wants the same input twice. */
+/* A track's worth of columns from a fixed sequence, so repeated calls give the
+ * same input. */
 static void fill_track(uint8_t *dst, size_t columns)
 {
     unsigned s = 0x13579bdfu;
@@ -201,9 +200,9 @@ static void unity_high_band_fixed_points(void)
     CHECK_INT(moved, 0);
 }
 
-/* Low and mid track amplitude and scale linearly. High does not: it is stored
- * on a fitted curve, so the same ratio applied to the stored byte lands well
- * clear of the curve's answer. Both directions, at every level. */
+/* Low and mid track amplitude and scale linearly. High is stored on a fitted
+ * curve, so the same ratio applied to the stored byte lands far from the
+ * curve's answer. Both directions, at every level. */
 static void high_band_is_not_linear(void)
 {
     static const float half[MOD_WAVE_BANDS] = { 0.5f, 0.5f, 0.5f };
@@ -311,8 +310,8 @@ static void blue_and_rgb(void)
     mod_wave_scale_rgb(rsrc, rdst, 256, (const float (*)[MOD_WAVE_BANDS])ratio, broad);
     CHECK(memcmp(rsrc, rdst, sizeof rsrc) == 0);
 
-    /* Height follows the fader, the colour does not: measured level invariant,
-     * see wave_codec.c. */
+    /* Height follows the fader, colour does not (level invariant, see
+     * wave/codec.c). */
     for (i = 0; i < 256; i++)
         broad[i] = 0.5f;
     mod_wave_scale_rgb(rsrc, rdst, 256, (const float (*)[MOD_WAVE_BANDS])ratio, broad);

@@ -8,12 +8,12 @@
 #   ep122_shim.so           LD_PRELOAD shim + mods, glibc 2.17-compatible
 #   stemd_client_aarch64    STEMS sidecar, musl-static
 #
-# Two stages because the two binaries need two libcs, and this is not optional:
+# Two stages, because the two binaries need different libcs:
 #
 #   agent-builder  (alpine, musl gcc)   -> stemd_client_aarch64
 #   shim-builder   (ubuntu 18.04, glibc)-> ep122_shim.so
 #
-# The shim is LD_PRELOADed into EP122 (a Pioneer aarch64 binary dynamically
+# The shim is LD_PRELOADed into EP122 (the stock aarch64 app, dynamically
 # linked against glibc 2.17) and into every process apl_start.sh launches. A
 # musl-linked .so lists `libc.so` in NEEDED; glibc's ld.so looks for `libc.so.6`
 # and fails with "cannot open shared object file", taking /bin/sh -- and so
@@ -25,7 +25,7 @@
 FROM arm64v8/alpine:3.19 AS agent-builder
 RUN apk add --no-cache build-base make file
 COPY deck/ /tmp/deck/
-# Alpine arm64's plain `gcc` IS the musl cross compiler we want for a fully
+# Alpine arm64's plain `gcc` is the musl compiler we want for a fully
 # static aarch64 binary with no glibc dependency.
 RUN make -C /tmp/deck CC=gcc agent && \
     file /tmp/deck/out/stemd_client_aarch64
@@ -42,11 +42,9 @@ ARG MOD_VERSION=unknown
 ARG MOD_BUILD=unknown
 RUN make -C /tmp/deck CC=gcc MOD_VERSION="$MOD_VERSION" MOD_BUILD="$MOD_BUILD" shim && \
     file /tmp/deck/out/ep122_shim.so
-# The load-bearing gate, and it must be able to FAIL the build (an earlier
-# version of this only printed NEEDED and ended in `|| true`, which is how a
-# shim needing glibc 2.27 symbols and one missing -lm/-lpthread both got
-# through). abi-check asserts the glibc ceiling, the libc flavour and that every
-# NEEDED library exists on the deck. This is the last place with a real toolchain
+# The ABI gate must be able to fail the build; do not mask it with `|| true`.
+# abi-check asserts the glibc ceiling, the libc flavour and that every NEEDED
+# library exists on the deck. This is the last place with a real toolchain
 # before the object reaches hardware.
 RUN make -C /tmp/deck CC=gcc abi-check
 

@@ -1,56 +1,51 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * lamp/lamp.h - what a colour IS on this panel, and who gets to say.
+ * lamp/lamp.h - what a pad colour means on this panel, and which feature sets it.
  *
- * Three layers, and this is the middle one:
+ * Three layers; this is the middle one:
  *
- *   cue/led.c   the TRANSPORT. Hooks hui::MultiColor::update, learns which
+ *   cue/led.c   the transport. Hooks hui::MultiColor::update, learns which
  *               ordinal is which pad, holds each lamp's writer, and writes.
- *   lamp/       the CONTROL. What a lamp value is, what the panel can render,
+ *   lamp/       the control. What a lamp value is, what the panel can render,
  *               and which feature owns a pad when more than one wants it.
- *   xpad/ stem/ the SOURCES. Each answers for its own pads and nothing else.
+ *   xpad/ stem/ the sources. Each answers for its own pads only.
  *
- * A source never writes a lamp and never learns the law twice: it fills a
- * struct lamp and says whether the pad is its own.
+ * A source never writes a lamp: it fills a struct lamp and says whether the pad
+ * is its own.
  *
  * ================================================================== *
- * THE LAW (measured on 3.19, by sweeping known triples out of a source
- * and reading the panel's own MOSI frame back with `emuctl leds`)
+ * Rules
  * ================================================================== *
  *
- * The app hands the write a colour AND a slot index; the write runs the pair
- * through a transform whose result is what reaches the panel. The transform's
- * class is not identified -- the binary is stripped -- so this is measured,
- * not read off the code.
+ * The app passes the write a colour and a slot index, and the write runs the
+ * pair through a transform before it reaches the panel. These rules describe
+ * that transform.
  *
- * THE SLOT IS THE BRIGHTNESS, THE TRIPLE IS A CHROMA.
+ * The slot is the brightness; the triple is a chroma.
  *
- *   1. The triple is scaled by its own maximum first. (0,64,0) and (0,255,0)
- *      come back identical, and so do (128,128,128) and (255,255,255). There
- *      is no dimming a lamp by writing smaller numbers.
+ *   1. The triple is first normalised by its own maximum. (0,64,0) and
+ *      (0,255,0) render identically, as do (128,128,128) and (255,255,255).
+ *      Smaller numbers do not dim a lamp.
  *
- *   2. The slot is the light. Every hue tops out at 0x7f on slot 2 and 0x0c on
- *      slot 1 -- the same ratio for all of them, which is what makes the two
- *      slots a brightness and not two palettes.
+ *   2. The slot sets the brightness. Every hue tops out at 0x7f on slot 2 and
+ *      0x0c on slot 1, the same ratio for all hues.
  *
- *   3. Saturation is pushed up. (255,200,200) comes back pure red and
- *      (200,255,200) pure green: a washed-out request is rendered as the hue it
- *      is nearest, not washed out.
+ *   3. Saturation is boosted. (255,200,200) renders pure red and
+ *      (200,255,200) pure green: a washed-out request renders as the nearest
+ *      pure hue.
  *
  *   4. The channels are calibrated against each other. R, G and B each reach
- *      the slot maximum alone, but white returns #44787f and cyan #004b7f -- a
- *      mix is weighted, not summed, and not by a single gamma (fitting one
- *      gives 1.79 from the R/G pairs against 1.46 from the G/B pairs). A
- *      secondary has to be measured; it cannot be predicted from its primaries.
+ *      the slot maximum alone, but white renders #44787f and cyan #004b7f: a
+ *      mix is weighted, not summed, and not by a single gamma. A secondary
+ *      cannot be predicted from its primaries.
  *
- * So there are THREE brightnesses on this panel and no more: off, slot 1, slot
- * 2. An animation gets its envelope from those three and from how many lamps
- * are lit at once -- not from fading one.
+ * So the panel has exactly three brightnesses: off, slot 1, slot 2. An
+ * animation's envelope comes from those three and from how many lamps are lit
+ * at once, not from fading one.
  *
- * There is no neutral grey. White lands on the panel's calibrated near-white,
- * which on slot 1 is #060c0c, and that is the exact colour the deck itself puts
- * on a pad holding no hot cue -- so white-on-dim is what "nothing here" looks
- * like.
+ * There is no neutral grey. White renders as the panel's calibrated near-white,
+ * #060c0c on slot 1, which is the colour the deck uses for a pad with no hot
+ * cue. White on dim therefore means "nothing here".
  */
 #ifndef EP122_MOD_LAMP_H
 #define EP122_MOD_LAMP_H
@@ -62,17 +57,16 @@ extern "C" {
 #endif
 
 
-/* The eight hot-cue pads. The same eight as CUE_PADS and XP_BANKS, named again
- * because this layer sits under both and must not include either. */
+/* The eight hot-cue pads. Same as CUE_PADS and XP_BANKS, redefined because this
+ * layer sits under both and must not include either. */
 #define LAMP_PADS 8
 
 #define LAMP_OFF  0
 #define LAMP_DIM  1   /* slot 1: every hue tops out at 0x0c */
 #define LAMP_LIT  2   /* slot 2: every hue tops out at 0x7f */
 
-/* One lamp's picture. `rgb` is a HUE and carries no brightness -- see the law.
- * A source that wants something dark says LAMP_OFF; scaling the triple down
- * does nothing at all. */
+/* One lamp's state. `rgb` is a hue with no brightness (see rule 1); use
+ * LAMP_OFF for dark, since scaling the triple down has no effect. */
 struct lamp {
     uint8_t rgb[3];
     uint8_t level;
@@ -92,15 +86,13 @@ static inline void lamp_dark(struct lamp *l)
     lamp_set(l, 0, 0, 0, LAMP_OFF);
 }
 
-/* The hue wheel, measured. Every entry has been sent to the panel and read
- * back, so these are hues that are known to arrive distinct from each other:
+/* The hue wheel, as the panel renders each entry; all are distinct:
  *
  *   red #7f0000  orange #7f2400  yellow #7f7f00  chartreuse #267f00
  *   green #007f00  spring #007c3b  cyan #004b7f  azure #00247f
  *   blue #00007f  violet #33007f  magenta #7e007f  rose #7f0017
  *
- * Anything not on this list is a guess until it has been through `emuctl leds`,
- * because rule 4 says a mix cannot be predicted. */
+ * Any other hue renders unpredictably (rule 4). */
 #define LAMP_HUES 12
 extern const uint8_t k_lamp_wheel[LAMP_HUES][3];
 
@@ -110,18 +102,18 @@ extern const uint8_t k_lamp_wheel[LAMP_HUES][3];
  * own colour stands. [any] */
 int lamp_pad(int pad, struct lamp *out);
 
-/* Every pad's answer folded into one word, for a repaint gate: the transport
- * writes only when this moves. A 32-bit hash of eight (level, hue) pairs, so a
- * collision costs one skipped frame and the next one repaints. [any] */
+/* All pads' state hashed into one word; the transport writes only when it
+ * changes. A 32-bit hash of eight (level, hue) pairs, so a collision costs one
+ * skipped frame. [any] */
 uint32_t lamp_word(void);
 
-/* Milliseconds off CLOCK_MONOTONIC. A blink or a sweep timed off a counter of
- * draws would run at whatever rate the deck is busy at. [any] */
+/* Milliseconds from CLOCK_MONOTONIC, so animations do not depend on the draw
+ * rate. [any] */
 uint32_t lamp_now_ms(void);
 
-/* The transport has seen all eight lamps write, which is the whole path proven
- * end to end: the hook is in, the ordinals are mapped and the holders are
- * known. Idempotent -- only the first call means anything. [message] */
+/* The transport has seen all eight lamps write: the hook is in, the ordinals
+ * are mapped and the holders are known. Idempotent; only the first call
+ * acts. [message] */
 void lamp_panel_ready(void);
 
 /* ---- internal to lamp/ --------------------------------------------------- */

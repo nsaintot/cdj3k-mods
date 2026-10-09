@@ -14,8 +14,9 @@ Pioneer DJ, or any of their subsidiaries, affiliates or dealers.**
 logos are trademarks of their respective owners. They appear here only to
 identify the hardware these modifications run on and to describe what the
 modifications do. No ownership of those marks is claimed and no association or
-endorsement is implied. This is set out in full in
-[TRADEMARKS](https://github.com/nsaintot/cdj3k-mods/blob/main/TRADEMARKS.md).
+endorsement is implied. See
+[TRADEMARKS](https://github.com/nsaintot/cdj3k-mods/blob/main/TRADEMARKS.md) for
+details.
 
 Nothing here is an official product. Nobody sells it, nobody supports it under a
 contract, and there is no company behind it to call.
@@ -51,7 +52,7 @@ You install it, you run it, and the risk is yours.
 
 ## Your responsibility
 
-- **Do not try it first on a deck you cannot afford to lose the use of.** Not
+- **Do not try it first on a deck you cannot afford to be without.** Not on
   the night of a gig, and not on a club's unit that is not yours to modify.
 - **Read what it does** before installing. [Getting
   started](getting-started.md) describes the install, the removal, and what is
@@ -66,12 +67,12 @@ The source is published under **MIT OR Apache-2.0**, at your choice — the full
 texts are in
 [LICENSE-MIT](https://github.com/nsaintot/cdj3k-mods/blob/main/LICENSE-MIT) and
 [LICENSE-APACHE](https://github.com/nsaintot/cdj3k-mods/blob/main/LICENSE-APACHE).
-You can read the source, build it yourself, and satisfy yourself about what it
-does before you run it. Both licences carry the same disclaimer of warranty and
+You can read the source, build it yourself, and check what it does before you
+run it. Both licences carry the same disclaimer of warranty and
 limitation of liability set out above.
 
 ## Reporting a problem
 
 There is no support line. Bugs, and anything that looks like a safety issue, go
-to the [issue tracker](https://github.com/nsaintot/cdj3k-mods/issues) — it is
-read by people who work on this in their own time.
+to the [issue tracker](https://github.com/nsaintot/cdj3k-mods/issues). It is
+read by volunteers in their own time.

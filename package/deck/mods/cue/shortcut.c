@@ -2,16 +2,16 @@
 /*
  * cue/shortcut.c - the GATE CUE shortcut on the play screen's bottom rack.
  *
- * The same flag as the MOD SETTINGS row, with a thumb on it: lettering on the
- * accent while the gate is armed, dim lettering on the deck's unlit-button grey
- * while it is not.
+ * A touch toggle for the same flag as the MOD SETTINGS row: lit lettering on
+ * the accent while GATE CUE is on, dim lettering on the deck's unlit-button grey
+ * while it is off.
  *
  * The rack is gui::NormalPlayerInfoWidget. The gui::PlayerInfo*Widget classes
  * are UpdaterComponent models whose juce::Component is a secondary subobject,
  * so the rack and its neighbours are found by typeinfo (see juce.h). The plate
  * sits in the gap between the timer and the tempo, both read off the live
- * components so a firmware that moves them moves the plate. On 3.19, in rack
- * coordinates: timer {395,13,327,80}, tempo {839,13,190,83}.
+ * components so a firmware that moves them moves the plate. With the stock
+ * layout, in rack coordinates: timer {395,13,327,80}, tempo {839,13,190,83}.
  */
 #include "cue/cue.h"
 #include "juce/juce.h"
@@ -26,15 +26,15 @@
 
 /* Insets from the neighbours' boxes. Unequal because their ink is not at their
  * box edges: the timer's last digit stops 1px short, the tempo's +/- sign (WIDE
- * only) sits 5px inside. Gives 12px to the digits and 9px to the sign; on 3.19
- * the plate lands at x=733, w=102. */
+ * only) sits 5px inside. Gives 12px to the digits and 9px to the sign; with the
+ * stock layout the plate lands at x=733, w=102. */
 #define BTN_INSET_L   11
 #define BTN_INSET_R   4
 
 /* Plate 32px: the rack's badges are 28 but are read, not pressed. The label is
  * BTN_HIT_H tall with the plate centred in it; the extra rows are transparent
  * and only widen the touch target. Centred on the timer's box plus BTN_DROP,
- * which puts the plate's centre on the badges' row (y=515 on 3.19). */
+ * which puts the plate's centre on the badges' row (y=515 in the stock layout). */
 #define BTN_PLATE_H   32
 #define BTN_HIT_H     36
 #define BTN_DROP      3
@@ -77,8 +77,8 @@ static void cue_shortcut_paint(void *self, void *g)
     if (mod_ui_gen() != g_ink_gen)
         cue_shortcut_paint_state();
     if (juce_comp_bounds((uintptr_t)self, b) == 0) {
-        /* A flat fill, not the stipple the other plates wear: beside the timer
-         * and the tempo the texture read as a heavier control than it is. */
+        /* A flat fill, not the other plates' stipple, which looked too heavy
+         * beside the timer and the tempo. */
         mod_gfx_colour(g, g_gate_on ? ui->accent : ui->surface);
         mod_gfx_fill(g, 0, (b[3] - BTN_PLATE_H) / 2, b[2], BTN_PLATE_H);
     }
@@ -135,7 +135,7 @@ static void cue_shortcut_build(uintptr_t rack)
                        g_vptr, x, y, w, BTN_HIT_H);
     if (!g_btn) return;
     /* Label::paint ends with a one-pixel outline in the LookAndFeel's colour;
-     * the plate is the whole of the drawing, so it is made invisible. */
+     * make it transparent so only the plate shows. */
     juce_comp_colour(g_btn, LBL_COL_OUTLINE, 0x00000000u);
     g_rack = rack;
     cue_shortcut_paint_state();

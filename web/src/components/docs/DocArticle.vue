@@ -2,13 +2,12 @@
 /*
  * The rendered document.
  *
- * The HTML was produced on the build machine, so this component's only real
- * job is the one thing the build could not do: turn the links it marked
- * `data-internal` into router navigations instead of full page loads.
+ * The HTML is produced at build time. This component turns the links the
+ * build marked `data-internal` into router navigations instead of full page
+ * loads.
  *
- * One delegated listener on the container rather than a walk over the tree
- * after every render -- the anchors live inside v-html and are replaced whole
- * each time the document changes.
+ * One delegated listener on the container, because the anchors live inside
+ * v-html and are replaced whole each time the document changes.
  */
 import { useRouter } from 'vue-router'
 

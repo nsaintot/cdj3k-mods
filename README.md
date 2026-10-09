@@ -3,8 +3,8 @@
 QoL features for the CDJ-3000 without replacing its firmware.
 
 A set of modifications for the CDJ-3000, installed as a firmware update. They
-run alongside the deck's own application rather than replacing it, and come off
-from the front panel.
+run alongside the deck's own application, and you can remove them from the
+front panel.
 
 <p align="center">
   <img src="https://cdj3k-mods.com/img/stems-row-unity.png" width="49%" alt="The STEMS row: drums, harmonics and vocals on three faders over the play screen">
@@ -13,17 +13,17 @@ from the front panel.
 
 Features:
 
-- **Cues** — gate cues (press a pad while paused: hold to play, release to
-  return), smart cues (last hot cue is cue), and preview hot cue to set a hot
-  cue with the preview.
+- **Cues** — gate cue (press a pad while paused: hold to play, release to
+  return), smart cue (CUE returns to the last hot cue you pressed), and preview
+  hot cue (set a hot cue from the preview zone).
 - **Stems** — drums, harmonics and vocals on three toggles and three faders.
-  Separation runs on a computer on your network via
-  [stemd](https://github.com/nsaintot/stemd), not on the deck. Groove circuit
-  sits on the hot cue pads.
+  Separation runs on a computer on your network with
+  [stemd](https://github.com/nsaintot/stemd). Groove circuit
+  plays your own loops from the hot cue pads.
 - **X-PAD** — a sampler on a touch strip: loop length across, pitch bend up and down, eight samples on the hot cue pads.
 - **Themes** — six new themes, including a true white one.
 - **Browsing** — reorder tracks inside a playlist from the deck.
-- **Grid adjust** — the BPM half of the grid panel, which the 3000 does not have:
+- **Grid adjust** — BPM controls for the grid panel, which the 3000 lacks:
   double, halve, or nudge the beat interval a millisecond at a time.
 
 **[Documentation at cdj3k-mods.com](https://cdj3k-mods.com)** · [Download the
@@ -31,7 +31,7 @@ latest release](https://github.com/nsaintot/cdj3k-mods/releases/latest)
 
 ## Supported decks
 
-Both hardware variants — **Renesas** and **Rockchip (rk3399)** — on firmware
+Both hardware variants, **Renesas** and **Rockchip (rk3399)**, on firmware
 **3.13 to 3.22**. The installer refuses anything older than 3.13. On a firmware
 the mods do not fully recognise, nothing installs and the deck runs stock.
 
@@ -41,8 +41,8 @@ the mods do not fully recognise, nothing installs and the deck runs stock.
 package/ the mods themselves, the STEMS sidecar, and the .UPD that installs
          them on a deck. package/deck/docs/mods.md is the developer entry
          point.
-docs/    the DOCUMENTATION, as markdown. The site renders these; they are the
-         single source for how to use any of it.
+docs/    the user documentation, as markdown. The site renders these files;
+         they are the single source for how to use the mods.
 web/     the site. Vue 3 + Vite, no SSR.
 ```
 
@@ -55,7 +55,7 @@ their owners — see [TRADEMARKS](TRADEMARKS.md).
 **Installing voids your warranty.** The software comes with no warranty of any
 kind, and the authors accept no liability for damage, a deck that will not
 start, lost data, or anything that happens during a performance. The risk is
-yours. See [legal](docs/legal.md) in full.
+yours. See [legal](docs/legal.md) for the full terms.
 
 ## Licence
 

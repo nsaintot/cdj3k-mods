@@ -2,9 +2,8 @@
 /*
  * xpad/ext.h - the X-PAD SAMPLER as the rest of the shim sees it.
  *
- * Two entry points, both called from layers that are not the X-PAD, and a header
- * carrying nothing else so neither of them takes on juce or the panel's own
- * contract. Everything the feature does with itself is in xpad.h.
+ * Entry points called from outside the X-PAD, in a header of their own so
+ * callers do not pull in juce or xpad.h.
  */
 #ifndef EP122_MOD_XPAD_EXT_H
 #define EP122_MOD_XPAD_EXT_H
@@ -17,53 +16,46 @@ extern "C" {
 
 
 /* Add every sounding voice into `dst`, which holds `frames` of interleaved
- * stereo float at the pool rate, and which begins at track position `pos`.
+ * stereo float at the pool rate and begins at track position `pos`.
  *
- * POST-STRETCH, which is the whole reason this mix point is not the stems'. The
- * stems are summed into the stretcher's INPUT so the deck warps them with the
- * track, which is right for a part of the track and wrong for a sample: a
- * one-shot keeps its own pitch and its own length whatever the tempo fader is
- * doing, and the X-PAD's Y axis is the only thing entitled to move either.
+ * Post-stretch, unlike the stems. Stems are summed into the stretcher's input so
+ * the deck warps them with the track; a one-shot keeps its own pitch and length
+ * whatever the tempo fader does, and only the X-PAD's Y axis moves either.
  *
- * `pos` IS THE BLOCK'S OWN PLACE IN THE TRACK and has to be passed in, because
- * the caller is the only one who knows it. Where the stretcher last READ its
- * source -- stem_source_pos() -- is a different place: measured on a playing
- * deck it runs 8055..9271 frames further on, which is 84 to 97 ms at 96 kHz.
- * Timing the sampler off that puts every quantized hit a tenth of a second in
- * front of the grid it was quantized to.
+ * `pos` is the block's place in the track and must be passed in, because only
+ * the caller knows it. stem_source_pos(), where the stretcher last read its
+ * source, runs 8055..9271 frames ahead on a playing deck (84 to 97 ms at
+ * 96 kHz); timing off it puts every quantized hit about 0.1 s early.
  *
  * [audio]. No allocation, no I/O, no locks, bounded loops. Returns immediately
- * when nothing is sounding, which is every block the panel is shut. */
+ * when nothing is sounding, which includes every block while the panel is shut. */
 void xpad_mix(float *dst, int64_t frames, int64_t pos);
 
-/* Rescan mods/loops/ if the volume or the pool rate has moved. Cheap otherwise.
- * [worker] -- the shim's one idle worker, which is also the only thread allowed
- * to decode. */
+/* Rescan mods/loops/ if the volume or the pool rate has changed. Cheap otherwise.
+ * [worker] -- the shim's one idle worker, the only thread allowed to decode. */
 void xpad_bank_poll(void);
 
-/* [any] WHERE THE TRACK'S BEAT CLOCK IS, on the X-PAD's own reading of it --
- * the track's grid while the play head moves, the track's tempo when it does
- * not, so it keeps running on a parked deck. Returns 0 when there is no clock at
- * all, which a track with no grid is.
+/* [any] The track's beat position as the X-PAD reads it: from the track's grid
+ * while the play head moves, from the track's tempo when it does not, so it
+ * keeps running on a parked deck. Returns 0 when there is no clock, i.e. the
+ * track has no grid.
  *
- * A POSITION, not an edge. Compare the boundary it falls in against the one you
- * last saw and act when that changes; do not ask whether a boundary fell inside
- * some interval, because this is advanced post-stretch and every other caller
- * runs at its own cadence. See the note at the definition.
+ * This is a position, not an edge. Compare the boundary it falls in against the
+ * last one you saw and act when it changes; do not test whether a boundary fell
+ * inside an interval, because this is advanced post-stretch and every other
+ * caller runs at its own cadence. See the note at the definition.
  *
- * Shared because it is the only clock on the audio path and two features want
- * it: the sampler's snapping and the stem row's mute. */
+ * Shared because it is the only clock on the audio path; used by the sampler's
+ * snapping and the stem row's mute. */
 int xpad_beat_now(double *beat);
 
-/* ENABLE X-PAD, the master gate. OFF by default, so a deck that never opts in
- * keeps its band slot and its full track title. Declared here as well as in
- * xpad.h so the settings record can persist it without taking on the panel's
- * whole contract. */
+/* ENABLE X-PAD, the master gate. Off by default, so a deck that never opts in
+ * keeps its band slot and its full track title. Also declared in xpad.h; here
+ * so the settings record can persist it without including xpad.h. */
 extern int xpad_g_on;
 
-/* [any] The deck's own QUANTIZE as a divisor of a beat -- 1, 2, 4 or 8 -- or 0
- * when it is switched off. Declared here as well as in xpad.h so a caller that
- * only wants the gate does not have to take on the panel's whole contract. */
+/* [any] The deck's QUANTIZE as a divisor of a beat (1, 2, 4 or 8), or 0 when it
+ * is off. Also declared in xpad.h; here for callers that only need this. */
 int xpad_quantize_div(void);
 
 

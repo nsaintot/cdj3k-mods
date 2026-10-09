@@ -2,23 +2,21 @@
 /*
  * call.hh - calling EP122's own code with the signature stated once.
  *
- * A resolved address is just a number, so reaching it means a cast, and a cast
- * written at the call site states the signature in a place the compiler cannot
- * check against anything. A wrong argument count or type there compiles clean
- * and corrupts the app at run time.
- *
- * Here the signature is a template parameter, so the argument count is enforced
- * and each argument is converted to the declared type.
+ * Calling a resolved address needs a cast, and a cast at the call site states
+ * the signature where the compiler cannot check it: a wrong argument count or
+ * type compiles cleanly and corrupts the app at run time. Here the signature is
+ * a template parameter, so the argument count is enforced and each argument is
+ * converted to the declared type.
  *
  *     ep_call(void(void *, int, int, int, int))::at(MOD_FN_GFX_FILLRECT,
  *                                                   g, x, y, w, h);
  *     ep_call(void(void *))::slot(comp, JUCE_VT_PAINT, g);
  *
- * Slots stay byte offsets from the address point, as ep122_syms.spec records
- * them. Nothing here mirrors an EP122 class as a C++ class: the layouts are
- * reverse-engineered, several of the widget classes reach juce::Component
- * through virtual inheritance, and a mirrored class would hand slot assignment
- * to the compiler where a divergence is silent.
+ * Slots are byte offsets from the address point, as ep122_syms.spec records
+ * them. EP122 classes are not mirrored as C++ classes: the layouts are
+ * only partly known, several widget classes reach juce::Component through
+ * virtual inheritance, and the compiler's slot assignment could diverge
+ * silently.
  */
 #ifndef EP122_MOD_CALL_HH
 #define EP122_MOD_CALL_HH

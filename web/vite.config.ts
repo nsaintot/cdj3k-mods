@@ -13,8 +13,8 @@ export default defineConfig({
   plugins: [
     vue(),
     docsPlugin({
-      // The corpus is the repo's own docs/ directory -- the documentation. One
-      // copy, no duplication into the app source.
+      // Pages come from the repo's docs/ directory; nothing is copied into the
+      // app source.
       dir: fileURLToPath(new URL('../docs', import.meta.url)),
       // Both are needed to write real hrefs for page-to-page links in the
       // markdown. The prefix must match the route in src/router/index.ts.

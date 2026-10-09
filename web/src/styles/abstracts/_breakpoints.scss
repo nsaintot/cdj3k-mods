@@ -23,7 +23,7 @@ $breakpoints: (
   }
 }
 
-/* For the handful of places that genuinely describe the small layout, e.g. a
+/* For the few places that describe the small layout, e.g. a
  * drawer that only exists below the docs sidebar's breakpoint. */
 @mixin below($name) {
   @if not map.has-key($breakpoints, $name) {

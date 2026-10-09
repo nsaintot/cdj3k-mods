@@ -24,7 +24,7 @@ OVERLAY_MEDIA_MOUNTPOINT=/mnt
 MODS_LOG_DIR=$OVERLAY_MEDIA_MOUNTPOINT/cdj3k-mods-logs
 
 # As phase1: prefer the stick, fall back to the overlay partition. Explicit
-# name - this runs as pdj/EP<n>.
+# name, since this runs as pdj/EP<n>.
 LOG_NAME=phase2
 LOG_DIR=
 
@@ -49,7 +49,7 @@ rm -r "$PDJ_TAR_WORKDIR"/pdj
 
 APL_START=$PDJ_TAR_WORKDIR/scripts/apl_start.sh
 
-# Preload on the APPLICATION LINE ONLY, not exported.
+# Preload on the application line only, not exported.
 #
 # The launcher runs i2cget, sysctl, taskset, aplay, fw_printenv and more before
 # the app, and picks one of three binaries by /tmp/testmode:
@@ -73,9 +73,8 @@ if [ "$MATCHES" = "1" ]; then
         "$STOCK_LAUNCHER" >> "$APL_START"
     echo "phase2: preload targeted at the application line only"
 else
-    # ALL OR NOTHING. An unrecognised launcher has no line we can be sure is
-    # the application.
-    # Install nothing, leave the stock launcher showing, log why.
+    # All or nothing: an unrecognised launcher has no line we can be sure is
+    # the application. Install nothing, keep the stock launcher, log why.
     rm -f "$PDJ_TAR_WORKDIR"/payload.sh
     rm -rf "$PDJ_TAR_WORKDIR"/mods
     echo "phase2: launcher has $MATCHES application lines, expected 1"
@@ -83,7 +82,7 @@ else
 fi
 
 # Write-then-rename. This write installs the runtime launcher: a truncated
-# apl_start.sh would run to EOF and exit 0 - no app, no error.
+# apl_start.sh would run to EOF and exit 0: no app, no error.
 tar -czf "$OVERLAY_MEDIA_MOUNTPOINT"/pdj.tar.gz.new -C "$PDJ_TAR_WORKDIR" .
 sync
 mv "$OVERLAY_MEDIA_MOUNTPOINT"/pdj.tar.gz.new "$OVERLAY_MEDIA_MOUNTPOINT"/pdj.tar.gz

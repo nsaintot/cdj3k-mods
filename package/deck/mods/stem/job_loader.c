@@ -12,10 +12,9 @@
 #include "kit/popup.h"
 #include <pthread.h>
 
-/* A RETRY from the store is re-run every JOB_RETRY_SEC, this many times, and
- * then the track is given up as FAILED: a pair that does not fit the deck's
- * memory is not going to start fitting, and a probe against a track the deck
- * will not size for us is not going to start succeeding. Reset on a track
+/* A RETRY from the store is re-run every JOB_RETRY_SEC up to this many times,
+ * then the track is marked FAILED: a pair that does not fit in memory, or a
+ * track the deck will not size, will not start working. Reset on a track
  * change. Loader thread only. */
 #define LOAD_RETRY_MAX 12
 static int g_load_retries;
@@ -37,10 +36,10 @@ static int load_retry(const char *why)
 
 /* The decoder's length for a track, from the last probe that succeeded.
  *
- * A VBR MP3 is only sizeable through the deck's own tables, and those are held
- * for the track the deck opened LAST. A track re-served from the page pool was
- * not opened again, so its probe fails -- but its length has not changed, and
- * with it the cache lookup still finds the pair. Loader thread only. */
+ * A VBR MP3 can only be sized through the deck's own tables, which are held for
+ * the track the deck opened last. A track re-served from the page pool is not
+ * reopened, so its probe fails, but the remembered length still finds the pair
+ * in the cache. Loader thread only. */
 #define LEN_MEMO 16
 static struct {
     char    path[STEM_CACHE_PATH_MAX];
@@ -72,6 +71,8 @@ static void len_remember(const char *path, int64_t frames)
     g_len[i].frames = frames;
 }
 
+/* Publish, abortable by a track change: the generation is latched here and
+ * compared inside the store, since a publish takes seconds of decode per stem. */
 static int loader_publish(const char *h, float hg, const char *v, float vg)
 {
     int rc;
@@ -91,9 +92,9 @@ static void loader_serve(const char *path)
     int64_t frames;
     int rc, remembered = 0;
 
-    /* The DECODER's frame count, which is half the cache key: stems are aligned
-     * to EP122's padded decode, so a firmware that pads differently must miss
-     * rather than load something silently misaligned. */
+    /* The decoder's frame count is half the cache key: stems are aligned to
+     * EP122's padded decode, so a firmware that pads differently must miss
+     * instead of loading a misaligned pair. */
     frames = stem_decode_pull(path, STEM_UPLOAD_RATE, NULL, NULL);
     if (frames > 0) {
         len_remember(path, frames);
@@ -117,12 +118,12 @@ static void loader_serve(const char *path)
             load_retry("no pair on the media and the track cannot be decoded");
             return;
         }
-        /* A miss, and the ONLY route to the separator. */
+        /* A miss: the only route to the separator. */
         sep_request(path, frames);
         return;
     }
 
-    /* Off the media: no upload and no server, so LOADING is the whole of this run. */
+    /* From the media: no upload or server, so LOADING is the only stage. */
     g_job_via_server = 0;
     ui_publish(STEM_STAGE_LOADING, 0, 0);
     rc = loader_publish(e.harmonics_path, e.harmonics_gain,
@@ -139,8 +140,8 @@ static void loader_serve(const char *path)
         return;
     }
     if (!track_is_current(path)) {
-        /* Loaded, but for a track that is no longer on screen. Drop it rather
-         * than let the audio thread mix another song's stems. */
+        /* Loaded for a track that is no longer current: drop it so the audio
+         * thread does not mix another song's stems. */
         stem_store_release_all();
         return;
     }
@@ -160,10 +161,9 @@ static int loader_delivery_pending(void)
     return gen != g_delivery_seen && !(gen & 1u);
 }
 
-/* A delivery from the separator, taken only if it is still wanted. A pair the
- * store says RETRY to stays a pending delivery -- tmpfs copy included -- and is
- * taken again when the retry falls due, rather than consumed with nothing
- * scheduled. */
+/* Take a delivery from the separator if it is still wanted. A pair the store
+ * answers RETRY to stays pending (tmpfs copy included) and is taken again when
+ * the retry falls due. */
 static void loader_take_delivery(void)
 {
     char track[STEM_CACHE_PATH_MAX], h[STEM_CACHE_PATH_MAX], v[STEM_CACHE_PATH_MAX];
@@ -200,9 +200,9 @@ static void loader_take_delivery(void)
              " it is in the cache for when it is\n", track);
     }
     g_delivery_seen = gen;
-    /* A pair still on tmpfs -- one the media would not take -- is pure
-     * duplication from here: publish has it in RAM, or gave up on it. The
-     * media's own copy is the cache entry and stays. */
+    /* A pair on tmpfs (the media would not take it) is no longer needed:
+     * publish has it in RAM or gave up on it. A media copy is the cache entry
+     * and stays. */
     if (tmpfs) {
         unlink(h);
         unlink(v);
@@ -221,10 +221,9 @@ void * loader_main(void *arg)
         if (gen != seen_gen) {
             seen_gen = gen;
             served = 0;
-            /* g_stem_ready was cleared by the message thread the instant the
-             * track moved, so the audio thread is already back on the stock
-             * path; this is only the freeing, which spins for in-flight
-             * readers and therefore cannot run there. */
+            /* The message thread already cleared g_stem_ready, so the audio
+             * thread is on the stock path. Freeing spins for in-flight readers,
+             * so it cannot run on the message thread. */
             stem_store_release_all();
             memset(g_arrived, 0, sizeof(g_arrived));
             ui_publish(STEM_STAGE_IDLE, 0, 0);
@@ -234,12 +233,10 @@ void * loader_main(void *arg)
 
         loader_take_delivery();
 
-        /* A scheduled retry OUTRANKS `served`. Requiring both meant the flag
-         * won every time -- it is set the moment the separator is asked, which
-         * is before anything can fail -- so job_failed's reschedule was never
-         * acted on and a job that died on the wire stayed dead. A pending
-         * delivery owns the retry it scheduled; the probe would only find the
-         * same pair on the media and load it twice. */
+        /* A scheduled retry overrides `served`, which is set as soon as the
+         * separator is asked, before anything can fail; otherwise job_failed's
+         * reschedule would never run. A pending delivery owns the retry it
+         * scheduled; probing would find the same pair and load it twice. */
         if (!loader_delivery_pending() && g_stems_on && g_cur_path[0] &&
             (g_retry_at ? job_now_sec() >= g_retry_at : !served)) {
             char path[STEM_CACHE_PATH_MAX];
@@ -247,19 +244,17 @@ void * loader_main(void *arg)
             g_retry_at = 0;
             snprintf(path, sizeof(path), "%s", g_cur_path);
             loader_serve(path);
-            /* Served, asked, or scheduled -- either way do not re-probe until
-             * the track changes or a retry falls due. */
+            /* Served, requested or scheduled: do not re-probe until the track
+             * changes or a retry falls due. */
             served = (g_retry_at == 0);
         }
-        /* The stick's own slot files, rescanned when the volume or the pool
-         * rate moves. Cheap otherwise, and this is the one thread allowed to
-         * decode. */
+        /* The stick's slot files, rescanned when the volume or the pool rate
+         * changes. Cheap otherwise; this is the one thread allowed to decode. */
         mod_stem_gc_poll();
-        /* The X-PAD's sample banks, on the same terms and for the same reason. */
+        /* The X-PAD's sample banks, likewise. */
         xpad_bank_poll();
-        /* Not a stem concern, but this is the shim's only idle worker and the
-         * question it answers -- which database the deck handed us -- is one to
-         * have before anything writes rather than after. */
+        /* Not stem-related, but this is the shim's only idle worker, and which
+         * database the deck handed us must be known before anything writes. */
         mod_db_poll();
         mod_djdb_poll();
         usleep(100 * 1000);

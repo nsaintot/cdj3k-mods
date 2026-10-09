@@ -4,10 +4,10 @@
  */
 #include "stem/audio_internal.h"
 
-/* Every rate the deck's engine can be set to. A measured `posrate` is snapped to
- * whichever of these it is within 1 % of; anything else is refused rather than
- * rounded, because a rate we invented would put every stem out of alignment in a
- * way that looks like a bad separation rather than like a bug. */
+/* Every rate the deck's engine can be set to. A measured rate is snapped to
+ * whichever of these it is within 1 % of; anything else is refused (snap_rate
+ * returns 0), because an invented rate would misalign every stem in a way that
+ * sounds like a bad separation. */
 static const int k_pool_rates[] = { 44100, 48000, 88200, 96000, 176400, 192000 };
 
 /* How long stem_engine_rate_measure watches the stretcher for. */
@@ -21,6 +21,9 @@ static const int k_pool_rates[] = { 44100, 48000, 88200, 96000, 176400, 192000 }
 #include <stdlib.h>
 #include <unistd.h>
 
+/* Any thread: a torn read costs one stale window, not worth a lock on a path
+ * the audio thread touches every block. The waveform mod uses the playhead to
+ * repaint the on-screen columns first after a fader move. */
 int64_t stem_source_pos(void)
 {
     int64_t p = __atomic_load_n(&g_src.pos, __ATOMIC_RELAXED);
@@ -28,6 +31,9 @@ int64_t stem_source_pos(void)
     return p > 0 ? p : -1;
 }
 
+/* Relaxed loads of a pair the audio thread writes as two stores: a torn read is
+ * possible and costs one comparison, and the caller polls. A lock would put the
+ * realtime path behind a repaint. */
 int stem_source_id(uint64_t *lo, uint64_t *hi)
 {
     *lo = __atomic_load_n(&g_src.sid_lo, __ATOMIC_RELAXED);
@@ -49,6 +55,11 @@ int snap_rate(uint64_t r)
     return 0;
 }
 
+/* The report publishes this once per window, but only while the play screen
+ * paints, and a track is loaded from BROWSE, so the figure can arrive seconds
+ * after the decode needs it. The worker measures on demand. Two samples a
+ * quarter-second apart suffice at 96 kHz (24000 frames against a 1 %
+ * tolerance). Worker thread only. */
 int stem_engine_rate_measure(void)
 {
     uint64_t a = stem_engine_frames(), b;
@@ -71,37 +82,36 @@ int stem_pool_rate(void)
     int measured = __atomic_load_n(&g_pool_rate, __ATOMIC_RELAXED);
     int engine = __atomic_load_n(&g_engine_rate, __ATOMIC_RELAXED);
 
-    /* Three sources, in descending order of how directly they observe the thing
-     * being asked about.
+    /* Two sources, the more direct first.
      *
-     * The POSITION measurement is the pool itself and wins whenever it exists,
-     * but it needs playback -- a paused deck is not read at all -- so it never
-     * answers for a track loaded and left at the cue point. It is also slow to
-     * commit on this emulator, needing two consecutive agreeing windows against
-     * a series like 22671, 14494, 83626, 96025, 53995.
+     * The position measurement observes the pool itself and wins when it
+     * exists, but it needs playback (a paused deck is not read), so it never
+     * answers for a track left at the cue point. It can also be slow to
+     * commit, since it needs two consecutive agreeing windows.
      *
-     * The STRETCHER runs on the same timeline and does not need playback, which
-     * makes it the answer for everything the position measurement cannot reach.
-     * A caller that needs one and finds none should ask for a fresh measurement
-     * rather than settle for something else -- see stem_engine_rate_measure.
+     * The stretcher runs on the same timeline without playback and covers the
+     * rest. A caller that finds neither should request a fresh measurement;
+     * see stem_engine_rate_measure.
      *
-     * There is deliberately no third source. /proc/asound was one, and it knows
-     * the DAC's rate, which stops being the pool's the moment anything resamples
-     * between them: measured on a deck whose DAC runs at 48000 while its pool
-     * runs at 96000, it decoded a whole stem set at half rate.
+     * Do not add /proc/asound as a third source: it gives the DAC's rate, which
+     * differs from the pool's when anything resamples between them (a DAC at
+     * 48000 with the pool at 96000 would decode a stem set at half rate).
      *
      * Answering before playback is safe only because the decode is held off the
-     * track loader explicitly -- see wait_for_deck. */
+     * track loader; see wait_for_deck in store.c. */
     return measured ? measured : engine;
 }
 
+/* Called from the report with one window's Position advance. Accepts a rate
+ * only when seen twice in a row: a single window can straddle a seek, a pause
+ * or a tempo change. */
 void pool_rate_observe(uint64_t rate)
 {
     static int last_match;
 
-    /* g_pool_rate, NOT stem_pool_rate(): that answers from the stretcher before
-     * anything has played, and gating on it would stop this measurement ever
-     * running -- and this measurement is what CHECKS the stretcher. */
+    /* g_pool_rate, not stem_pool_rate(): that answers from the stretcher before
+     * anything has played, and gating on it would stop this measurement, which
+     * is what checks the stretcher, from ever running. */
     if (__atomic_load_n(&g_pool_rate, __ATOMIC_RELAXED))
         return;
     {
@@ -112,22 +122,17 @@ void pool_rate_observe(uint64_t rate)
             return;
         }
         if (last_match == r) {
-            /* What the LOADED stems were decoded at -- asked of the store, not
-             * inferred from whichever source would answer now. Inferring it is
-             * how this check was silently disarmed: the engine rate landed a few
-             * seconds after the decode had already run on the driver's figure,
-             * so the comparison was 96000 against 96000 and agreed, while the
-             * buffers underneath it were built at 48000. */
+            /* The rate the loaded stems were decoded at, asked of the store.
+             * Inferring it from whichever source answers now can compare the
+             * new rate with itself while the buffers were built at another. */
             int assumed = stem_store_rate();
 
             __atomic_store_n(&g_pool_rate, r, __ATOMIC_RELAXED);
             MDBG("stem_audio: pool rate %d Hz (measured %llu)\n",
                  r, (unsigned long long)rate);
-            /* If the pool turns out to run at a different rate, the stems that
-             * are loaded are stretched against the mix for the whole track --
-             * which sounds like a bad separation, not like a bug, so it has to
-             * be both loud and self-correcting. Drop the set and ask for it
-             * again; the request now resolves the rate from this measurement. */
+            /* Stems decoded at the wrong rate drift against the mix for the
+             * whole track and sound like a bad separation, so log it, drop the
+             * set and request it again; the request now uses this rate. */
             if (assumed && assumed != r) {
                 MDBG("stem_audio: ASSUMED %d Hz, POOL RUNS AT %d Hz"
                      " -> dropping the stems and reloading them\n", assumed, r);
@@ -140,11 +145,16 @@ void pool_rate_observe(uint64_t rate)
     }
 }
 
+/* The stretcher's output read is clocked by ALSA, not by the transport, so it
+ * runs at the output rate whether the deck is playing or paused, and can drop
+ * to about a quarter of that while a track load has the CPU. The pool itself is not read at all on a paused deck.
+ *
+ * Any thread: a torn 64-bit read costs one sample of a series the caller takes
+ * several of. */
 uint64_t stem_engine_frames(void)
 {
-    /* The stretcher's own read first, the manager's operate as the fallback --
-     * they see the same blocks, so either answers, and requiring both would make
-     * the gate depend on two hooks where one is enough. */
+    /* The stretcher's own read first, the manager's operate as the fallback.
+     * Both see the same blocks, so either one is enough. */
     if (g_probe[PROBE_STRETCH].orig)
         return __atomic_load_n(&g_probe[PROBE_STRETCH].frames,
                                __ATOMIC_RELAXED);

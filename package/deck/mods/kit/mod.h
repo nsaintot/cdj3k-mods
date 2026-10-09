@@ -3,9 +3,8 @@
  * kit/mod.h - what makes a feature a mod.
  *
  * A feature declares itself next to its own install function. The descriptors
- * land in one linker section and common.c walks it, so adding a mod is a new
- * file and nothing else -- nothing lists the features and nothing includes them
- * all.
+ * land in one linker section that common.c walks, so adding a mod only means
+ * adding a file; there is no central list of features.
  *
  * Declaration is a static initialiser; install is [init].
  */
@@ -13,32 +12,28 @@
 #define EP122_MOD_KIT_MOD_H
 
 struct kit_mod {
-    /* Tags every slot this mod patches, so it is what an uninstall is addressed
-     * by and what the install summary reports. */
+    /* Tags every slot this mod patches; uninstall and the install summary use it. */
     const char *name;
 
     const char *what;   /* one line, in the install log */
 
-    /* Install order, ascending; ties broken by name. The mods sit at 10..80 in
-     * tens, so a feature that must run between two others has nine numbers to
-     * take without renumbering either. */
+    /* Install order, ascending; ties broken by name. The mods use 10..80 in
+     * steps of ten, leaving room to insert one without renumbering. */
     short prio;
 
-    /* 0 when the mod is in, -1 when the deck runs stock for this feature.
-     * Whatever a refusing install patched is unwound by the caller. */
+    /* 0 when installed, -1 when the deck runs stock for this feature. The
+     * caller unwinds whatever a failed install patched. */
     int (*install)(void);   /* [init] */
 };
 
-/* One descriptor. `used` because nothing in C refers to it: the section is the
- * reference. */
+/* One descriptor. `used` because only the section refers to it. */
 #define KIT_MOD(sym, ...) \
     static const struct kit_mod sym __attribute__((used, \
         section("ep122_mods"))) = { __VA_ARGS__ }
 
 /* The section bounds, defined by GNU ld for any C-identifier section name.
- * Hidden explicitly: -fvisibility=hidden covers what the compiler emits, not
- * what the linker defines, and every symbol the shim exports interposes that
- * name in EP122. */
+ * Hidden explicitly because -fvisibility=hidden does not cover linker-defined
+ * symbols, and every symbol the shim exports interposes that name in EP122. */
 extern const struct kit_mod __start_ep122_mods[] __attribute__((visibility("hidden")));
 extern const struct kit_mod __stop_ep122_mods[] __attribute__((visibility("hidden")));
 

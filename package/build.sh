@@ -50,9 +50,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# A removal package carries no binaries: it only clears the overlay. So there is
-# nothing to build, and it lands in its own directory so it can never be mistaken
-# for (or overwrite) an install package - both files are named CDJ3Kv000.UPD.
+# A removal package carries no binaries (it only clears the overlay), so there is
+# nothing to build. It lands in its own directory so it cannot overwrite or be
+# mistaken for an install package.
 if [[ "$REMOVE" == 1 ]]; then
     DO_BUILD=0
     [[ -n "$OUT" ]] || OUT="$HERE/build/uninstall"
@@ -61,7 +61,7 @@ else
 fi
 
 # Version stamp for the shim. The mods repo may have no tags yet, in which case
-# git describe is empty and the shim reports "unknown" - override with --version.
+# git describe is empty and the shim reports "unknown"; override with --version.
 GIT_DESCRIBE="$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null || true)"
 GIT_TAG="$(git -C "$HERE" describe --tags --abbrev=0 2>/dev/null || true)"
 MOD_BUILD="${VERSION:-${GIT_DESCRIBE:-unknown}}"
@@ -73,29 +73,28 @@ else
     MOD_VERSION="unknown"
 fi
 
-# Check the key BEFORE building.
+# Check the key before building.
 if [[ "$DO_PACK" == 1 && -n "$KEY" && ! -f "$KEY" ]]; then
     echo "build.sh: key not found: $KEY" >&2; exit 1
 fi
 
 # The .UPD filename carries the version, in the shape the deck accepts.
 #
-# MEASURED ON HARDWARE: a CDJ-3000 (RK3399) ignores CDJ3KvMODS010.UPD entirely -
-# the update never starts - but takes CDJ3Kv000.UPD. Pioneer's own images are
-# CDJ3Kv319.UPD / CDJ3Kv322.UPD, so the deck matches CDJ3Kv<3 digits>.UPD and
-# nothing longer. (The Renesas-only Magic Phono loader ships CDJ3KvSDBOOT001.UPD,
-# which is evidently accepted by THAT variant - do not generalise it to this one.)
+# An RK3399 deck ignores CDJ3KvMODS010.UPD (the update never starts) but takes
+# CDJ3Kv000.UPD. Stock update images are CDJ3Kv319.UPD / CDJ3Kv322.UPD, so the
+# deck matches CDJ3Kv<3 digits>.UPD and nothing longer. (The Renesas-only Magic
+# Phono loader ships CDJ3KvSDBOOT001.UPD, which that variant accepts; do not
+# generalise it to this one.)
 #
 # So the three digits are the version, with a label after them:
-# 0.1.0 -> CDJ3Kv010_mods.UPD. That is the only
-# place a version is visible besides MOD SETTINGS, since nothing is reflashed and
-# the deck's own firmware version is untouched. A version that does not fit three
-# digits is refused rather than silently mangled into a name the deck may reject
-# or read as a different firmware revision.
+# 0.1.0 -> CDJ3Kv010_mods.UPD. Besides MOD SETTINGS this is the only place the
+# version is visible, since nothing is reflashed and the deck's firmware version
+# is untouched. A version that does not fit three digits is refused: a mangled
+# name may be rejected or read as a different firmware revision.
 UPD_NAME=""
 if [[ "$REMOVE" == 1 ]]; then
-    # The removal image carries no version - it is the same operation whatever
-    # is installed - so it gets a fixed, self-describing name.
+    # The removal image carries no version (it does the same thing whatever is
+    # installed), so it gets a fixed, self-describing name.
     UPD_NAME="CDJ3Kv000_remove.UPD"
 elif [[ -n "$VERSION" ]]; then
     VDIGITS="$(printf '%s' "$VERSION" | tr -d '.')"
@@ -122,11 +121,11 @@ if [[ "$DO_BUILD" == 1 ]]; then
 
 fi
 
-# Host-side sanity check on the artefact about to be PACKED, so it also covers
-# --no-build (which reuses whatever is in build/out and previously skipped every
-# check). The authoritative test is `make abi-check` in the Docker shim stage,
-# which has a real readelf and asserts the glibc 2.17 ceiling and the NEEDED set;
-# this is the last line of defence against packing a stale or wrong object.
+# Host-side sanity check on the artefact about to be packed, so it also covers
+# --no-build (which reuses whatever is in build/out). The authoritative test is
+# `make abi-check` in the Docker shim stage, which has a real readelf and asserts
+# the glibc 2.17 ceiling and the NEEDED set; this is the last check against
+# packing a stale or wrong object.
 if [[ "$DO_PACK" == 1 && "$REMOVE" == 0 ]]; then
     if [[ ! -f "$OUT/out/ep122_shim.so" ]]; then
         echo "REFUSING: no shim at $OUT/out/ep122_shim.so - build it first" >&2

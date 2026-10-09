@@ -59,12 +59,12 @@ int mod_safe_write(uintptr_t addr, const void *buf, size_t len)
 
 /*
  * Every slot this process has repointed, in order, tagged with the mod that did
- * it. An uninstall is addressed by owner, so no mod repeats its own vtable-and-
- * offset list. The owner is stamped by the registry loop, not by the mod.
+ * it. Uninstall is by owner, so no mod keeps its own vtable-and-offset list. The
+ * registry loop stamps the owner, not the mod.
  *
- * Fixed array: this runs during static init, where an allocation failure has
- * nowhere to go. A patch that cannot be journaled is refused rather than made --
- * an unrecorded slot could never be put back.
+ * Fixed array: this runs during static init, where an allocation failure cannot
+ * be handled. A patch that cannot be journaled is refused, since an unrecorded
+ * slot could never be restored.
  */
 #define MOD_PATCH_MAX 128
 
@@ -78,9 +78,8 @@ struct mod_patch {
     uintptr_t   slot;
     uintptr_t   orig;    /* 0 once restored -- a second unpatch is a no-op */
     const char *owner;
-    /* Inline hooks restore CODE rather than a pointer, so the bytes travel with
-     * the entry. `orig` is the hooked function for those, and stays non-zero
-     * for the same "already restored?" test. */
+    /* Inline hooks restore code, not a pointer, so the bytes are kept in the
+     * entry. For those, `orig` is the hooked function, non-zero until restored. */
     uint8_t     code[MOD_HOOK_BYTES];
     uint8_t     is_fn;
 };
@@ -172,19 +171,15 @@ int mod_patch_slot(const char *name, uintptr_t slot, uintptr_t expect_fn,
     return 0;
 }
 
-/* Patch a virtual by naming the class and the slot rather than the address.
+/* Patch a virtual by naming the class and the slot instead of the address.
  *
- * There is no expect_fn and no prologue guard here, and their absence is the
- * point rather than an omission. Both existed to catch ONE failure: a hardcoded
- * address that a firmware revision had moved out from under us. Read the slot
- * out of a vtable the RTTI walk just found and that failure cannot happen --
- * whatever slot +0xd0 of juce::Label holds IS juce::Label::paint, so an
- * expect_fn taken from the same read is a tautology and a byte guard proves
- * nothing beyond it. What can still go wrong -- the class not existing, the
- * slot being past the end of the vtable -- is caught here instead.
+ * No expect_fn or prologue guard: those catch a hardcoded address that a
+ * firmware revision moved, which cannot happen when the slot is read from a
+ * vtable the RTTI walk found (slot +0xd0 of juce::Label is juce::Label::paint).
+ * The failures that remain, an unresolved class or an unreadable slot, are
+ * checked here.
  *
- * `off` is a byte offset from the address point, matching how the spec and
- * every ep122sym.py dump write it. */
+ * `off` is a byte offset from the address point, as in the spec. */
 int mod_patch_vslot(const char *name, int vt_sym, unsigned off,
                     void *wrapper, uintptr_t *saved)
 {
@@ -213,11 +208,10 @@ void mod_restore_slot(uintptr_t slot, uintptr_t val)
 /* Inline function hooking                                            */
 /* ================================================================== */
 
-/* An absolute branch, in the four words the displaced instructions vacate:
- * load the target from the two words after the branch, and go. X16 is the
- * procedure-call scratch register (IP0) -- it is what a linker veneer uses for
- * exactly this, so no live value can be in it at a function's first
- * instruction. */
+/* An absolute branch in the four words the displaced instructions vacate: load
+ * the target from the two words after the branch, then branch to it. X16 is the
+ * intra-procedure-call scratch register (IP0), which linker veneers use for the
+ * same purpose, so it holds no live value at a function's first instruction. */
 static void mod_hook_branch(uint32_t *w, uintptr_t target)
 {
     w[0] = 0x58000050u;               /* ldr x16, #8 */
@@ -225,9 +219,8 @@ static void mod_hook_branch(uint32_t *w, uintptr_t target)
     memcpy(&w[2], &target, sizeof(target));
 }
 
-/* Can this instruction be moved somewhere else and still mean the same thing?
- * Everything PC-relative cannot, and that is the entire hazard of displacing a
- * prologue: the bytes copy fine and then compute the wrong address. */
+/* Returns why an instruction cannot be relocated, or NULL if it can.
+ * PC-relative instructions compute the wrong address once copied. */
 static const char *mod_hook_immovable(uint32_t w)
 {
     if ((w & 0x1f000000u) == 0x10000000u) return "ADR/ADRP";
@@ -239,8 +232,8 @@ static const char *mod_hook_immovable(uint32_t w)
     return NULL;
 }
 
-/* Trampolines live in one page, bump-allocated. They are executed but never
- * written again after they are built, and there are a handful at most. */
+/* Trampolines live in one bump-allocated page. They are never written after
+ * being built, and there are only a few. */
 #define MOD_TRAMP_BYTES (MOD_HOOK_BYTES + 16)
 
 static uint8_t *g_tramp;
@@ -291,8 +284,8 @@ int mod_patch_fn(const char *name, uintptr_t fn, void *hook, uintptr_t *tramp)
             return -1;
         }
     }
-    /* Journalled before the write, like every other patch here: code that
-     * cannot be recorded is code that could never be put back. */
+    /* Checked before the write: code that cannot be journaled could never be
+     * restored. */
     if (g_npatch >= MOD_PATCH_MAX) {
         MDBG("%s: patch journal full (%d entries) -> skip\n", name, MOD_PATCH_MAX);
         return -1;
@@ -303,8 +296,8 @@ int mod_patch_fn(const char *name, uintptr_t fn, void *hook, uintptr_t *tramp)
         return -1;
     }
 
-    /* The trampoline first: the stock prologue, then back into the original
-     * just past what we are about to overwrite. */
+    /* Trampoline first: the stock prologue, then a branch back into the
+     * original just past the overwritten words. */
     memcpy(t, head, sizeof(head));
     mod_hook_branch((uint32_t *)(t + MOD_HOOK_BYTES), fn + MOD_HOOK_BYTES);
     __builtin___clear_cache((char *)t, (char *)t + MOD_TRAMP_BYTES);
@@ -351,10 +344,9 @@ void mod_restore_code(uintptr_t fn, const uint8_t *code, size_t n)
  * Not on inserted media: EP122 starts before anything is mounted, and removing the
  * stick mid-set would change the UI.
  *
- * One fixed binary record, like the stock CDJ3K_*.DAT files beside it. There is no
- * parser: reading is sizeof(struct) plus four header checks, writing is the same
- * bytes back. The load path logs every value it read, since the file is not
- * greppable.
+ * One fixed binary record, like the stock CDJ3K_*.DAT files. Reading is
+ * sizeof(struct) plus four header checks; writing is the same bytes back. The
+ * load path logs every value it read, since the file is not greppable.
  */
 #define MOD_SET_DIR  "/home/root/settings"
 #define MOD_SET_PATH MOD_SET_DIR "/CDJ3K_MODSETTINGS.DAT"
@@ -373,8 +365,7 @@ void mod_restore_code(uintptr_t fn, const uint8_t *code, size_t n)
  *   - Moving or resizing an existing field bumps `version`; older builds then
  *     reject the record rather than misread it.
  *
- * Fixed-width types throughout -- this is a byte layout, and `int` is not a
- * width. The static assertions below enforce it at build time.
+ * Fixed-width types only; the static assertions below check the layout.
  */
 struct mod_settings_v1 {
     uint32_t magic;                    /* MOD_SET_MAGIC   */
@@ -387,35 +378,29 @@ struct mod_settings_v1 {
     uint32_t theme_id;                 /* an index, stored at a fixed width       */
     char     sep_id[STEM_SEP_ID_MAX];
     char     stem_addr[STEM_ADDR_MAX];
-    /* Stored INVERTED. A byte taken from `reserved` reads 0 out of every record
-     * written before it existed, so 0 has to mean whatever the setting's default
-     * was when the field was added -- and preview hot cue defaulted ON then.
-     *
-     * It no longer does: every setting now ships off (see mods_init). The polarity
-     * stays anyway, because it describes records already written and flipping it
-     * would silently re-read a DJ's saved ON as OFF. Nothing new needs it -- with
-     * every default off, 0 is the right answer for any field taken from `reserved`
-     * from here on, which is what `xpad` below already relies on. */
+    /* Stored inverted. A field taken from `reserved` reads 0 in older records,
+     * so 0 must mean the default at the time it was added, and preview hot cue
+     * then defaulted on. Every setting now defaults off (see mods_init), but
+     * flipping the polarity would re-read saved records' ON as OFF. New fields
+     * need no inversion. */
     uint8_t  preview_off;              /* from reserved, front */
-    /* ENABLE X-PAD. Taken from `reserved`, and it defaults OFF -- so 0, which is
-     * what every record written before this field existed reads back, is already
-     * the right answer and it needs no inversion the way preview_off did. */
+    /* ENABLE X-PAD. Taken from `reserved`; defaults off, so 0 needs no inversion. */
     uint8_t  xpad;
     uint8_t  reserved[62];
     uint32_t crc32;                    /* over every byte above                   */
 };
 
-/* No implicit padding: the CRC covers every byte, so a hole would make a record
- * written by one compiler fail on another. Both string fields are multiples of
- * four today; these catch it if one stops being. */
+/* No implicit padding: the CRC covers every byte, so a hole could make a record
+ * written by one compiler fail on another. The last two catch a string field
+ * size that is no longer a multiple of four. */
 _Static_assert(sizeof(struct mod_settings_v1) == 220, "settings record resized");
 _Static_assert(offsetof(struct mod_settings_v1, crc32) == 216, "settings record has padding");
 _Static_assert(offsetof(struct mod_settings_v1, theme_id) == 12, "flags moved");
 _Static_assert(STEM_SEP_ID_MAX % 4 == 0, "sep_id would pad");
 _Static_assert(STEM_ADDR_MAX  % 4 == 0, "stem_addr would pad");
 
-/* CRC-32 (IEEE, reflected), bitwise -- 216 bytes twice per write does not justify
- * a 1 KiB table. */
+/* CRC-32 (IEEE, reflected), bitwise: 216 bytes twice per write does not need a
+ * 1 KiB table. */
 static uint32_t mod_crc32(const void *buf, size_t len)
 {
     const uint8_t *p = (const uint8_t *)buf;
@@ -431,16 +416,14 @@ static uint32_t mod_crc32(const void *buf, size_t len)
     return c ^ 0xffffffffu;
 }
 
-/* Whether `id` is a string this can store and use as a directory name.
+/* Whether `id` can be stored and used as a directory name.
  *
- * stemd guarantees [A-Za-z0-9._-] and at most 31 bytes -- see "Identifiers" in
- * its docs/api.md -- so this does not reshape the value, only decide whether it
- * meets that contract. Reading is bounded: the source may be a fixed-width field
- * off a disk or off the socket, so a missing terminator is one of the things
- * being checked rather than something assumed away.
+ * stemd guarantees [A-Za-z0-9._-] and at most 31 bytes ("Identifiers" in its
+ * docs/api.md); this only checks that contract. Reading is bounded because the
+ * source may be a fixed-width field from disk or the socket, so a missing
+ * terminator is also checked.
  *
- * "." and ".." are rejected despite being legal characters: they are the two
- * values that are a valid string but not a usable path component. */
+ * "." and ".." are rejected: valid strings, but not usable path components. */
 static int sep_id_is_valid(const char *id)
 {
     size_t n;
@@ -465,12 +448,10 @@ static int sep_id_is_valid(const char *id)
 
 /* The separator's own storage identity.
  *
- * A value that fails the contract is refused rather than repaired: the server
- * already enforces it, so anything else means we are not talking to a stemd that
- * meets it, and quietly reshaping the id would hide that while still writing
- * directories under whatever came out. Refusing leaves the id empty, which
- * entry_path() already reads as "no server has identified itself" -- the cache
- * turns off instead of filing entries under a name nobody chose. */
+ * An invalid value is refused, not repaired: stemd enforces the contract, so a
+ * violation means the peer is not a conforming stemd. Refusing leaves the id
+ * empty, which entry_path() reads as "no server has identified itself", so the
+ * cache turns off. */
 void mods_set_sep_id(const char *id)
 {
     if (!sep_id_is_valid(id)) {
@@ -496,8 +477,8 @@ void mods_settings_load(void)
     n = read(fd, &s, sizeof(s));
     close(fd);
 
-    /* Any check failing leaves every compiled default in place: a record that does
-     * not validate as a whole says nothing about its individual fields. */
+    /* Any failed check keeps all compiled defaults; no field of an invalid
+     * record is used. */
     if (n != (ssize_t)sizeof(s)) {
         MWARN("settings: %s is %d bytes, want %d -> defaults\n",
              MOD_SET_PATH, (int)n, (int)sizeof(s));
@@ -509,8 +490,8 @@ void mods_settings_load(void)
         return;
     }
     if (s.version != MOD_SET_VERSION) {
-        /* A build that moved a field. Refusing costs the saved settings once;
-         * reading it anyway would configure the deck from other fields' bytes. */
+        /* A build that moved a field. Refusing loses the saved settings once;
+         * reading would configure the deck from other fields' bytes. */
         MDBG("settings: version %u, this build speaks %u -> defaults\n",
              s.version, MOD_SET_VERSION);
         return;
@@ -526,14 +507,14 @@ void mods_settings_load(void)
     g_stems_on    = s.stems ? 1 : 0;
     xpad_g_on     = s.xpad ? 1 : 0;
     g_stem_manual = s.stem_manual ? 1 : 0;
-    /* Stored by index, so the registry's ORDER is part of the on-disk format:
+    /* Stored by index, so the registry's order is part of the on-disk format:
      * append themes, never insert or reorder. */
     g_theme_id    = (s.theme_id < (uint32_t)MOD_THEME_MAX) ? (int)s.theme_id : 0;
 
-    /* Off a disk: neither is trusted to be terminated. */
+    /* Read from disk: neither is trusted to be terminated. */
     s.sep_id[STEM_SEP_ID_MAX - 1]  = '\0';
     s.stem_addr[STEM_ADDR_MAX - 1] = '\0';
-    /* Terminated above, because mods_set_sep_id() reads it as a C string. */
+    /* mods_set_sep_id() reads it as a C string. */
     mods_set_sep_id(s.sep_id);
     memcpy(g_stem_addr, s.stem_addr, STEM_ADDR_MAX);
 
@@ -547,8 +528,8 @@ void mods_settings_save(void)
     struct mod_settings_v1 s;
     int fd;
 
-    /* Zeroed whole: the CRC covers `reserved` and `pad0`, so they must be defined
-     * bytes rather than stack residue. */
+    /* Zeroed whole: the CRC covers `reserved`, so it must not hold stack
+     * residue. */
     memset(&s, 0, sizeof(s));
     s.magic       = MOD_SET_MAGIC;
     s.version     = MOD_SET_VERSION;
@@ -560,9 +541,9 @@ void mods_settings_save(void)
     s.stems       = g_stems_on ? 1u : 0u;
     s.stem_manual = g_stem_manual ? 1u : 0u;
     s.theme_id    = (uint32_t)g_theme_id;
-    /* The string, not the buffer: both globals keep bytes after their terminator
-     * from any longer earlier value, which would make the CRC depend on them. The
-     * memset above supplied the padding and the terminator. */
+    /* Copy the string, not the buffer: bytes after the terminator may be left
+     * over from a longer earlier value and would change the CRC. The memset
+     * above supplies the padding and terminator. */
     memcpy(s.sep_id, g_stem_sep_id, strnlen(g_stem_sep_id, STEM_SEP_ID_MAX - 1));
     memcpy(s.stem_addr, g_stem_addr, strnlen(g_stem_addr, STEM_ADDR_MAX - 1));
     s.crc32       = mod_crc32(&s, offsetof(struct mod_settings_v1, crc32));
@@ -578,11 +559,9 @@ void mods_settings_save(void)
         ssize_t n = write(fd, &s, sizeof(s));
 
         if (n != (ssize_t)sizeof(s)) {
-            /* SAY WHICH, because the two read identically from the DJ's side and
-             * only one of them is a bug of ours. A full partition returns 0 with
-             * ENOSPC, and this is a 57 MB eMMC partition that EP122 also drops
-             * multi-megabyte crash logs onto -- measured full, and every setting
-             * changed for a day after that was silently discarded. */
+            /* Report whether the partition is full: a full one returns 0 with
+             * ENOSPC. This 57 MB eMMC partition also receives EP122's
+             * multi-megabyte crash logs and can fill up. */
             MERR("settings: wrote %d of %d bytes to %s (errno=%d)%s"
                  " -> NOT PERSISTED\n",
                  (int)n, (int)sizeof(s), MOD_SET_TMP, errno,
@@ -615,10 +594,9 @@ static void __attribute__((constructor)) mods_init(void)
 {
     const char *bad_level = NULL;
 
-    /* Read before anything can log. A value that names no level leaves the level
-     * at ERROR and is REPORTED -- but not from here: this constructor also runs
-     * in apl_start.sh and every shell helper it spawns, so complaining at this
-     * point says it once per process. It waits for the deck gate below. */
+    /* Read before anything can log. An unknown value leaves the level at ERROR
+     * and is reported after the deck gate below, since this constructor also
+     * runs in apl_start.sh and every shell helper it spawns. */
     {
         const char *lvl = getenv("EP122_MOD_LOGLEVEL");
         int         n   = log_level_from(lvl);
@@ -630,18 +608,10 @@ static void __attribute__((constructor)) mods_init(void)
 
     /* Defaults, until the saved settings are read below.
      *
-     * EVERY SETTING SHIPS OFF, and that is the rule rather than the sum of seven
-     * separate judgements. A deck with the package on it and nothing switched on
-     * behaves exactly like a deck without it -- so the first thing a DJ can check,
-     * before trusting any of this on a live set, is that nothing has moved. Gate cue
-     * and preview hot cue used to opt themselves in on the grounds that neither
-     * changes a stored value; that is true and it is still a change to how the deck
-     * answers a press, made by us and not by them.
-     *
-     * Written out rather than left to the BSS, because "off" being the default is a
-     * decision and this is where it is stated. The rest of the settings are zero,
-     * and zero is off for all of them: THEME 0 is ORIGINAL, which is the absence of
-     * a theme, and STEM SERVER LOCATION 0 is AUTO, which asks nothing of the DJ. */
+     * Every setting ships off, so a deck with nothing switched on behaves exactly
+     * like a stock deck. Set explicitly to document that rule. The remaining
+     * settings are zero, which is off for all of them: THEME 0 is ORIGINAL (no
+     * theme) and STEM SERVER LOCATION 0 is AUTO. */
     g_gate_on    = 0;
     g_smart_on   = 0;
     g_preview_on = 0;
@@ -657,36 +627,31 @@ static void __attribute__((constructor)) mods_init(void)
     if (!ep122_image_is_deck())
         return;
 
-    /* Past the gate, so this is the deck and it is said once. Silence would give
-     * someone who typed "verbose" exactly what an unset variable gives, with no
-     * way to tell the two apart. */
+    /* Past the gate, so this is the deck and it is logged once. */
     if (bad_level)
         MERR("EP122_MOD_LOGLEVEL=\"%s\" names no level "
              "(error|warn|info|debug|trace, or 0-4); staying at error\n",
              bad_level);
 
-    /* Also below the gate, and for the same reason: this constructor runs in every
-     * shell helper apl_start.sh spawns, so a notice above the gate is a notice ~180
-     * times. Nothing is remembered between boots -- there is no per-mod environment
-     * switch: what a DJ turns off lives in MOD SETTINGS, what a developer turns off
-     * lives in a build. This takes the mods out without taking the shim out, which
-     * dropping LD_PRELOAD cannot do: the shim is also the guest's time-shift, jog
-     * and DRM plumbing. */
+    /* Also below the gate, since a notice above it would be logged ~180 times.
+     * This disables all mods while keeping the shim, which dropping LD_PRELOAD
+     * cannot do: a host shim can provide plumbing of its own besides the mods.
+     * There is no per-mod switch; DJs use MOD SETTINGS, developers use the
+     * build. */
     if (getenv("EP122_NO_MODS")) {
         MINFO("init: EP122_NO_MODS set -> mods not installed\n");
         return;
     }
 
-    /* Resolving is also the detection: it asserts the process contains ~130 named
-     * classes, not that one address holds a common prologue. */
+    /* Resolving is also the detection: it requires ~130 named classes to be
+     * present. */
     ep122_resolve();
     if (!ep122_sym(EP122_DJSET_NUMROWS))
         return;   /* big enough to be the deck, but not the deck */
 
-    /* Every symbol in the spec resolved, or no mod runs. One symbol used by one
-     * feature takes all of them down: this is the intended trade, since "mostly
-     * modded" on an uncharacterised firmware is not a supportable state. The
-     * refusal names what it could not find. */
+    /* All spec symbols must resolve or no mod runs, even if only one feature
+     * uses the missing symbol: a partly modded deck on an uncharacterised
+     * firmware is not supportable. The log names the missing symbols. */
     if (ep122_resolve_missing()) {
         MERR("init: %d/%d symbols unresolved -> mods INACTIVE (deck runs stock)\n",
              ep122_resolve_missing(), EP122_SYM__COUNT);
@@ -694,9 +659,8 @@ static void __attribute__((constructor)) mods_init(void)
         return;
     }
 
-    /* One line per EP122 start, naming the build. The gates above already returned
-     * for every shell helper. INFO rather than unconditional: a working deck should
-     * not talk, and everything that reports a FAILURE above this is louder. */
+    /* One line per EP122 start, naming the build. INFO, so a working deck stays
+     * quiet at the default level; failures above log louder. */
     MINFO("init: mods %s (build %s), all %d symbols resolved\n",
           EP122_MOD_VERSION, EP122_MOD_BUILD, EP122_SYM__COUNT);
 
@@ -770,10 +734,9 @@ void mods_install_all(void)
     }
     mod_patch_owner(NULL);
 
-    /* Every mod, '-' in front of the ones that did not go in. A PARTIAL install is a
-     * warning, because some feature the DJ switched on is simply absent and the '-'
-     * names it; a full one is information, so a healthy deck stays silent at the
-     * default level. */
+    /* Every mod, with '-' before the ones that failed. A partial install is a
+     * warning, since a feature the DJ switched on is absent; a full one is INFO,
+     * so a healthy deck stays silent at the default level. */
     if (ok < n)
         MWARN("install: %d/%d [%s]\n", ok, n, line);
     else

@@ -38,9 +38,9 @@ if [ "$MODS_REMOVE" = 1 ]; then
     mods_log "service mode ($(cat "$MODS_TESTMODE" 2>/dev/null)) - removing the mods"
     rm -f  /mnt/pdj.tar.gz      2>/dev/null || true
     rm -rf /mnt/cdj3k-mods-logs 2>/dev/null || true
-    # MOD SETTINGS lives on the settings partition, not the overlay. Already
-    # mounted rw here. Exact names - the deck's own CDJ3K_*.DAT files share the
-    # directory.
+    # MOD SETTINGS lives on the settings partition, not the overlay; it is
+    # already mounted rw here. Exact names: the deck's own CDJ3K_*.DAT files
+    # share the directory.
     for f in "$MODS_SETTINGS".DAT "$MODS_SETTINGS".DAT.BAK "$MODS_SETTINGS".DAT.new; do
         rm -f "$f" 2>/dev/null || true
     done
@@ -50,12 +50,12 @@ fi
 
 if [ "$MODS_REMOVE" = 0 ]; then
 
-# 1) Shim. LD_PRELOAD is NOT set here - phase2 put it on the launcher's
-#    application line so it reaches EP122 only. Exporting one here would undo
+# 1) Shim. LD_PRELOAD is not set here: phase2 put it on the launcher's
+#    application line so it reaches EP122 only, and exporting it here would undo
 #    that. Verbose logging: add EP122_MOD_LOGLEVEL=debug on that line. The
-#    sidecar's own level is STEMD_LOGLEVEL, set in front of "$MODS_AGENT" where
-#    it is launched below -- there is no systemd unit for it here, and its output
-#    goes to /tmp/stemd_client.log rather than the journal.
+#    sidecar's level is STEMD_LOGLEVEL, set in front of "$MODS_AGENT" where it
+#    is launched below (there is no systemd unit for it); its output goes to
+#    /tmp/stemd_client.log, not the journal.
 if [ -f "$MODS_SHIM" ]; then
     mods_log "shim present at $MODS_SHIM (preloaded on the application line)"
 else

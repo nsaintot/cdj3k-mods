@@ -1,8 +1,8 @@
 /* The shapes the build-time markdown plugin emits. Kept beside the app rather
  * than imported from build/, so the client bundle never reaches into it.
  *
- * The split into three is a loading decision, not a modelling one: see the note
- * at the top of build/docs-plugin.ts. */
+ * The split into three is for loading; see the note at the top of
+ * build/docs-plugin.ts. */
 
 export interface DocHeading {
   id: string

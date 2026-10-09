@@ -3,7 +3,7 @@ name: Deploy site
 on:
   push:
     branches: [main]
-    # The site is the app plus the corpus it renders, so a docs edit is a deploy.
+    # The site renders at docs/. A docs edit triggers a deploy.
     paths:
       - 'web/**'
       - 'docs/**'
@@ -15,7 +15,7 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time; a queued run is superseded rather than raced.
+# One deploy at a time; a new run cancels the one in progress.
 concurrency:
   group: pages
   cancel-in-progress: true

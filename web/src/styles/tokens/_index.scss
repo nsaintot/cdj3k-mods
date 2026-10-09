@@ -1,5 +1,5 @@
-/* The token layer, emitted once from main.scss. Order matters only in that
- * _color.scss defines the primitives the rest may reference. */
+/* The token layer, emitted once from main.scss. _color.scss comes first
+ * because it defines the primitives the rest may reference. */
 @forward 'color';
 @forward 'typography';
 @forward 'space';

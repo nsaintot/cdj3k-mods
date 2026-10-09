@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * palette.c - the whole colour model, in one function.
+ * palette.c - the colour model: the per-colour transform and its memo.
  *
- * Every theme is this code with different numbers. The stages and the reasoning
- * behind each of them are documented on struct theme_palette in theme.h; this
- * file is the arithmetic.
+ * Every theme is this code with different numbers. The stages are documented on
+ * struct theme_palette in theme.h; this file is the arithmetic.
  *
- * It runs on every fill the UI performs -- thousands per frame -- and on every
- * pixel of every sprite when a theme is switched, so it stays in integer maths
- * with no division by a variable in the common path and no floating point at
- * all. There is no HSL round trip: each stage is expressed directly on RGB in a
- * form that provably preserves what it claims to.
+ * It runs on every UI fill (thousands per frame) and on every sprite pixel when a
+ * theme is switched, so it uses integer maths only, with no division by a variable
+ * in the common path. There is no HSL round trip: each stage works directly on RGB
+ * in a form that preserves what it claims to.
  */
 #include "theme/theme.h"
 
@@ -24,8 +22,8 @@ static inline uint32_t luma2(uint32_t r, uint32_t g, uint32_t b)
 }
 
 
-/* Hue as a 0..255 angle, the standard integer form. `c` is the chroma the caller has
- * already computed, and must be non-zero -- a grey has no hue to ask for. */
+/* Hue as a 0..255 angle, the standard integer form. `c` is the caller's chroma and
+ * must be non-zero. */
 static inline uint32_t hue256(uint32_t r, uint32_t g, uint32_t b,
                               uint32_t max, uint32_t c)
 {
@@ -37,24 +35,21 @@ static inline uint32_t hue256(uint32_t r, uint32_t g, uint32_t b,
     return (uint32_t)(h & 0xff);
 }
 
-/* Below this, a pixel is grey enough that "its hue" is noise -- rotating it would put
- * colour into the deck's neutral chrome, which is exactly where none belongs. Those go to
- * the duotone instead. */
+/* Below this chroma a pixel's hue is noise and rotating it would tint the deck's
+ * neutral chrome, so such pixels go to the duotone instead. */
 #define HUE_MIN_CHROMA 24u
 
-/* The arithmetic proper. `p` is never NULL here -- theme_palette_rgb and
- * theme_palette_map own that case -- and this is a PURE function of
- * (p, r, g, b, is_fill), which is what lets the memo in front of it be
- * transparent. */
+/* The arithmetic. `p` is never NULL here (theme_palette_rgb and theme_palette_map
+ * handle that). Must stay a pure function of (p, r, g, b, is_fill) for the memo in
+ * front of it to be transparent. */
 static void palette_compute(const struct theme_palette *p,
                             uint32_t *pr, uint32_t *pg, uint32_t *pb, int is_fill)
 {
     uint32_t r = *pr, g = *pg, b = *pb;
     uint32_t max, min, c;
 
-    /* The selection blue, stated by the theme rather than transformed -- see
-     * theme_palette::selection. The fill path only: through drawImage this same blue is
-     * picture content, and a waveform is not a selected row. */
+    /* The selection blue stated by the theme (see theme_palette::selection). Fill path
+     * only: through drawImage the same blue is picture content such as the waveform. */
     if (is_fill && p->selection) {
         uint32_t src = (r << 16) | (g << 8) | b;
 
@@ -70,7 +65,7 @@ static void palette_compute(const struct theme_palette *p,
 
     max = r > g ? r : g; if (b > max) max = b;
     min = r < g ? r : g; if (b < min) min = b;
-    c = max - min;                    /* chroma of the ORIGINAL colour */
+    c = max - min;                    /* chroma of the input colour */
 
     /* ---- 1. lightness inversion, hue and chroma exact --------------------
      *
@@ -79,13 +74,13 @@ static void palette_compute(const struct theme_palette *p,
      *
      *   c' = c - min + (255 - max) = c + (255 - max - min)
      *
-     * c is in [min,max], so c' lands in [255-max, 255-min] -- always in range,
-     * no clamping. Worked examples:
+     * c is in [min,max], so c' lands in [255-max, 255-min]: always in range,
+     * no clamping. Examples:
      *
      *   #191919 list bg   -> #e6e6e6   (dark grey  -> light grey)
      *   #ffffff text      -> #000000   (white      -> black)
      *   #007de1 accent    -> #1e9bff   (still blue, lifted for a light bg)
-     *   #ff0000 warning   -> #ff0000   (fully saturated: unchanged, correctly)
+     *   #ff0000 warning   -> #ff0000   (fully saturated: unchanged)
      */
     if (p->invert_l) {
         const uint32_t k = 255u - max - min;
@@ -94,8 +89,8 @@ static void palette_compute(const struct theme_palette *p,
 
     /* ---- 2. pull saturated colours darker -------------------------------
      * f = 1 - sat_darken*(C/255). All three channels scale together, so hue is
-     * exact and greys (C == 0) are untouched. Not an involution, which is why
-     * image.c keeps a pristine copy rather than flipping pixels back. */
+     * exact and greys (C == 0) are untouched. Not an involution, so image.c keeps
+     * a pristine copy instead of transforming pixels back. */
     if (p->sat_darken_q8 > 0 && c > 0) {
         int exempt = is_fill && p->exempt_blue && b > r && b > g;
 
@@ -109,16 +104,10 @@ static void palette_compute(const struct theme_palette *p,
 
     /* ---- 3. chroma scale about the pixel's own lightness -----------------
      * Push each channel away from (or toward) the local mid-point. Signed
-     * arithmetic and an explicit clamp: unlike stage 1 this one can leave the
-     * representable range, and a wrap here would show up as confetti. */
-    /* ZERO MEANS UNCHANGED, not greyscale.
-     *
-     * theme.h promises "a field left zero does nothing", and this was the one field that
-     * broke it -- 0 read as "scale chroma by 0", so a palette that simply did not mention
-     * sat_q8 had every pixel stripped to grey before any later stage ran. Four themes
-     * shipped that way and came out monochrome no matter what their hues said. A struct
-     * whose default destroys the image is a trap, so the default is now the identity and
-     * greyscale is asked for explicitly with 1. */
+     * arithmetic and an explicit clamp: unlike stage 1 this can leave the
+     * representable range, and a wrap would show as confetti. */
+    /* 0 means unchanged, so a palette that omits sat_q8 is not greyscaled
+     * ("a field left zero does nothing", theme.h). Greyscale is sat_q8 = 1. */
     if (p->sat_q8 != 0 && p->sat_q8 != 256) {
         int32_t mid = (int32_t)(luma2(r, g, b) / 2u);
         int32_t s = p->sat_q8;
@@ -135,21 +124,16 @@ static void palette_compute(const struct theme_palette *p,
 
     /* ---- 4a. hue map: the palette proper ----------------------------------
      *
-     * Rotate a chromatic pixel to the NEAREST hue this theme owns, holding its own
-     * lightness and chroma. That is what keeps a palette from collapsing into one
-     * colour: the deck distinguishes things by hue, and mapping preserves the
-     * distinction while replacing the colours. The duotone below cannot do this -- it
-     * has two anchors, so everything it produces is one hue.
+     * Rotate a chromatic pixel to the nearest hue this theme owns, keeping its own
+     * lightness and chroma, so the deck's hue distinctions survive with the theme's
+     * colours. The duotone below has two anchors and produces only one hue.
      *
-     * Reconstructed without an inverse HSL: take the target, measure how far each of
-     * its channels sits from its own mid-point, and scale that spread to the SOURCE's
-     * chroma about the SOURCE's mid-point. Hue comes from the target, weight from the
-     * source. */
+     * No inverse HSL: take each target channel's offset from the target's mid-point
+     * and scale that spread to the source's chroma about the source's mid-point. Hue
+     * comes from the target, weight from the source. */
     if (p->nhue > 0) {
-        /* Recomputed here on purpose: `max` and `c` at the top of this function describe
-         * the colour as it ARRIVED, and stages 1-3 have moved it since. Asking for the
-         * hue of one pixel while weighting it by another's chroma is how a mapped colour
-         * ends up somewhere neither of them was. */
+        /* Recomputed: `max` and `c` at the top describe the input colour, and stages
+         * 1-3 have changed it since. Hue and chroma must come from the same colour. */
         uint32_t nmax = r > g ? r : g; if (b > nmax) nmax = b;
         uint32_t nmin = r < g ? r : g; if (b < nmin) nmin = b;
         uint32_t nc = nmax - nmin;
@@ -167,7 +151,7 @@ static void palette_compute(const struct theme_palette *p,
             uint32_t tmin = tr < tg ? tr : tg; if (tb < tmin) tmin = tb;
             uint32_t tc = tmax - tmin, ht, d;
 
-            if (tc == 0) continue;                /* a grey in the hue list means nothing */
+            if (tc == 0) continue;                /* a grey in the hue list is skipped */
             ht = hue256(tr, tg, tb, tmax, tc);
             d  = hs > ht ? hs - ht : ht - hs;
             if (d > 128u) d = 256u - d;           /* the angle wraps */
@@ -187,10 +171,8 @@ static void palette_compute(const struct theme_palette *p,
             int32_t  mid, spread;
             int j;
 
-            /* How much of the target comes along besides its hue -- see hue_pull_q8.
-             * At k = 0 these collapse to `smid` and `c` and the whole stage is exactly
-             * what it was before the field existed, which is what keeps WHITE and the
-             * dark themes bit-identical. */
+            /* How much of the target comes along besides its hue (see hue_pull_q8).
+             * At k = 0 these reduce to `smid` and `c`, the hue-only mapping. */
             if (k < 0) k = 0; else if (k > 256) k = 256;
             mid    = smid + (tmid - smid) * k / 256;
             spread = (int32_t)c + ((int32_t)tc - (int32_t)c) * k / 256;
@@ -212,10 +194,8 @@ duotone:
      * Blend toward a ramp between two anchors, indexed by lightness: `shadow` is
      * what black becomes, `highlight` what white becomes. tint_q8 is how far.
      *
-     * This is the stage that gives a theme an identity. Everything above only
-     * re-polarises or re-saturates the deck's own hues; this one replaces them,
-     * which is why it is last and why it is the only stage that can make the
-     * accent blue stop being blue. */
+     * Last because it replaces hues; the stages above only re-polarise or
+     * re-saturate the deck's own. */
     if (p->tint_q8 > 0) {
         uint32_t l = luma2(r, g, b) / 2u;         /* 0..255 */
         uint32_t t = (uint32_t)p->tint_q8;
@@ -226,9 +206,9 @@ duotone:
         uint32_t tg = sg + (hg - sg) * l / 255u;
         uint32_t tb = sb + (hb - sb) * l / 255u;
 
-        /* Anchors are authored dark-to-light, so the subtractions above stay
-         * non-negative; a reversed pair would wrap, hence the assert-by-comment
-         * rather than a branch on a hot path. presets.c keeps to it. */
+        /* Anchors must be authored dark-to-light so the subtractions above stay
+         * non-negative; a reversed pair would wrap. Not checked on this hot path;
+         * presets.c keeps to it. */
         r = (r * (256u - t) + tr * t) >> 8;
         g = (g * (256u - t) + tg * t) >> 8;
         b = (b * (256u - t) + tb * t) >> 8;
@@ -244,64 +224,47 @@ duotone:
 /* ================================================================== */
 
 /*
- * palette_compute is pure, and the UI asks it the same questions over and over.
- * setFill runs thousands of times a frame over a handful of chrome colours, and
- * the waveform hands drawImage a whole 1200x128 strip of pixels every frame drawn
- * from that strip's own small ink palette. Each answer costs a dozen integer
- * divisions, and integer division is the one thing an A72 does not pipeline.
+ * palette_compute is pure and sees the same inputs repeatedly: setFill runs
+ * thousands of times a frame over a handful of chrome colours, and the waveform
+ * hands drawImage a 1200x128 strip every frame drawn from a small ink palette.
+ * Each answer costs a dozen integer divisions, which the A72 does not pipeline.
  *
- * That arithmetic is the whole of why a themed deck drops under 30 fps while
- * ORIGINAL stays fluid: ORIGINAL returns at the top of theme_palette_map and pays
- * none of it. Profiled on a real CDJ-3000 wearing MOCHA, this function was 31.8%
- * of the entire process. So put a cache in front rather than making the transform
- * cheaper -- the transform is what the themes are, and the answers repeat.
+ * Without the memo a themed deck drops under 30 fps while ORIGINAL (which returns
+ * at the top of theme_palette_map) stays fluid.
  *
- * The hit path is INLINE, in theme.h, and this file holds only the miss. That is
- * deliberate and it is why the table is exposed there rather than kept private: at
- * one call per pixel the call itself was a measurable part of the remaining cost,
- * and a lookup the compiler can fold into the pixel loop keeps the colour in a
- * register instead of round-tripping it through memory.
+ * The hit path is inline in theme.h; this file holds only the miss.
  *
- * Sizing, off the DATA rather than a guess. Counted on a stock-theme capture: the
- * overview strip holds 46 distinct colours and FOUR of them -- #000000 ground,
- * #0055e1 ink, #ffffff peaks, #ffa600 -- cover 99% of its pixels; the browse
- * previews hold 518. Simulated over the real pixel stream, the hit rate by pixel
- * runs 98.1% at 256 slots, 99.3% at 1024 and 99.5% at 2048: past a kilobyte or so
- * the curve is flat, because a waveform is a bar chart and not a photograph.
+ * Sizing: the stock overview strip holds 46 distinct colours and four of them
+ * (#000000 ground, #0055e1 ink, #ffffff peaks, #ffa600) cover 99% of its pixels;
+ * the browse previews hold 518. The per-pixel hit rate is 98.1% at 256 slots,
+ * 99.3% at 1024 and 99.5% at 2048.
  *
- * So the size is chosen for the CACHE, not the hit rate. 1024 slots is 8 KB, a
- * quarter of the A72's 32 KB L1, and the 600 KB strip being walked wants the rest
- * -- a table that evicts the pixels it is being asked about costs more than the
- * 0.2% of hits it buys back.
+ * 1024 slots is 8 KB, a quarter of the A72's 32 KB L1, leaving the rest for the
+ * 600 KB strip being walked; a larger table that evicts those pixels costs more
+ * than the 0.2% of hits it gains.
  *
- * The failure is not gentle in the other direction either. Measured over a
- * synthetic strip, at a few hundred distinct colours the memo is 2x on WHITE and
- * ~7x on a palette with a hue map, and at 4096 it turns into a LOSS -- every miss
- * pays the hash and the store on top of the arithmetic it did not avoid. That is
- * why the report prints the hit rate and not just the totals: a rate that falls
- * off says this table is being shown something it was not sized for, and it is the
- * one number that separates "make it bigger" from "take it out".
+ * The memo is a 2x speedup on WHITE and ~7x on a
+ * palette with a hue map at a few hundred distinct colours, and a net loss at 4096
+ * (every miss pays the hash and store on top of the arithmetic). The report prints
+ * the hit rate so a falling rate shows the table is seeing input it was not sized
+ * for.
  */
 
-/* THE TABLE. One naturally-aligned 64-bit word per slot, which aarch64 loads and
- * stores single-copy atomically -- so an entry can never be read half-written and
- * the paint thread and the waveform bake need no lock between them. Each entry
- * carries the question beside the answer, so a collision reads as a miss rather
- * than as the wrong colour. Layout in theme.h, beside the code that reads it. */
+/* One naturally-aligned 64-bit word per slot, which aarch64 loads and stores
+ * single-copy atomically, so the paint thread and the waveform bake need no lock.
+ * Each entry carries the question beside the answer, so a collision reads as a
+ * miss. Layout in theme.h. */
 uint64_t g_theme_memo[THEME_MEMO_N];
 
-/* WHOSE ANSWERS THESE ARE. Every caller passes mod_theme()->palette and the presets
- * are const statics, so one pointer means one palette for the life of the process
- * and a pointer change is a theme switch -- the only event that can invalidate an
- * answer. Emptying 8 KB on a switch is nothing. The cost of the invariant breaking
- * is a memset per call rather than a wrong colour, i.e. slow, not incorrect. */
+/* The palette the table's answers belong to. Callers pass mod_theme()->palette and
+ * the presets are const statics, so a pointer change means a theme switch, the only
+ * event that invalidates answers, and the 8 KB table is cleared. If callers ever
+ * alternated palettes the cost would be a memset per call, not a wrong colour. */
 const struct theme_palette *g_theme_memo_pal;
 
-/* Read off the running deck, and SPLIT BY is_fill because the two callers are
- * different questions. is_fill 1 is setFill: one call per rect, path or glyph the
- * UI paints. is_fill 0 is image pixels: one call per PIXEL of every waveform frame,
- * which is three orders of magnitude more and is what the exercise is about. A
- * single total would let the larger swallow the smaller and hide which one moved. */
+/* Indexed by is_fill. 1 is setFill: one call per rect, path or glyph. 0 is image
+ * pixels: one call per pixel of every waveform frame, three orders of magnitude
+ * more. Kept separate so the larger count does not hide changes in the smaller. */
 unsigned g_theme_memo_hit[2], g_theme_memo_miss[2];
 
 /* The transform on a separated triplet. A NULL palette is ORIGINAL and leaves the
@@ -314,8 +277,7 @@ void theme_palette_rgb(const struct theme_palette *p,
     palette_compute(p, pr, pg, pb, is_fill);
 }
 
-/* The miss. Out of line on purpose: it is the cold half, and keeping it out of the
- * pixel loop is most of what the inline hit path buys. */
+/* The miss path, kept out of line so the inlined hit path stays small. */
 uint32_t theme_palette_slow(const struct theme_palette *p, uint32_t rgb, int is_fill)
 {
     uint32_t r = (rgb >> 16) & 0xffu, g = (rgb >> 8) & 0xffu, b = rgb & 0xffu;

@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * wave_analyze.c - one pass over the track, into band powers per column.
+ * analyze.c - one pass over the track, into band powers per column.
  *
- * Part of the waveform-follows-the-faders feature. The shared contract, and the
- * reasoning behind the whole design, is in wave.h.
+ * Part of the waveform-follows-the-faders feature. Shared declarations and the
+ * design notes are in wave.h.
  */
 #include "wave/wave.h"
 
 /* ---- the band split -------------------------------------------------------
  *
- * Crossovers measured off the deck itself with third-octave noise bursts: the
- * handover sits at ~300 Hz and ~2500 Hz and is wide -- at 280 Hz low and mid
- * respond almost equally -- which is what a shallow crossover looks like, so
- * second order is the right shape rather than a compromise.
+ * The deck's crossovers are ~300 Hz and ~2500 Hz, with a wide handover (at 280 Hz
+ * low and mid respond almost equally), as from a shallow second-order crossover.
  */
 #define XOVER_LO 300.0f
 #define XOVER_HI 2500.0f
@@ -133,17 +131,14 @@ static int mix_sink(const float *interleaved, int64_t frames, void *user)
 
 /* ---- the analysis, cached beside the stems ----------------------------------
  *
- * The band powers are a pure function of the track and the separation that
- * produced its stems, so recomputing them on every load is a second of decode
- * for an answer that has not changed. They live in the stem cache entry's own
- * directory, which already scopes them correctly: a different model produces a
- * different sep-id, a different directory, and therefore different band powers,
- * with no extra key to get wrong.
+ * The band powers depend only on the track and the separation that produced its
+ * stems, so they are cached (saving about a second of decode per load) in the
+ * stem cache entry's directory. A different model gives a different sep-id and
+ * so a different directory; no extra key is needed.
  *
- * The entry is found the same way the stem job finds it -- by the DECODER's
- * frame count, which stem_decode_pull reports without decoding anything when it
- * is handed no sink. About 3 MB for an eight-minute track, next to ~60 MB of
- * stem FLACs.
+ * The entry is found as the stem job finds it, by the decoder's frame count,
+ * which stem_decode_pull reports without decoding when given no sink. About 3 MB
+ * for an eight-minute track, next to ~60 MB of stem FLACs.
  */
 #define BAND_CACHE_MAGIC 0x31425357u          /* "WSB1" */
 #define BAND_CACHE_NAME  "bands.bin"
@@ -205,8 +200,7 @@ static int band_cache_load(const char *track, uint32_t ncols, float **out)
     return 0;
 }
 
-/* Best effort by design: a failure here costs one re-analysis next time and
- * nothing else, so it never fails the load. */
+/* Best effort: a failure only costs a re-analysis next time. */
 static void band_cache_store(const char *track, uint32_t ncols, const float *p)
 {
     char path[STEM_CACHE_PATH_MAX], tmp[STEM_CACHE_PATH_MAX];
@@ -217,10 +211,8 @@ static void band_cache_store(const char *track, uint32_t ncols, const float *p)
 
     if (band_cache_path(track, path, sizeof(path)) != 0)
         return;
-    /* A truncated temp path is not a shorter name for the same file -- it is a
-     * DIFFERENT file, which the rename below would then move over the cache entry
-     * of whichever track shares the truncated prefix. Give up instead: the cost is
-     * one re-analysis, which is what this whole function is best-effort about. */
+    /* A truncated temp path names a different file, which the rename would move
+     * over another track's cache entry. Give up instead. */
     if (snprintf(tmp, sizeof(tmp), "%s.new", path) >= (int)sizeof(tmp))
         return;
     f = fopen(tmp, "wb");
@@ -239,25 +231,23 @@ static void band_cache_store(const char *track, uint32_t ncols, const float *p)
     }
 }
 
-/* Runs for a second or so on our own thread. See wave.h for the return codes:
- * "not yet" and "cannot" are deliberately different answers. */
+/* Runs for about a second on our own thread. Return codes: see wave.h. */
 int wave_run_analysis(const char *path)
 {
     struct analysis *a;
     int rate = stem_pool_rate();
     int64_t got;
 
-    /* The 3-band copy is the reference for the column count: it is the style
-     * whose codec is exact, and all three arrive with the same count anyway. */
+    /* The 3-band copy gives the column count: its codec is exact, and all three
+     * styles have the same count. */
     if (!wave_g_st[WS_STYLE_3BAND].pristine)
         return 0;                        /* the worker gates on this too */
     if (!path || !path[0]) {
         MDBG("wave_stems: analysis has no track path\n");
         return -1;
     }
-    /* The pool rate is measured from playback, so it stays 0 until the deck has
-     * actually played something -- a track loaded and left paused sits exactly
-     * here. That is a "come back later", not a failure. */
+    /* The pool rate is measured from playback and stays 0 until something has
+     * played (e.g. a track loaded and left paused): retry later. */
     if (rate <= 0)
         return 0;
     if (rate % COLUMNS_PER_SEC) {
@@ -266,8 +256,7 @@ int wave_run_analysis(const char *path)
         return -1;
     }
 
-    /* Nothing here re-checks WHICH track the copies are of. wave_stale does it,
-     * every tick, against the id the reply carried -- see wave.h. */
+    /* Which track the copies are of is checked by wave_stale every tick. */
     wave_g_ncols = wave_g_st[WS_STYLE_3BAND].ncols;
     free(wave_g_ratio);
     free(wave_g_ratio_broad);
@@ -293,9 +282,8 @@ int wave_run_analysis(const char *path)
     if (!a)
         return -1;
     if (!stem_store_acquire(&a->view)) {
-        /* A set being swapped, not a set that is gone: two track changes in
-         * quick succession land here while the second one's stems are still
-         * being published. Ask again. */
+        /* A set being swapped (two quick track changes, the second's stems not
+         * yet published), not gone. Retry. */
         MDBG("wave_stems: stems not acquirable yet, retrying the analysis\n");
         free(a);
         return 0;
@@ -318,9 +306,8 @@ int wave_run_analysis(const char *path)
     stem_store_release();
 
     if (got < 0 || a->aborted) {
-        /* An abort is the track or the stems moving under us, which is worth
-         * another go -- and a cheap one, because mix_sink refuses on its first
-         * chunk. A decode that failed outright will fail again. */
+        /* An abort means the track or stems changed: retry (cheap, mix_sink
+         * refuses on its first chunk). A failed decode would fail again. */
         int again = a->aborted;
 
         MDBG("wave_stems: analysis abandoned (frames=%lld aborted=%d)\n",

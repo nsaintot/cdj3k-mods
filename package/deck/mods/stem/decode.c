@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * stem_decode.c - getting a whole track out of the deck as 44.1 kHz PCM.
+ * mods/stem/decode.c - getting a whole track out of the deck as 44.1 kHz PCM.
  *
  * The stem model is trained at 44.1 kHz, so the separation server takes PCM at
- * that rate and nothing else. The deck runs its engine at 96 kHz, so none of the
- * PCM already in flight is usable: the page pool holds resampled audio (the
- * class that fills it is literally ResamplingReaderCache), and taking it from
- * there would mean 44.1 -> 96 -> 44.1, two conversions to arrive back where we
- * started. It also only ever holds a window around the needle, never the track.
+ * that rate only. The deck runs its engine at 96 kHz, so the PCM already in
+ * flight is unusable: the page pool holds resampled audio (filled by
+ * ResamplingReaderCache), so taking it would mean 44.1 -> 96 -> 44.1, and it
+ * only holds a window around the needle, never the whole track.
  *
  * So we decode the file a second time, ourselves, at the rate we want:
  *
@@ -16,27 +15,26 @@
  *   SampleRateConverter::setSource(reader, 44100, own)
  *        -> fileRead(pos, meow::Float2 *dst, frames)  as fast as we can pull it
  *
- * The one thing that recipe needs and cannot invent is `open`'s 2nd and 3rd
- * arguments - the SeekTable and FrameInfoList the deck built during track
- * analysis. For a VBR MP3 those are what make seeking correct, and they live in
- * the track info repository behind a request/reply API we would have to drive.
+ * What that recipe cannot invent is `open`'s 2nd and 3rd arguments: the
+ * SeekTable and FrameInfoList the deck built during track analysis. For a VBR
+ * MP3 they make seeking correct, and they live in the track info repository
+ * behind a request/reply API.
  *
- * We do not have to. The deck opens a reader for the track anyway, so this TU
- * hooks `open` and keeps what it was handed. Then creating our own second,
- * independent reader is just calling the same stock factory back with the same
- * arguments - no analysis data synthesised, no reader shared with the player,
- * and no lifetime entanglement with the page filler's copy.
+ * Instead, this TU hooks `open`, which the deck calls for the track anyway, and
+ * keeps what it was handed. Our own independent reader is then the same stock
+ * factory called with the same arguments: no synthesised analysis data, no
+ * reader shared with the player, no lifetime tie to the page filler's copy.
  *
  * The hook records what every open() was handed (the reporter prints it) and
  * keeps, for the track the deck opened last, the path and those two tables;
  * stem_decode_pull hands them back to createReaderFor for that path.
  *
  * Threading: `open` runs on the page-filler thread, which the track loader
- * blocks on - stall it and the load times out in
- * AsyncLoadFunctionHandler::waitForAsyncProcessing, which surfaces as a deck
- * stuck at "Not Loaded" with the hot cues blinking rather than as a crash. So
- * the hook does bounded /proc/self/mem reads and NOTHING else; all printing
- * happens in mod_stem_decode_report() on the message thread.
+ * blocks on. Stalling it times the load out in
+ * AsyncLoadFunctionHandler::waitForAsyncProcessing, and the deck sticks at
+ * "Not Loaded" with the hot cues blinking (no crash). So the hook does bounded
+ * /proc/self/mem reads and nothing else; all printing happens in
+ * mod_stem_decode_report() on the message thread.
  */
 #include "stem/stem.h"
 #include "kit/mod.h"
@@ -45,21 +43,19 @@
  * resolved from the host process, which already links libpthread. */
 #include <pthread.h>
 
-/* ---- audio_format::AbstractReader (EP122-3.19) ---------------------------
+/* ---- audio_format::AbstractReader ---------------------------------------
  *
- * Found by walking RTTI base arrays (scripts/ep122sym.py impls
- * audio_format::AbstractReader), which is also how we know the list is complete.
- * The seven file readers share AbstractFileReader::open; the JUCE wrapper has
+ * The list below is every subclass of audio_format::AbstractReader. The seven file readers share AbstractFileReader::open; the JUCE wrapper has
  * its own. One wrapper serves all eight, telling them apart by vptr.
  *
  *   bool open(const juce::String &path, const audio_format::SeekTable &,
  *             const audio_format::FrameInfoList &)
  *
- * getSampleRate is slot +0x50. That is not a guess: SampleRateConverter::setSource
- * special-cases this exact function pointer and reads the field directly when it
- * matches, so the binary itself identifies the slot. The default implementation
- * is two instructions - `ldr w0, [x0, #0x88]; ret` - so we read the field rather
- * than call into the guest from a thread the loader is blocked on. */
+ * getSampleRate is slot +0x50: SampleRateConverter::setSource special-cases
+ * this exact function pointer and reads the field directly when it matches.
+ * The default implementation only returns the int32 at +0x88, so we read the
+ * field rather than call into EP122 from a thread the loader is blocked
+ * on. */
 #define VT_SLOT_OPEN        0x10
 #define VT_SLOT_GETRATE     0x50
 #define FN_READER_GETRATE   ep122_sym(EP122_READER_FLAC_GETRATE)
@@ -73,14 +69,12 @@
  *                                   const FrameInfoList &, kind)
  *
  * With alsoOpen = 0 it constructs without opening; with 1 it calls open() and
- * unwinds on failure. Recorded here for the step that follows this probe.
+ * unwinds on failure.
  *
- * Nothing in .text takes the singleton's address -- every caller of
- * createReaderFor already holds it in a register -- so there is no ADRP pair to
- * read it out of, and it lives in .bss so there is nothing in the file either.
- * What it does have at run time is its vptr, which is unique to its class: the
- * object is found by looking for that, resolved lazily because the static-init
- * pass has to have run first. */
+ * Nothing in .text takes the singleton's address (every caller of
+ * createReaderFor already holds it in a register), so there is no ADRP pair to
+ * read, and it lives in .bss. It is found at run time by its vptr, which is
+ * unique to its class, resolved lazily because static init must run first. */
 #define ADDR_READER_FACTORY decode_reader_factory()
 #define FN_CREATE_READER    ep122_sym(EP122_CREATE_READER_FOR)
 
@@ -91,8 +85,8 @@
  *   vt +0x10  setSource(AbstractReader *, int targetRate, bool own)
  *   vt +0x18  ReaderErrorType fileRead(aint pos, meow::Float2 *dst, aint frames)
  *
- * setSource takes the target rate as a plain int - it is not pinned to the
- * engine's 96 kHz - which is the entire reason this approach works. */
+ * setSource takes the target rate as a plain int, not pinned to the engine's
+ * 96 kHz, which is what makes this approach work. */
 #define SRC_SIZE            0x88
 #define FN_SRC_CTOR         ep122_sym(EP122_SRC_CTOR)
 #define FN_SRC_DTOR         ep122_sym(EP122_SRC_DTOR)  /* destroys, does not free */
@@ -100,34 +94,32 @@
 #define VT_SLOT_SETSOURCE   0x10
 #define VT_SLOT_FILEREAD    0x18
 
-/* Fields setSource fills in, so we can report what the chain actually agreed on
- * rather than what we asked for. Rates are int32, lengths int64 frames. */
+/* Fields setSource fills in, so we can report what the chain agreed on rather
+ * than what we asked for. Rates are int32, lengths int64 frames. */
 #define SRC_SRCRATE_OFF     0x20
 #define SRC_DSTRATE_OFF     0x24
 #define SRC_INLEN_OFF       0x28
 #define SRC_OUTLEN_OFF      0x30
 
-/* juce::String is constructed in place from a C literal all over the binary's
- * own assert code - that is where these two come from.
+/* juce::String constructed in place from a C literal.
  *
- *   sub_1a55060(juce::String *this, const char *utf8)
- *   sub_1a1d9b0(juce::String *this)                    // destructor
+ *   ctor(juce::String *this, const char *utf8)
+ *   dtor(juce::String *this)
  */
 #define FN_JSTR_CTOR        ep122_sym(EP122_JUCE_STRING_CTOR_CSTR)
 #define FN_JSTR_DTOR        ep122_sym(EP122_JUCE_STRING_DTOR)
 
-/* What the stem model wants, and so the rate the UPLOAD is decoded at. Most DJ
+/* What the stem model wants, so the rate the upload is decoded at. Most DJ
  * libraries are already 44.1 kHz, in which case setSource's rate branch makes
  * the converter a passthrough.
  *
- * Playback is a different rate: stems have to land on the pool's timeline, which
- * is 96 kHz on this deck (see stem_pool_rate). Same converter, same source file
- * rate, same target -- so the deck's own resample and ours agree by being the
- * identical computation, not by being close. */
+ * Playback uses a different rate: stems have to land on the pool's timeline,
+ * 96 kHz on this deck (see stem_pool_rate). Same converter, same source rate,
+ * same target, so the deck's resample and ours are the identical computation. */
 #define STEM_TARGET_RATE    44100
 
-/* Frames per fileRead. 4096 frames = 32 KB of meow::Float2, big enough that the
- * per-call overhead disappears and small enough to stay off the loader's toes.
+/* Frames per fileRead. 4096 frames = 32 KB of meow::Float2: large enough that
+ * per-call overhead is negligible, small enough not to compete with the loader.
  * Reads must be sequential: fileRead compares the requested position against
  * m_currentPosition and takes a seek path when they differ. */
 #define DECODE_CHUNK        4096
@@ -139,22 +131,21 @@
 
 /* audio_format::IIndividualReaderFactory - one per container, held in an array
  * on the AudioReaderFactory. createReaderFor walks them in order and asks each
- * to build a reader; they dispatch purely on the path's extension (the Flac one
- * literally tests ".FLAC" then ".FLA"), so the first that recognises the name
- * wins. Slot +0x10 is that call:
+ * to build a reader; they dispatch on the path's extension only (the Flac one
+ * tests ".FLAC" then ".FLA"), so the first that recognises the name wins. Slot
+ * +0x10 is that call:
  *
  *   AbstractReader *create(const juce::String &path, const Config &, Kind)
  *
- * Hooked for one value only: `kind`. It reaches the reader's constructor and is
- * the single argument of createReaderFor we cannot read anywhere statically -
- * it comes from a field of the ResamplingReaderCache, whose address we do not
- * have. Everything else about creating our own reader is already known. */
+ * Hooked only for `kind`, which reaches the reader's constructor and is the one
+ * createReaderFor argument we cannot read statically: it comes from a field of
+ * the ResamplingReaderCache, whose address we do not have. */
 #define VT_SLOT_FACTORY_CREATE  0x10
 
 /* `sym` names the class; `vt` is filled in at install from the resolver, and a
- * class that is not present simply leaves 0 there and is skipped. The wrapper
- * still identifies its caller by comparing vptrs, so `vt` has to be cached
- * rather than looked up per call -- open() runs on the page-filler thread. */
+ * class that is not present leaves 0 and is skipped. The wrapper identifies its
+ * caller by comparing vptrs, so `vt` is cached rather than looked up per call:
+ * open() runs on the page-filler thread. */
 struct reader_vt {
     const char *name;
     int         sym;
@@ -179,17 +170,16 @@ static struct reader_vt g_reader[] = {
     { "Mp4",  EP122_READER_MP4,  0, 0 },
     { "Aiff", EP122_READER_AIFF, 0, 0 },
     { "Wav",  EP122_READER_WAV,  0, 0 },
-    /* The factory's fallback for what the seven refuse -- a 32-bit float WAV
-     * among them. The deck plays those through it, so this is the open that
-     * succeeds for such a track, and the only one that names its path. */
+    /* The factory's fallback for what the seven refuse, such as a 32-bit float
+     * WAV. The deck plays those through it, so for such a track this is the
+     * open that succeeds and the only one that names its path. */
     { "Juce", EP122_READER_JUCE, 0, 0 },
 };
 #define N_READER_VT ((int)(sizeof(g_reader) / sizeof(g_reader[0])))
 
-/* The same set of containers on the factory side. Each has its own create(), so
- * the wrapper identifies the caller by vptr rather than needing one wrapper per
- * factory -- and the stock create() now comes out of the slot instead of being
- * listed, which is what removed seven more addresses from this table. */
+/* The same containers on the factory side. Each has its own create(); the
+ * wrapper identifies the caller by vptr, and the stock create() is taken from
+ * the slot. */
 static struct factory_vt g_factory[] = {
     { "Flac", EP122_FACTORY_FLAC, 0, 0 },
     { "Mp3",  EP122_FACTORY_MP3,  0, 0 },
@@ -209,9 +199,9 @@ typedef void *(*create_fn_t)(void *self, const void *path, const void *cfg,
 /* What one open() call was handed. Filled by the hook, drained by the report.
  *
  * `pending` is the handshake: the hook writes the fields, then sets it last, and
- * the reporter clears it after printing. A plain int is enough - there is one
+ * the reporter clears it after printing. A plain int is enough: there is one
  * page-filler thread and one message thread, the fields are only read once
- * pending is set, and a missed capture costs a log line, not correctness. */
+ * pending is set, and a missed capture costs only a log line. */
 struct open_capture {
     volatile int pending;
     int          which;                /* index into g_reader                */
@@ -232,58 +222,49 @@ static unsigned g_open_calls;
  * the path to stay valid for as long as the track is loaded. */
 static char g_track_path[PATH_MAX_CAP];
 
-/* Set the instant a SUCCESSFUL deck open refreshes g_track_path, cleared the
- * first time a new sourceId consumes it. A track whose OWN open failed never
- * sets it, so g_track_path still points at the previous, successfully-opened
- * track -- and a new id must NOT bind to that stale path. Consume-once is what
- * tells "the deck just opened this track" apart from "g_track_path is left over
- * from a different song": only the former is fresh. Written from the page-filler
- * thread with RELEASE after the memcpy, read from the message thread with
- * ACQUIRE, so a reader that sees fresh=1 also sees the path bytes. */
+/* Set when a successful deck open refreshes g_track_path, cleared the first
+ * time a new sourceId consumes it. A track whose own open failed never sets it,
+ * so g_track_path still names the previous track and a new id must not bind to
+ * it. Consume-once separates "the deck just opened this track" from a path left
+ * over from another song. Written from the page-filler thread with RELEASE
+ * after the memcpy, read from the message thread with ACQUIRE, so a reader that
+ * sees fresh=1 also sees the path bytes. */
 static int g_track_fresh;
 
-/* The SeekTable and FrameInfoList the deck built for g_track_path -- open()'s
- * 2nd and 3rd arguments, which the worker cannot invent. Both are handed back
- * to createReaderFor so our reader opens against the same analysis the deck's
- * did -- for a VBR MP3 that is what lets setSource size it, since the reader
- * alone carries no length. Captured on the SAME successful open as g_track_path
- * so the three always describe one track, and only used while the pull's path
- * still matches, i.e. for the track the deck has loaded and whose analysis it
- * is holding. They are read during createReaderFor only: the MP3 reader builds
- * its own frame index from them at open (sub_a47b20), so the exposure is that
- * call, not the decode that follows. Never used for a re-served track: nothing
- * says the deck still holds the analysis it handed over the first time. */
+/* The SeekTable and FrameInfoList the deck built for g_track_path (open()'s
+ * 2nd and 3rd arguments). Both are handed back to createReaderFor so our reader
+ * opens against the same analysis; for a VBR MP3 that is what lets setSource
+ * size it, since the reader alone carries no length. Captured on the same
+ * successful open as g_track_path so the three describe one track, and used
+ * only while the pull's path still matches, i.e. for the track the deck has
+ * loaded and whose analysis it holds. They are read during createReaderFor
+ * only: the MP3 reader builds its own frame index from them at open. Never
+ * used for a re-served track, whose analysis the deck may no longer hold. */
 static uintptr_t g_track_seek;
 static uintptr_t g_track_frame;
 
-/* Set while THIS thread is inside stem_decode_pull.
+/* Set while this thread is inside stem_decode_pull.
  *
- * The open hook is global: it fires for every reader the factory builds, and we
- * build readers ourselves to load stems. Without this the hook recorded
- * /dev/shm/harmonics.flac as "the track", and the consequences were not subtle:
+ * The open hook fires for every reader the factory builds, including the ones
+ * we build to load stems. Without this it records a stem file such as
+ * /dev/shm/harmonics.flac as the track: the next job uploads the stem (each
+ * generation adds one 4116-frame decoder pad, so the server's content cache
+ * never hits), key_of() hashes a transient tmpfs file so the media cache never
+ * hits either, and what plays is a separation of a stem, misaligned with the
+ * track.
  *
- *   - the next job uploaded that stem instead of the track, so the server saw a
- *     brand new signal every time and its content-addressed cache never hit --
- *     visible as the frame count climbing 17534160 -> 17538276 -> 17542392, one
- *     4116-frame decoder pad per generation of separating our own output;
- *   - key_of() hashed a transient tmpfs file, so the on-media cache never hit
- *     either, and happily STORED entries under keys that could not recur;
- *   - and what finally played was a separation of a stem, misaligned against
- *     the track on the deck -- which reads as "the faders do nothing".
- *
- * Thread-local rather than a global flag because the deck's own opens come from
- * the page filler thread and ours from the worker: a global would suppress a
- * genuine capture that happened to overlap one of our decodes. */
+ * Thread-local because the deck's opens come from the page filler thread and
+ * ours from the worker; a global flag would suppress a real capture that
+ * overlapped one of our decodes. */
 static __thread int g_decode_self;
 
 /* CLOCK_MONOTONIC ms of the deck's own most recent reader open, or 0 if it has
  * not opened one yet. Written from whichever thread the factory ran on and read
  * by the worker, so plain atomics rather than a lock.
  *
- * This is the deck's track loader saying it is still working. The stretcher
- * measurement that used to gate the stem decode does not see that at all: on a
- * cache hit it read healthy through the whole of a load that was still opening
- * files 1.3 s later. See wait_for_deck. */
+ * Shows the deck's track loader is still working, which the stretcher rate does
+ * not: it reads healthy while a load is still opening files. See wait_for_deck
+ * in store.c. */
 static volatile uint64_t g_deck_open_ms;
 
 static uint64_t decode_now_ms(void)
@@ -332,16 +313,16 @@ int stem_decode_wait_deck_quiet(unsigned quiet_ms, unsigned max_ms)
 }
 
 /* createReaderFor's last two arguments, as seen by whichever factory accepted
- * the file. Recorded once - they are per-cache constants, not per-track. */
+ * the file. Recorded once: they are per-cache constants, not per-track. */
 static volatile int g_factory_seen;
 static uintptr_t    g_factory_cfg;
 static uint64_t     g_factory_kind;
 static int          g_factory_which;
 
-/* Copy a NUL-terminated string out of the guest's own address space without
- * risking a fault. mod_safe_read insists on a full read, so a string near the
- * end of a mapping fails a big request and succeeds a small one - hence the
- * chunked walk rather than one PATH_MAX_CAP read. */
+/* Copy a NUL-terminated string out of EP122's address space without
+ * risking a fault. mod_safe_read requires a full read, so a string near the end
+ * of a mapping fails a large request; hence the chunked walk rather than one
+ * PATH_MAX_CAP read. */
 static void cap_juce_string(uintptr_t str_ref, char *out, size_t n)
 {
     uintptr_t text = 0;
@@ -368,7 +349,7 @@ static void cap_juce_string(uintptr_t str_ref, char *out, size_t n)
 }
 
 /* The hook. Chains first so a capture never changes what the deck sees, then
- * records - including the sample rate, which is only meaningful once the file
+ * records, including the sample rate, which is only meaningful once the file
  * header has been parsed. Bounded reads only: see the threading note up top. */
 static int stem_reader_open(void *self, const void *path, const void *seek_table,
                             const void *frame_info)
@@ -408,9 +389,9 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
         __atomic_store_n(&g_deck_open_ms, decode_now_ms(), __ATOMIC_RELEASE);
 
     /* A failed open holds the capture only until one succeeds. The factory
-     * falls through its readers -- FileReadWav refuses a float WAV and the JUCE
-     * wrapper takes it -- and the open that succeeded is the one that names the
-     * track; keeping the first would report the refusal and lose the path. */
+     * falls through its readers (FileReadWav refuses a float WAV and the JUCE
+     * wrapper takes it), and the successful open is the one that names the
+     * track. */
     if (!g_cap.pending || (!g_cap.ret && ret)) {
         uintptr_t rate_fn = 0;
 
@@ -422,12 +403,10 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
         g_cap.path_ref = (uintptr_t)path;
         cap_juce_string((uintptr_t)path, g_cap.path, sizeof(g_cap.path));
         /* Kept separately: the reporter consumes g_cap, but the decode worker
-         * needs the path to survive for as long as the track is loaded.
+         * needs the path for as long as the track is loaded.
          *
-         * Never from a reader WE opened -- that is our own stem file, not the
-         * track. g_cap still records it, because seeing those opens in the log
-         * is how the stem decode is debugged; only the thing that decides what
-         * gets uploaded is protected. */
+         * Never from a reader we opened: that is our own stem file. g_cap still
+         * records it so those opens appear in the log for debugging. */
         if (ret && g_cap.path[0] && !g_decode_self) {
             memcpy(g_track_path, g_cap.path, sizeof(g_track_path));
             /* Same open as the path: the analysis these describe is this
@@ -437,9 +416,9 @@ static int stem_reader_open(void *self, const void *path, const void *seek_table
             __atomic_store_n(&g_track_fresh, 1, __ATOMIC_RELEASE);
         }
 
-        /* Read the field the stock getter would have returned, but only once
-         * the slot has confirmed it IS that getter -- an override would mean
-         * the rate lives somewhere else and +0x88 is meaningless. */
+        /* Read the field the stock getter would return, but only after the
+         * slot confirms it is that getter; an override would keep the rate
+         * elsewhere and make +0x88 meaningless. */
         g_cap.rate = 0;
         if (mod_safe_read(ep122_sym(g_reader[which].sym) + VT_SLOT_GETRATE, &rate_fn,
                           sizeof(rate_fn)) == 0 && rate_fn == FN_READER_GETRATE)
@@ -489,10 +468,10 @@ static void *stem_factory_create(void *self, const void *path, const void *cfg,
 
 /* ---- decoding a track ourselves ------------------------------------------
  *
- * Everything above is observation. This is the part that builds a second,
- * independent decode chain for the loaded track and pulls it end to end at
- * 44.1 kHz. It runs on its own thread: it opens files and decodes a whole
- * track, neither of which belongs on the audio, loader or message threads.
+ * Everything above is observation. This builds a second, independent decode
+ * chain for the loaded track and pulls it end to end. It runs on its own
+ * thread: opening files and decoding a whole track do not belong on the audio,
+ * loader or message threads.
  */
 
 typedef void *(*create_reader_fn_t)(void *factory, const void *path, int32_t *err,
@@ -519,13 +498,9 @@ static uint64_t decode_cntfrq(void)
     return v;
 }
 
-/* Refuse to call into any of it unless the binary still looks like the one
- * these addresses were read from. The factory is the interesting check: it
- * lives in .bss and is constructed at runtime, so a zero vptr means we are
- * early enough that it does not exist yet. */
-/* The AudioReaderFactory singleton, found once and remembered. Deliberately not
- * looked up in the constructor: it is a global C++ object, so its vptr does not
- * exist until static init has run, and the shim loads before that. */
+/* The AudioReaderFactory singleton, found once and remembered. Not looked up
+ * in the constructor: it is a global C++ object, so its vptr does not exist
+ * until static init has run, and the shim loads before that. */
 static uintptr_t decode_reader_factory(void)
 {
     static uintptr_t cached;
@@ -537,9 +512,9 @@ static uintptr_t decode_reader_factory(void)
 
 static int decode_targets_ok(void)
 {
-    /* Everything here is resolved by name or read out of a vtable, so "did it
-     * resolve" is the whole check: a signature match proves more than a prologue
-     * guard, and the factory is identified by its class. */
+    /* Refuse to call into the chain unless everything resolved. All of it is
+     * resolved by name or read out of a vtable, and the factory is identified
+     * by its class, so resolution is the whole check. */
     if (!ADDR_READER_FACTORY) {
         MDBG("stem_decode: AudioReaderFactory instance not found, refusing\n");
         return 0;
@@ -570,23 +545,19 @@ static void release_reader(void *reader)
 
 /* ---- sourceId -> path ------------------------------------------------------
  *
- * "The last file the deck opened" is NOT "the track now playing", and the gap
- * between them is not rare: the page pool keeps readers per sourceId, so
- * pressing NEXT to a track it already holds re-serves it with no
- * createReaderFor at all. The open hook stays silent, g_track_path keeps
- * pointing at whatever was opened last, and the job runs against the wrong
- * track -- uploading it, keying the cache on it, and publishing stems that do
- * not belong to what is playing. That is why the faders looked dead: the set
- * was real, just for another song.
+ * The last file the deck opened is often not the track now playing: the page
+ * pool keeps readers per sourceId, so pressing NEXT to a track it already holds
+ * re-serves it with no createReaderFor. The open hook stays silent and
+ * g_track_path still names the last file opened, so the job would upload, key
+ * the cache on and publish stems for the wrong track.
  *
  * So the path is bound to the sourceId the first time that id is seen, and
  * looked up by id afterwards. A re-served track finds its own path even though
  * nothing was opened for it.
  *
- * Small and fixed: a booth session touches a handful of tracks, and the oldest
- * binding is the right one to lose. Message thread only -- it is called from
- * the track watch, which is where both the sid and a safe moment for string
- * work exist. */
+ * Small and fixed: a session touches a handful of tracks, and the oldest
+ * binding is the one to drop. Message thread only: called from the track watch,
+ * where the sid is known and string work is safe. */
 #define SID_BINDS 16
 
 static struct {
@@ -602,25 +573,23 @@ const char *stem_decode_path_for_sid(uint64_t lo, uint64_t hi)
 
     for (i = 0; i < SID_BINDS; i++)
         if (g_bind[i].used && g_bind[i].lo == lo && g_bind[i].hi == hi) {
-            /* A reload of a track the pool had evicted opens it again, which
-             * set the flag; this binding is that open's, so spend it here or
-             * the next reader-less load inherits it and binds to this path. */
+            /* A reload of a track the pool had evicted opens it again and sets
+             * the flag; this binding is that open's, so consume it here or the
+             * next reader-less load would bind to this path. */
             if (__atomic_load_n(&g_track_fresh, __ATOMIC_ACQUIRE) &&
                 strcmp(g_bind[i].path, g_track_path) == 0)
                 __atomic_store_n(&g_track_fresh, 0, __ATOMIC_RELEASE);
             return g_bind[i].path;
         }
 
-    /* Unseen id: it must be the track the deck just opened, because an open is
-     * the only way a new source enters the pool -- but ONLY if that open
-     * succeeded and left a fresh path. A float WAV (or any format this reader
-     * cannot open) fails its open, so g_track_path still holds the PREVIOUS
-     * track; binding this id to it publishes that song's stems over the wrong
-     * one. Consume the freshness so a second new id in the same gap -- a
-     * re-served track has its own binding already and never reaches here --
-     * cannot inherit it either. No fresh path means no stems, and the caller
-     * dropping the resident set on a NULL is what stops the last song's faders
-     * from bleeding through. */
+    /* Unseen id: it must be the track the deck just opened, since an open is the
+     * only way a new source enters the pool, but only if that open succeeded
+     * and left a fresh path. A failed open (e.g. a format these readers cannot
+     * open) leaves g_track_path on the previous track. Consume the freshness so
+     * a second new id in the same gap cannot inherit it (a re-served track
+     * already has a binding and never gets here). No fresh path means no
+     * stems; the caller drops the resident set on NULL so the last song's
+     * stems do not carry over. */
     if (!g_track_path[0] ||
         !__atomic_exchange_n(&g_track_fresh, 0, __ATOMIC_ACQ_REL))
         return NULL;
@@ -637,30 +606,25 @@ const char *stem_decode_path_for_sid(uint64_t lo, uint64_t hi)
 
 /* Build the chain, hand every chunk to `sink`, tear it down.
  *
- * With `sink == NULL` it stops after reading the converter's output length,
- * which is how the caller learns the frame count for Content-Length without
- * paying for a second full decode.
- *
- * The count is the DECODER's and not the file's: the deck pads (4116 frames on
- * the reference track), and stems built against the file's count come back
- * misaligned with the deck's own timeline.
+ * With `sink == NULL` it stops after reading the converter's output length
+ * (probe mode); see stem.h.
  *
  * Returns frames delivered (or the length, in probe mode), -1 on failure. A
  * sink returning non-zero aborts and is also reported as -1: that is how
- * cancellation reaches a thread otherwise sitting inside the deck's decoder,
- * without a signal and without pthread_cancel. */
+ * cancellation reaches a thread inside the deck's decoder, without a signal or
+ * pthread_cancel. */
 int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
                          void *user)
 {
     /* juce::String is a single pointer; the second word is slack so a wrong
      * guess about its size cannot scribble on the frame. */
     uintptr_t jstr[2] = { 0, 0 };
-    /* FileReadFlac ignores open()'s 2nd and 3rd arguments outright, so zeroed
-     * stand-ins are enough for it. A VBR MP3 is not: its length comes out of the
+    /* FileReadFlac ignores open()'s 2nd and 3rd arguments, so zeroed stand-ins
+     * are enough for it. A VBR MP3 takes its length from the
      * SeekTable/FrameInfoList, and with stubs setSource reports -1 frames and the
-     * job never starts. So when the deck has already opened THIS track we reuse
-     * the very tables it built (g_track_seek/g_track_frame); the stubs remain the
-     * fallback for a track the deck has not opened for us to observe. */
+     * job never starts. So when the deck has opened this track we reuse its
+     * tables (g_track_seek/g_track_frame); the stubs are the fallback for a
+     * track we have not seen the deck open. */
     uint8_t seek_stub[64], frame_stub[64];
     const void *seek_arg, *frame_arg;
     uintptr_t cap_seek, cap_frame;
@@ -684,10 +648,10 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
     memset(seek_stub, 0, sizeof(seek_stub));
     memset(frame_stub, 0, sizeof(frame_stub));
 
-    /* Reuse the deck's own analysis for this track when we have it; the stubs
-     * otherwise. strcmp against g_track_path is what ties the tables to the file
-     * being decoded -- a mismatch (a re-served track the deck never re-opened,
-     * or our own stem files) falls back rather than handing MP3 a stranger's
+    /* Reuse the deck's own analysis for this track when we have it, else the
+     * stubs. The strcmp against g_track_path ties the tables to the file being
+     * decoded; a mismatch (a re-served track the deck never re-opened, or our
+     * own stem files) falls back rather than handing MP3 another track's
      * SeekTable. */
     seek_arg = seek_stub;
     frame_arg = frame_stub;
@@ -727,10 +691,10 @@ int64_t stem_decode_pull(const char *path, int rate, stem_pcm_sink_fn sink,
 
     ((src_ctor_fn_t)FN_SRC_CTOR)(src);
 
-    /* Resolve the virtual calls through the object's OWN vptr, and only after
-     * confirming the constructor installed the vtable we validated. Indexing
-     * the object instead of the vtable calls whatever happens to sit in a data
-     * field, which is a jump to garbage. */
+    /* Resolve the virtual calls through the object's own vptr, after
+     * confirming the constructor installed the expected vtable. Indexing the
+     * object instead of the vtable would jump to whatever sits in a data
+     * field. */
     memcpy(&src_vt, src, sizeof(src_vt));
     if (src_vt != VT_SRC) {
         MDBG("stem_decode: SRC vptr %#lx != %#lx after ctor, aborting\n",
@@ -881,10 +845,10 @@ static int stem_decode_install(void)
     MDBG("stem_decode: %d/%d factory create slots armed\n", armed,
          N_FACTORY_VT);
 
-    /* Both halves have to be present, but neither has to be complete: a track
-     * arrives through ONE reader class and ONE factory, so arming a subset costs
-     * only the formats whose class did not arm. Zero on either side is different
-     * -- there is then no path from a track to our own decode at all. */
+    /* Both halves must be present but neither has to be complete: a track
+     * arrives through one reader class and one factory, so a subset only loses
+     * the formats whose class did not arm. Zero on either side leaves no path
+     * from a track to our own decode. */
     return (readers_armed && armed) ? 0 : -1;
 }
 

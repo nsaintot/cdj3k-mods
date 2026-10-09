@@ -3,27 +3,26 @@
  * draw.h - the mod's shared drawing kit: juce::Graphics primitives, colour maths,
  *          and the deck's own button surface.
  *
- * Everything here takes a juce::Graphics* exactly as the app hands it to a paint
- * override, so any mod that owns a paint slot can use it: the stem row, the MOD
- * SETTINGS overlay, anything added later.
+ * Everything here takes a juce::Graphics* as the app passes it to a paint
+ * override, so any mod that owns a paint slot can use it (the stem row, the MOD
+ * SETTINGS overlay).
  *
  * ---- the stipple ----
  *
  * Every touchable control on this deck is a 4x4 checkerboard of two colours, 50/50,
- * with no antialiasing -- measured off the running deck, not inferred:
+ * with no antialiasing:
  *
  *     quick-menu button, unlit    #323232 / #232323     x0.70
  *     quick-menu button, lit      #007de1 / #0064a5     x0.73
  *     panel pad (BEAT LOOP)       #323232 / #191919     x0.50
  *
- * In every pair the dark half is a uniform scale of the light one -- so the hue is
- * shared and only the value differs -- but the FACTOR is authored per element. A
- * caller that knows its pair passes both (mod_checker_pair); a caller that just wants
- * a button passes the light colour and gets the quick-menu factor, which reproduces
- * stock's #232323 exactly.
+ * In every pair the dark half is a uniform scale of the light one (same hue,
+ * different value), but the factor is set per element. A caller that knows its
+ * pair passes both (mod_checker_pair); otherwise it passes the light colour and
+ * gets the quick-menu factor, which reproduces stock's #232323 exactly.
  *
- * This is what "the button is touchable" means visually on this deck, so drawing a
- * flat plate anywhere is now a deliberate choice rather than a default.
+ * The stipple marks a control as touchable; a flat plate should be a deliberate
+ * choice.
  */
 #ifndef EP122_MOD_DRAW_H
 #define EP122_MOD_DRAW_H
@@ -46,134 +45,114 @@ void mod_gfx_colour(void *g, uint32_t argb);
 void mod_gfx_fill(void *g, int x, int y, int w, int h);
 
 /* One line of text into a rect, in the deck's own face. For a paint override
- * that is drawing a whole control rather than dressing a juce::Label -- a Label
- * would bring its own component, which would then have to be kept out of the
- * mouse's way over somebody else's button. Justification is juce's flag word;
- * JUCE_JUSTIFY_* in juce.h names the ones worth having. */
+ * that draws a whole control; a juce::Label would add its own component, which
+ * would then have to be kept from intercepting the mouse. Justification is
+ * juce's flag word; JUCE_JUSTIFY_* in juce.h names the useful ones. */
 void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
                   int x, int y, int w, int h, int justification);
 
 /* ---- "these pixels are ours" ----
  *
- * The theme's setFill hook re-colours every fill the app performs, and our drawing goes
- * through the same choke point -- juce::Graphics::setColour IS setFill. But our colours
- * arrived from mod_ui(), already resolved through the theme once, so a second pass is
- * the transform applied twice. These say "leave this one alone".
+ * The theme's setFill hook re-colours every fill the app performs, and our drawing
+ * goes through it too (juce::Graphics::setColour is setFill). Our colours come from
+ * mod_ui(), already resolved through the theme, so these brackets tell the hook to
+ * skip them.
  *
- * The contract that makes it safe: a bracket may only ever span ONE synchronous call
- * into juce. mod_gfx_colour does exactly that internally, and the only other legitimate
- * use is around a chain to a stock paint whose colours we set ourselves (Label::paint
- * draws its background and lettering from colours we gave it). Never hold it across
- * anything that can return to the app with it still set -- there is no path back.
+ * A bracket may span only one synchronous call into juce. mod_gfx_colour does that
+ * internally; the only other valid use is around a chain to a stock paint whose
+ * colours we set (Label::paint draws its background and lettering from colours we
+ * gave it). Never hold it across anything that can return to the app with it still
+ * set; nothing would clear it.
  *
- * Not reentrant and does not need to be: painting is the message thread's alone. */
+ * Not reentrant; painting happens only on the message thread. */
 void mod_draw_enter(void);
 void mod_draw_leave(void);
 int  mod_drawing(void);
 
 /* ================================================================== */
-/* The UI roles -- what OUR OWN controls are painted with             */
+/* The UI roles -- what the mod's own controls are painted with      */
 /* ================================================================== */
 
 /*
- * The theme's palette re-colours what the APP draws. This is the other half: the colours
- * the mod's own controls choose for themselves. It lives here because every mod that owns
- * a paint slot asks for one, and none of them has any other business with the theme layer;
- * theme/roles.c is what answers.
+ * The theme's palette re-colours what the app draws; these are the colours the mod's
+ * own controls use. They are declared here because every mod that owns a paint slot
+ * needs them and has no other use for the theme layer; theme/roles.c implements them.
  *
- * Why they cannot just be the transform. Our fills go through juce::Graphics::setColour,
- * which is LowLevelGraphicsContext::setFill, which is the slot theme.c hooks -- so the
- * mod's UI was already being re-coloured, by a pass that knows nothing about it. That
- * pass cannot know:
+ * Our fills go through juce::Graphics::setColour, which is
+ * LowLevelGraphicsContext::setFill, the slot theme/theme.c hooks. That generic pass
+ * cannot know:
  *
- *   - that stem[0..2] must stay DISTINGUISHABLE FROM EACH OTHER. A duotone collapses
- *     hues toward one ramp, and the moment two stems converge the colour stops naming
- *     which stem it is -- in the wedge, on the caption, and on the bypass icon at once.
- *   - that the checker's two halves are one surface at a fixed ratio, not two colours
- *     that may drift apart.
+ *   - that stem[0..2] must stay distinguishable from each other. A duotone collapses
+ *     hues toward one ramp, and two converged stems can no longer be told apart in
+ *     the wedge, the caption or the bypass icon.
+ *   - that the checker's two halves are one surface at a fixed ratio.
  *   - that `exempt_blue` was tuned for the deck's selection rows, not for our accent.
  *
- * So a control asks for a ROLE and gets a colour that is already right for the theme in
- * force, and the generic pass is told to leave our pixels alone (mod_draw_enter). One
- * transform, in the place that knows what the colour is FOR.
+ * So a control asks for a role and gets a colour already resolved for the current
+ * theme, and the generic pass skips our pixels (mod_draw_enter).
  *
- * A theme that authors none of this gets every role derived by running ORIGINAL's
- * through its own palette -- so a new theme is coherent with the rest of the UI from
- * the moment it exists, and only has to author the roles where the generic transform
- * gets it wrong. Which, in practice, means the stems.
+ * A theme that authors no roles gets each one derived by running ORIGINAL's through
+ * its palette, and only needs to author the roles the generic transform gets wrong
+ * (in practice, the stems).
  */
 struct theme_ui {
     uint32_t surface;         /* unlit plate, wedge-off grey                   */
-    /* The unlit plate's OTHER checker half, and the reason it is a role rather than
-     * something the draw kit derives: the deck's plate is two authored greys (#323232 and
-     * #232323, 15 levels apart) and BOTH go through the duotone, which compresses them --
-     * on a strongly tinted theme the deck's pair closes to 11 levels while a fixed ratio
-     * keeps ours at 19, and our button reads as a coarser texture than the three beside
-     * it. Deriving this one from the palette instead reproduces the deck exactly.
+    /* The unlit plate's other checker half. A role, not derived by the draw kit: the
+     * deck's plate is two authored greys (#323232 and #232323, 15 levels apart) and
+     * both go through the duotone, which compresses them. On a strongly tinted theme
+     * the deck's pair closes to 11 levels while a fixed ratio keeps ours at 19, a
+     * visibly coarser texture. Deriving it from the palette matches the deck exactly.
      *
-     * Only the UNLIT plate needs it. Grey is all the duotone touches; the lit and refusing
-     * plates are chromatic, so they take the hue mapping, which holds lightness -- their
-     * derived partner already lands within a few levels of the deck's. */
+     * Only the unlit plate needs it: the duotone touches only grey. The lit and
+     * refusing plates are chromatic and take the hue mapping, which holds lightness,
+     * so their derived partner lands within a few levels of the deck's. */
     uint32_t surface2;
     uint32_t edge;            /* button border                                 */
     uint32_t accent;          /* lit plate                                     */
-    /* The lit plate's OTHER checker half, and a role for the same reason surface2 is:
-     * the deck's two quick-menu pairs sit at DIFFERENT ratios -- unlit #323232/#232323
-     * at 0.70, lit #007de1/#0064a5 at 0.73 -- so one derived partner cannot serve both.
-     * Deriving the lit half at the unlit ratio put ours at #005b9e against the deck's
-     * #0064a5 on the button beside it. */
+    /* The lit plate's other checker half. A role because the deck's two quick-menu
+     * pairs use different ratios (unlit #323232/#232323 at 0.70, lit #007de1/#0064a5
+     * at 0.73); the unlit ratio gives #005b9e instead of the deck's #0064a5. */
     uint32_t accent2;
-    /* A lit MODE plate, and deliberately not the accent: on this deck blue means "on,
-     * selected, working", which a mode that changes what a gesture DOES is not. The
-     * deck's own word for that is the yellow on the source badge -- the one chip on
-     * screen saying which world you are in rather than what is switched on -- and this
-     * is that colour, sampled off it. */
+    /* A lit mode plate (a mode changes what a gesture does). Not the accent, which
+     * on this deck means "on, selected, working". Sampled from the yellow source
+     * badge, which the deck uses to show the current mode. */
     uint32_t mode;
     uint32_t bypass;          /* the latched-override amber                    */
     /* The X-PAD's live value: its fill, its lit brick name, and its two state
-     * flags. A role of its own rather than the bypass amber it started on,
-     * because the pad is not the deck's colour language -- it is the RMX-1000's,
-     * and this is that unit's own red. It is the loudest mark the strip can make
-     * and it is meant to be. */
+     * flags. The RMX-1000's red, the loudest mark in the strip. */
     uint32_t xpad;
-    /* The X-PAD's two state flags when they are lit. Green, and NOT the accent:
-     * blue on this deck means "on, selected", which is what every other plate in
-     * the band already says, and HOLD and OVERDUB have to read as a different
-     * kind of statement -- something the DJ armed rather than something that is
-     * merely switched on. Under a palette it follows the one green a palette
-     * authors, which is the vocals stem's. */
+    /* The X-PAD's two state flags when lit. Green, not the accent: blue means "on,
+     * selected" on every other plate in the band, while HOLD and OVERDUB mean the DJ
+     * armed something. Under a palette it follows the palette's one green, the
+     * vocals stem's. */
     uint32_t xpad_on;
     uint32_t stem[3];         /* DRUMS / HARMONICS / VOCALS -- keep them apart */
     uint32_t text;
-    /* Lettering on a surface the DECK owns -- a quick-menu button in its band, a row in
-     * its settings list. The deck's own white through the palette, never the seed's ink:
-     * measured on the lit quick-menu button, ours #c9d1d9 against the deck's #c9f9ff on
-     * NEON and #4e5681 against #202540 on SANDSTONE, on the button beside it. `text` is
-     * still the right one for a panel of OURS, which is where a theme's ink belongs. */
+    /* Lettering on a surface the deck owns (a quick-menu button in its band, a row in
+     * its settings list): the deck's white through the palette, not the seed's ink.
+     * On the lit quick-menu button the ink gives #c9d1d9 where the deck shows #c9f9ff
+     * on NEON, and #4e5681 where it shows #202540 on SANDSTONE. Use `text` on our
+     * own panels. */
     uint32_t text_deck;
     uint32_t text_dim;
-    /* The VALUE column of a row in the deck's own settings list, which is a different
-     * grey from text_dim and has to be: the MOD SETTINGS rows sit inside DJ SETTING with
-     * the deck's own rows above and below them, so their secondary column is the deck's
-     * or ours read as a different weight of type. Measured: the list's value is #7d7d7d
-     * where text_dim -- the skin grey, off the Ver label -- is #afafaf, and every other
-     * user of text_dim is a control of OURS where the skin grey is the right one.
+    /* The value column of a row in the deck's settings list. The MOD SETTINGS rows
+     * sit inside DJ SETTING among the deck's own rows, so they must match its grey:
+     * #7d7d7d, against text_dim's #afafaf (the skin grey, from the Ver label), which
+     * is right for our own controls.
      *
-     * Derived from the deck's, never authored, for the same reason the plate is. */
+     * Derived from the deck's colour, never authored, like the plate. */
     uint32_t text_value;
     uint32_t text_off;        /* disabled lettering, greyed stems              */
     uint32_t text_on_accent;  /* near-black: white does not hold on a light fill */
-    /* Lettering on the ACCENT plate specifically. text_on_accent is not that, despite
-     * its name: every user puts it on one of the deck's BRIGHT chromatic fills (the
-     * BYPASS amber, the edit yellow, a stem colour), where the deck's own answer is
-     * near-black. The accent is the deck's blue, and on the deck's own selected row
-     * the lettering on it is white. The two fills have opposite polarity on ORIGINAL,
-     * so one role cannot serve both.
+    /* Lettering on the accent plate. Despite its name, text_on_accent is used on the
+     * deck's bright chromatic fills (the BYPASS amber, the edit yellow, a stem
+     * colour), where the deck uses near-black. The accent is the deck's blue, which
+     * the deck letters in white on its selected row. The two have opposite polarity
+     * on ORIGINAL, so they need separate roles.
      *
-     * Follows the fill's polarity, which is what the deck's own badges do under a
-     * theme: on WHITE the +-10 plate darkens and its black lettering turns white, so
-     * whichever of the theme's ink and ground is further from the accent is the one
-     * that goes on it. */
+     * Follows the fill's polarity, as the deck's badges do under a theme (on WHITE
+     * the +-10 plate darkens and its black lettering turns white): whichever of the
+     * theme's ink and ground is further from the accent is used. */
     uint32_t text_lit;
     uint32_t dead;            /* "nothing here yet", darker than disabled      */
     uint32_t icon_disabled;
@@ -186,71 +165,52 @@ struct theme_ui {
     uint32_t bar_on;          /* ...and lit                                    */
 };
 
-/* The roles for the theme in force. Never NULL. Cheap enough for a paint: the derived
- * set is built once per theme change and handed back by pointer after that. */
+/* The roles for the current theme. Never NULL. Cheap enough for a paint: the derived
+ * set is built once per theme change and returned by pointer after that. */
 const struct theme_ui *mod_ui(void);
 
-/* A counter that moves when the roles do.
+/* A counter that changes when the roles do.
  *
- * A colour we FILL with is read out of mod_ui() at paint time, so it follows the theme
- * on its own. A colour we STORE on a component does not: juce::Label keeps its lettering
- * colour and paints from that, so a label built under one theme goes on wearing its ink
- * under the next. Measured: the X-PAD button's word stayed SANDSTONE's near-black navy
- * after a switch to ORIGINAL, invisible on the dark plate, while the four buttons beside
- * it were white -- and its own PLATE followed the theme correctly, because that is a
- * fill.
- *
- * So anything holding a stored colour compares this against its own last value and puts
- * the colour back when it moves. [any] */
+ * A fill colour is read from mod_ui() at paint time and follows the theme. A colour
+ * stored on a component does not: juce::Label paints from its stored lettering colour
+ * (e.g. the X-PAD button's word stayed SANDSTONE's near-black navy after a switch to
+ * ORIGINAL, invisible on the dark plate). Anything holding a stored colour compares
+ * this against its last value and re-applies the colour when it changes. [any] */
 unsigned mod_ui_gen(void);
 
-/* THE SAME ROLES, UNTRANSFORMED -- ORIGINAL's own values.
+/* The same roles, untransformed: ORIGINAL's values.
  *
- * For a colour STORED on a component that JUCE paints rather than we do. The theme is a
- * hook on setFill, so every fill juce makes goes through the palette exactly once: a
- * stored value is therefore in ORIGINAL's space, the same as any literal we hand it, and
- * the hook resolves it on the way to the screen. Store a mod_ui() colour there instead
- * and the palette is applied TWICE.
+ * For a colour stored on a component that JUCE paints. Every juce fill goes through
+ * the setFill hook once, so a stored value must be in ORIGINAL's space; a mod_ui()
+ * colour there gets the palette applied twice. On a duotone that gives a slightly
+ * wrong shade; on an inversion two passes cancel (the stem row's progress caption
+ * stored as mod_ui()->text rendered #ffffff on its #ffffff plate under WHITE).
  *
- * That is invisible on a duotone -- two passes leave a colour the wrong shade of the
- * right thing -- and fatal on an inversion, where two passes are the identity. Measured:
- * the stem row's progress caption on WHITE, stored as mod_ui()->text, came back #ffffff
- * on the row's own #ffffff plate, 680 pixels of it with no antialiasing anywhere. The
- * plate was right because it was stored as a literal.
- *
- * A stored stock colour also needs no restamping when the theme moves: the hook does the
- * work at paint time. mod_ui() is still the right answer for a colour WE fill with, and
- * for one stored on a component whose paint is ours and brackets mod_draw_enter(). */
+ * A stored stock colour needs no re-applying when the theme changes. Use mod_ui() for
+ * colours we fill with, and for colours stored on a component whose paint is ours
+ * and brackets mod_draw_enter(). */
 const struct theme_ui *mod_ui_stock(void);
 
-/* ONE STOCK COLOUR, resolved the way the setFill hook would have resolved it.
+/* One stock colour, resolved as the setFill hook would resolve it.
  *
- * For a colour of ours that is a DECK VALUE rather than a role. The grid panel's
- * plates are the reference design's own greys, chosen to sit beside the deck's five
- * stock buttons in the same strip; those five are ARGB sprites and the theme maps
- * them per pixel, so the right answer for ours is the same transform on the same
- * greys. A role would answer a question nobody is asking here -- there is no hue to
- * hold apart, no checker ratio, no accent.
+ * For a colour that is a deck value rather than a role, e.g. the grid panel's plates,
+ * which use the reference design's greys beside the deck's five stock buttons. Those
+ * buttons are ARGB sprites the theme maps per pixel, so ours take the same transform.
  *
- * It has to be asked for, because mod_gfx_colour brackets internally: every colour
- * handed to the draw kit is declared already-resolved and never reaches the hook.
- * This is how a caller that WANTS the pass says so.
+ * Needed because mod_gfx_colour brackets internally, so draw-kit colours never reach
+ * the hook. Returns the input unchanged under ORIGINAL.
  *
- * Returns the input unchanged under ORIGINAL, which is the whole point -- a stock
- * value stays exactly stock, with no role to keep in step with the measurements.
- *
- * NOT a substitute for mod_ui(). Use a role wherever one exists: the three things
- * the transform cannot know are listed at the top of the roles section, and a colour
- * subject to any of them has to be authored rather than derived. [any] */
+ * Not a substitute for mod_ui(): use a role wherever one exists. A colour subject to
+ * any of the three limits listed at the top of the roles section must be authored,
+ * not derived. [any] */
 uint32_t mod_colour_stock(uint32_t argb);
 
 /* ================================================================== */
 /* Colour                                                             */
 /* ================================================================== */
 
-/* Both keep the alpha and move all three channels together, so the hue is exact and
- * only the value changes -- which is what makes a result read as the SAME colour in a
- * different light rather than as a different colour. Q8: 256 == 1.0, rounded. */
+/* Both keep the alpha and move all three channels together, so the hue is kept and
+ * only the value changes. Q8: 256 == 1.0, rounded. */
 uint32_t mod_colour_scale(uint32_t argb, uint32_t q8);   /* darker: c * q8            */
 uint32_t mod_colour_lift(uint32_t argb, uint32_t q8);    /* brighter: c + headroom*q8 */
 
@@ -258,129 +218,102 @@ uint32_t mod_colour_lift(uint32_t argb, uint32_t q8);    /* brighter: c + headro
 /* The button surface                                                 */
 /* ================================================================== */
 
-/* A sanity ceiling on any rect this kit is asked to fill. Component bounds are read out
- * of the app, so they are input; see mod_checker_pair for what an unchecked one costs. */
+/* Sanity cap on any rect this kit fills. Component bounds are read from the app, so
+ * they are untrusted input; see mod_checker_pair for the per-cell cost. */
 #define MOD_DRAW_MAX         2048
 
 #define MOD_CHECKER_CELL     4
-/* The checker's SECOND half, derived from the surface -- and both how far it moves and
- * WHICH WAY depend on the ground, which is why mod_draw_ground exists.
+/* The checker's second half, derived from the surface. Both the distance and the
+ * direction depend on the ground (set by mod_draw_ground).
  *
- * On stock's dark grey the two halves sit 15 levels apart and the second is the darker:
+ * On stock's dark grey the halves are 15 levels apart and the second is darker:
  * 179/256 reproduces that exactly (#323232 -> #232323).
  *
- * On a light ground it moves the OTHER WAY, and that is not a matter of taste -- it is
- * what the deck's own buttons do. The stock pair is #323232/#232323 with the surface role
- * taken from the lighter of the two, so a lightness inversion lands them at #cdcdcd and
- * #dcdcdc: the partner ends up ABOVE the surface. Deriving it downward instead put our
- * quick-menu plate at 205/191 against the deck's 220/205, which reads as our button
- * sitting a shade darker than the three next to it. A lift of 77/256 puts 205 at exactly
- * 220 -- the same 15 levels, on the correct side.
+ * On a light ground it goes the other way, as the deck's own buttons do: a lightness
+ * inversion of #323232/#232323 gives #cdcdcd/#dcdcdc, with the partner above the
+ * surface. A lift of 77/256 puts 205 at exactly 220, the same 15 levels (deriving
+ * downward gave 205/191 against the deck's 220/205).
  *
- * The magnitude has to be stated per ground for a second reason: a RATIO preserves
- * relative difference and the eye reads the absolute one, so reusing 179 on #cdcdcd gives
- * #8f8f8f and the plate stops being one surface. */
+ * The magnitude is set per ground because a ratio preserves relative difference while
+ * the eye reads the absolute one: 179 on #cdcdcd gives #8f8f8f. */
 #define MOD_CHECKER_ALT_Q8         179   /* dark ground:  scale DOWN, 15 levels */
 #define MOD_CHECKER_ALT_LIGHT_Q8    77   /* light ground: lift UP,    15 levels */
 
-/* Which way the ground goes. Set from the theme when the selection changes; the draw kit
- * stays independent of the theme layer and is simply told. */
+/* Whether the ground is light. Set by the theme layer when the selection changes, so
+ * the draw kit does not depend on it. */
 void mod_draw_ground(int light);
-/* "A finger is on it": the surface lifts toward white while the gesture is live.
+/* Pressed state: the surface lifts toward white while the gesture is live.
  *
- * MEASURED off a stock button held down, not chosen -- 59/256 solves both halves of the
- * grey pair (0x32->0x61, 0x23->0x55) to within a level, and the same fraction then
- * predicts the lit blue's two halves and both bar greys. Every one lands inside 1/255,
- * which is as close as an integer pipeline gets to whatever float the app uses. */
+ * 59/256 matches a held stock button: both halves of the grey pair (0x32->0x61,
+ * 0x23->0x55) to within a level, and also the lit blue's two halves and both bar
+ * greys, all within 1/255. */
 #define MOD_CHECKER_HOT_Q8   59
 
 /* Fill a rect with the deck's button surface. Phase is anchored to the rect's own
- * top-left, which is what makes it look native: a pattern phased to the screen would
- * land differently on every button and read as noise rather than as a surface.
+ * top-left, as on stock buttons.
  *
- * Cost is one fill per dark cell -- ~340 on a 114x90 quick-menu button, ~104 on a
- * 64x52 one, against 126 for the entire three-wedge fader row. Fine for anything that
- * repaints on user action rather than per frame. The stock route is a tiled 8x8
- * juce::Image through a FillType (one call, same pixels, and one cached recolour
- * instead of 340 under a theme); swapping to it is local to draw.c. */
+ * Cost is one fill per dark cell: ~340 on a 114x90 quick-menu button, ~104 on a
+ * 64x52 one, 126 for the whole three-wedge fader row. Fine for repaints on user
+ * action, not per frame. The stock route is a tiled 8x8 juce::Image through a
+ * FillType (one call, same pixels, one cached recolour under a theme); switching to
+ * it would only touch draw.cc. */
 void mod_checker_pair(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t dark);
 void mod_checker(void *g, int x, int y, int w, int h, uint32_t light);
 
 /* The same surface, lifted by q8 (0 = at rest, MOD_CHECKER_HOT_Q8 = touched).
  *
- * The ORDER is the whole point and it is not the obvious one: the dark half is derived
- * from the RESTING light colour and only then are BOTH halves lifted. Lifting the light
- * one first and deriving the dark from that is what a reading of "lighten the colour"
- * gets you, and it comes out visibly wrong -- it darkens relative to a plate that is now
- * brighter, so the stipple gains contrast exactly when it should be losing it. Measured
- * against a held stock button: the dark half should be #555555 and that route gives
- * #474747, fourteen levels out.
- *
- * Put another way, the lift is applied to the SURFACE, not to the colour the surface is
- * generated from. */
+ * The dark half is derived from the resting light colour, then both halves are
+ * lifted. Lifting first and deriving after gives too much contrast: against a held
+ * stock button the dark half should be #555555, that order gives #474747. */
 void mod_checker_lift(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t q8);
 
-/* The same, for a caller that HAS the other half rather than deriving one.
+/* The same, for a caller that has the other half instead of deriving it.
  *
- * A derived partner is a fixed distance from the surface, and the deck's is not: its two
- * greys both go through the theme's duotone, which compresses them, so on a strongly
- * tinted theme the deck's pair closes up while ours stays put and our plate reads as the
- * coarser texture. theme_ui::surface2 is that half taken from the palette instead; see
- * the note beside it. mod_checker_alt is the derivation, exposed for the states that have
- * no authored partner and do not need one (the lit and refusing plates are chromatic,
- * which the duotone does not touch). */
+ * A derived partner sits a fixed distance from the surface; the deck's does not,
+ * because the duotone compresses both its greys (see theme_ui::surface2).
+ * mod_checker_alt is the derivation, for states with no authored partner (the lit
+ * and refusing plates are chromatic, which the duotone does not touch). */
 void     mod_checker_lift2(void *g, int x, int y, int w, int h,
                            uint32_t base, uint32_t alt, uint32_t q8);
 uint32_t mod_checker_alt(uint32_t base);
 
-/* A plate, with the RIGHT partner for it: the measured one when the theme states it
- * (surface2 for an unlit plate, accent2 for a lit one) and the derivation otherwise.
- * What a quick-menu button should call, so a caller does not have to know which of its
- * plates has an authored second half. */
+/* A plate with its partner: the theme's (surface2 for an unlit plate, accent2 for a
+ * lit one) when defined, the derivation otherwise. Quick-menu buttons call this. */
 void     mod_checker_plate(void *g, int x, int y, int w, int h,
                            uint32_t base, uint32_t q8);
 
 /* ---- the refusal blink ----
  *
- * How a button in the title bar answers a press it will not honour: the PLATE flashes
- * theme_ui.refuse three times and the press does nothing. Shared, because it is one
- * gesture with one meaning -- "not now, and that is why nothing moved" -- and two
- * buttons giving it at two different speeds would read as two different messages.
+ * A title-bar button refusing a press flashes its plate theme_ui.refuse three times
+ * and does nothing. Shared so every button blinks at the same speed.
  *
- * Counted in DISPLAY TICKS, delivered by the app's own refresh timer, so any mod that
- * hooks that slot gets the same duration for the same number. The bar tracks the
- * button's real state throughout: a refusal is an answer to a press, not a state the
- * button is in.
+ * Counted in display ticks from the app's refresh timer, so any mod hooking that slot
+ * gets the same duration. The bar keeps showing the button's real state throughout.
  *
- * ONE INT CARRIES BUDGET AND PHASE. It counts down a tick at a time and the half-cycle
- * it lands in decides the colour, so there is no separate phase to fall out of step
- * with it. The press paints the first flash itself, which is why the count starts on a
- * loud half; zero is at rest, and the terminal tick is cold whatever the parity works
- * out to, because the resting colour has to be the one an ordinary repaint draws. */
+ * One int holds both the remaining budget and the phase: it counts down a tick at a
+ * time and its half-cycle picks the colour. The press paints the first flash, so the
+ * count starts on a lit half; zero is at rest, and the last tick is always the resting
+ * colour so it matches an ordinary repaint. */
 #define MOD_BLINK_PERIOD     12    /* ticks per half-cycle: about a quarter second */
 #define MOD_BLINK_FLASHES    3
 #define MOD_BLINK_TICKS      (MOD_BLINK_FLASHES * 2 * MOD_BLINK_PERIOD)
 
 /* ---- the title-bar button's bottom bar ----
  *
- * Measured: 56x3, flush with the button's bottom edge and centred across its 114px
- * width, over the stipple. It carries state like the plate does -- #7d7d7d while the
- * button is unlit, #afafaf while it is lit.
+ * 56x3, flush with the button's bottom edge and centred across its 114px
+ * width, over the stipple. #7d7d7d while the button is unlit, #afafaf while lit.
  *
- * A separate call rather than part of mod_checker, because it is not part of the
- * surface: it marks a TITLE-BAR button specifically. The panel pads below wear the
- * same stipple and no bar (an orange border instead), so a control that gets one is
- * saying which row it belongs to. */
+ * Separate from mod_checker because only title-bar buttons have it; the panel pads
+ * below use the same stipple with an orange border and no bar. */
 #define MOD_BTN_BAR_W        56
 #define MOD_BTN_BAR_H        3
 #define MOD_COL_BTN_BAR      0xff7d7d7du   /* unlit */
 #define MOD_COL_BTN_BAR_ON   0xffafafafu   /* lit -- the skin grey, as on the Ver label */
 
-/* Centred at the bottom of the given rect. Refuses a rect too small to hold it rather
- * than shrinking to fit: the bar is a fixed mark at a fixed size in the stock design,
- * and a scaled one would read as a progress indicator instead. */
+/* Centred at the bottom of the given rect. Draws nothing in a rect too small to hold
+ * it; the stock bar has a fixed size and a scaled one would look like a progress bar. */
 void mod_btn_bar(void *g, int x, int y, int w, int h, uint32_t col);
 
 

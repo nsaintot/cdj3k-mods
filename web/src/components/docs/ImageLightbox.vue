@@ -2,12 +2,12 @@
 /*
  * A screenshot at its own size.
  *
- * The corpus is 1280x720 captures shown at column width, so the detail a
- * caption points at -- a lit lamp, a dot in a corner -- is smaller on the page
- * than it was on the deck. Clicking one opens it here.
+ * The screenshots are 1280x720 captures shown at column width, so a detail a
+ * caption points at (a lit lamp, a dot in a corner) is smaller on the page
+ * than on the deck. Clicking one opens it here.
  *
- * <dialog> rather than a div: showModal() brings the focus trap, the inert
- * background and Escape with it, none of which is worth reimplementing.
+ * <dialog> rather than a div: showModal() provides the focus trap, the inert
+ * background and Escape.
  */
 import { nextTick, ref } from 'vue'
 
@@ -16,11 +16,10 @@ const src = ref('')
 const alt = ref('')
 
 /*
- * Opened on the next tick, for two reasons that share a cause: showModal()
- * called inside the click's own dispatch puts the dialog in the top layer while
- * that click is still propagating, and the browser then delivers it to the
- * dialog -- which closes it again immediately. Waiting also lets Vue flush, so
- * the figure exists before the dialog is shown rather than a frame after.
+ * Opened on the next tick. showModal() called inside the click's dispatch puts
+ * the dialog in the top layer while that click is still propagating, and the
+ * browser then delivers the click to the dialog, which closes it immediately.
+ * Waiting also lets Vue flush, so the figure exists before the dialog is shown.
  */
 async function open(imageSrc: string, imageAlt: string) {
   src.value = imageSrc
@@ -49,8 +48,7 @@ defineExpose({ open })
 
 <style scoped lang="scss">
 .lightbox {
-  /* The dialog is the whole viewport: a click anywhere closes, so the target is
-   * as large as the screen rather than a corner button to aim at. */
+  /* The dialog fills the viewport, and a click anywhere closes it. */
   width: 100%;
   max-width: 100%;
   height: 100%;

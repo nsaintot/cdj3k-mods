@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * menu/state.c - the state the overlay's files share. Declarations and their
- * documentation are in internal.h.
+ * menu/state.c - the state the overlay's files share, documented in internal.h.
  *
- * All message-thread state: JUCE calls every hook in menu/ from the thread that
- * owns the UI, so none of it is synchronised.
+ * All message-thread state: JUCE calls every hook in menu/ from the UI thread,
+ * so none of it is synchronised.
  */
 #include "menu/internal.h"
 
@@ -18,7 +17,7 @@ int       menu_g_list_rows = MOD_LIST_ROWS_STOCK;
 uintptr_t menu_g_model;       /* DJSettingTableModel, captured in paintCell */
 uintptr_t menu_g_view;        /* UTILITY view, captured from the hooks that get it */
 int       menu_g_bouncing;    /* re-entry guard for the title-row bounce */
-int       menu_g_rsel_guard;  /* set while WE drive the right pane, so its selection
+int       menu_g_rsel_guard;  /* set while we drive the right pane, so its selection
                                  * callback does not adopt a value we just wrote */
 int       menu_g_in_input;    /* set while the stock focus/rotary dispatch is running,
                                  * which is how a rotary tick is told from a touch tap */

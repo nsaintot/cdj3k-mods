@@ -3,9 +3,9 @@
  * cdj3k_mods.h - what a host shim links against.
  *
  * The mods install themselves from a constructor and register through the
- * `ep122_mods` linker section, so a host starts none of this. It only forwards
- * the file activity below, which the library watcher needs and only a syscall
- * interposer sees.
+ * `ep122_mods` linker section; the host starts none of this. The host only
+ * forwards the file activity below, which the library watcher needs and only a
+ * syscall interposer sees.
  */
 #ifndef CDJ3K_MODS_H
 #define CDJ3K_MODS_H

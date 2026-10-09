@@ -1,12 +1,12 @@
 /*
  * Colour tokens.
  *
- * Two layers, and the distinction is the whole point of the file:
+ * Two layers:
  *
- *   --p-*   PRIMITIVE. A colour, named after what it is. Never used by a
+ *   --p-*   Primitive. A colour, named after what it is. Never used by a
  *           component.
- *   --c-*   SEMANTIC. A role, named after what it is for. This is what
- *           components use.
+ *   --c-*   Semantic. A role, named after what it is for. Components use
+ *           these.
  *
  * A scheme swap re-points the semantic layer at different primitives; nothing
  * downstream changes. Only this file knows a hex code.
@@ -83,8 +83,8 @@
   color-scheme: dark;
 }
 
-/* Light. Applied by the media query, and overridable in both directions by the
- * data attribute the toggle writes -- so an explicit choice always wins. */
+/* Light. Applied by the media query and overridable in both directions by the
+ * data attribute the toggle writes, so an explicit choice always wins. */
 @mixin light-scheme {
   --c-bg: var(--p-ink-000);
   --c-surface: var(--p-white);

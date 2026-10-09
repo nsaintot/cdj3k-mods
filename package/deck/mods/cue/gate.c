@@ -2,62 +2,50 @@
 /*
  * cue/gate.c - GATE CUE: momentary / play-while-press hot cues.
  *
- * With the deck PAUSED:
+ * With the deck paused:
  *   - press a hot-cue pad   -> jump to that cue and PLAY while held (stock)
- *   - release the pad       -> return to the cue point and PAUSE (back-cue)
+ *   - release the pad       -> return to the cue point and pause (back-cue)
  *   - press PLAY while held -> LATCH; releasing then no longer back-cues
  *
- * With the deck PLAYING the pads are the deck's own: a press jumps and keeps
- * playing, the release does nothing, and PLAY is PLAY. Decided once per
- * session, on its first pad, from the deck's play state at that moment.
+ * With the deck playing, the pads behave as stock: a press jumps and keeps
+ * playing, the release does nothing, and PLAY is PLAY. The mode is decided once
+ * per session, on its first pad, from the deck's play state at that moment.
  *
- * Nothing here performs the back-cue: it asks the deck's own release for one by
- * naming an op, and the deck's release task does it. Everything in this file is
- * the decision of WHETHER, which is all a behaviour is.
+ * This file only decides whether to back-cue. It names the op and the deck's
+ * own release task performs it; issuing the op from here would run it twice
+ * and skip the deck's post-release teardown.
  *
- * WHY IT IS NOT DONE HERE. Issuing the operation alongside the deck's release
- * meant two invocations of it -- ours and, once the last pad pops, the deck's
- * own -- and the out-of-band one also skipped the teardown the deck does after.
- * Naming the op puts the whole gesture in one task.
- *
- * A SHORT PRESS STILL LOSES ITS BACK-CUE, and it is not decided here or anywhere
- * else in this layer. At release time the deck's state is identical either way
- * -- priority matched, one pad on the handler's stack -- so its release reaches
- * the cue operation and is told to return to the same hot cue for a 30 ms hold
- * as for a 400 ms one. The difference appears below that, where the press's own
- * jump-and-play is still settling. Measured: 400 ms returns three times out of
- * three, 200 ms none, shorter is a coin toss.
+ * Known issue: a short press can still lose its back-cue, and this layer cannot
+ * fix it. At release the deck's state is the same for a 30 ms hold as for a
+ * 400 ms one (priority matched, one pad on the handler's stack), and the release
+ * asks for the same return. The loss happens deeper, while the press's
+ * jump-and-play is still settling. A 400 ms hold returns reliably; at 200 ms
+ * and below the back-cue can be lost.
  */
 #include "cue/cue.h"
 #include "kit/menu.h"
 #include "kit/mod.h"
 
-int g_gate_on;                  /* persisted; see mods/common.c */
+int g_gate_on;                  /* persisted; see core/common.c */
 
-/* One momentary session: from the first pad down to the last pad up. Armed
- * when it began with the deck paused; a second pad joins whichever session is
- * running rather than deciding again. */
+/* One momentary session lasts from the first pad down to the last pad up. Armed
+ * when it began with the deck paused; a second pad joins the running session. */
 static int gate_g_armed;
 
 /* A PLAY press during the hold promoted it to continuous playback, so the
  * release must not back-cue. */
 static int gate_g_latched;
 
-/* Pads whose press did anything OTHER than go to a cue that was already there,
- * by pad index.
- *
- * A press on an empty pad puts a hot cue at the play head, and there is nothing
- * to come back from: the deck did not jump, so returning is a move the DJ never
- * asked for. Marking a cue and recalling one are different instructions and only
- * the second one gates. Kept per pad because several can be down at once. */
+/* Bit per pad index: the press set a new cue instead of recalling one. A press
+ * on an empty pad sets a hot cue at the play head without jumping, so it must
+ * not back-cue. Per pad because several can be down at once. */
 static unsigned gate_g_marked;
 
-/* Pads that HAD a cue when they went down, so the press's effect on it can be
- * seen. See gate_pad for why the deck's own answer is not enough. */
+/* Bit per pad index: the pad had a cue when it went down. See gate_release_op
+ * for why the deck's status is not enough. */
 static unsigned gate_g_had;
 
-/* Whether this pad's hot cue currently holds a position. Hot cues are kinds
- * 1..8 against a pad index of 0..7. */
+/* Whether this pad's hot cue holds a position. Kind is pad index + 1. */
 static int gate_pad_has_cue(const struct cue_event *ev)
 {
     int64_t at = 0;
@@ -69,15 +57,14 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
 {
     switch (phase) {
     case CUE_PAD_DOWN:
-        /* Cleared here rather than on the release, and regardless of the row's
-         * setting, so a pad never carries the last press's answer. */
+        /* Cleared on every press, whatever the row's setting, so a pad never
+         * carries over the previous press's state. */
         gate_g_marked &= ~(1u << ev->pad);
         if (gate_pad_has_cue(ev))
             gate_g_had |= 1u << ev->pad;
         else
             gate_g_had &= ~(1u << ev->pad);
-        /* First pad of a session decides it; a second pad joins the one
-         * already running rather than starting a new one. */
+        /* The first pad of a session decides it; later pads join it. */
         if (cue_pads_held() == 1) {
             int armed = g_gate_on && cue_deck_paused(ev);
 
@@ -91,8 +78,7 @@ static void gate_pad(const struct cue_event *ev, enum cue_phase phase)
         break;
 
     case CUE_PAD_PRESSED:
-        /* The deck's press run reports which it was, and this is the only phase
-         * where it is known. */
+        /* `assigned` is only known in this phase. */
         if (!ev->assigned)
             gate_g_marked |= 1u << ev->pad;
         break;
@@ -119,18 +105,13 @@ static int gate_release_op(const struct cue_event *ev)
         MDBG("gate: pad %d was marked, not recalled -> no back-cue\n", ev->pad);
         return 0;
     }
-    /* AND THE CUE HAS TO STILL BE THERE.
+    /* The cue must still exist. The press status says "pad was already set"
+     * both when the press recalled the cue and when a held CALL/DELETE erased
+     * it. A back-cue to an erased cue makes the deck set a new one at the play
+     * head, so deleting a hot cue would move it instead.
      *
-     * The deck's press status answers "was this pad already set", which it is
-     * both when the press RECALLED the cue and when a held CALL/DELETE made it
-     * ERASE the cue -- the same answer for opposite events. Asking for a
-     * back-cue to a cue that no longer exists made the deck plant a fresh one at
-     * the play head to have something to return to, so deleting a hot cue moved
-     * it to the needle instead of removing it.
-     *
-     * ASKED HERE rather than in the press, where it reads as still set: the
-     * erase lands on its own task, and the release is late enough to have seen
-     * it. A cue that did not survive the press is not one to go back to. */
+     * Checked at release, not press: the erase runs on its own task and has
+     * landed by release time, while at press the cue still reads as set. */
     if ((gate_g_had & (1u << ev->pad)) && !gate_pad_has_cue(ev)) {
         MDBG("gate: pad %d lost its cue -> no back-cue\n", ev->pad);
         return 0;
@@ -156,8 +137,8 @@ CUE_HANDLER(k_cue_gate,
             .pad = gate_pad, .play_while_held = gate_play_while_held,
             .release_op = gate_release_op);
 
-/* The hooks are always in and read g_gate_on on every event, so this toggles the
- * behaviour live. `changed` keeps the play-screen shortcut in step. */
+/* The hooks read g_gate_on on every event, so the row toggles the behaviour
+ * live. `changed` keeps the play-screen shortcut in sync. */
 static const struct kit_row k_rows[] = {
     KIT_ROW_BOOL("GATE CUE", &g_gate_on, .idx = KIT_IDX_GATE,
                  .changed = cue_shortcut_refresh),

@@ -4,11 +4,10 @@
  *
  * The shared contract is in xpad.h.
  *
- * The button and the strip are juce::Labels with a cloned vtable, the same
- * technique the stem row uses (see stem/ui/ui.h): a Label already paints a
- * background, an outline and centred text, which is the whole of a flat button,
- * and cloning its vtable into an array of ours lets one slot be replaced
- * without touching any stock Label.
+ * The button and the strip are juce::Labels with a cloned vtable, as in the stem
+ * row (see stem/ui/ui.h): a Label already paints a background, an outline and
+ * centred text, and cloning its vtable lets single slots be replaced without
+ * touching any stock Label.
  */
 #include "xpad/xpad.h"
 #include "kit/mod.h"
@@ -26,17 +25,17 @@ int       xpad_g_vol = 80;
 
 uintptr_t xpad_g_btn, xpad_g_strip, xpad_g_pad, xpad_g_pane;
 int       xpad_g_open;
-/* ENABLE X-PAD. OFF by default, so a deck that never opts in gets its band slot
- * and its track title back and behaves exactly as stock. The same shape as
- * ENABLE STEMS: a runtime toggle, re-asserted from sync rather than read once. */
+/* ENABLE X-PAD. Off by default, so a deck that never opts in keeps its band slot
+ * and track title and behaves as stock. Like ENABLE STEMS: a runtime toggle,
+ * re-applied from sync rather than read once. */
 int       xpad_g_on;
 
 static uintptr_t xpad_g_orig_anchor_paint, xpad_g_orig_tick;
 static uintptr_t xpad_g_btn_vt[VT_CLONE_WORDS], xpad_g_btn_vptr;
 /* A finger is on the band button. See xpad_btn_mousedown. */
 static int xpad_g_btn_held;
-/* A press the button would not honour, counting itself out. See MOD_BLINK_* in
- * ../draw.h for what the number means; zero is at rest. */
+/* Countdown of a refused press's blink; zero is at rest. See MOD_BLINK_* in
+ * juce/draw.h. */
 static int xpad_g_refuse;
 static int       xpad_g_built, xpad_g_building, xpad_g_api_ok;
 static int       xpad_g_dirty;
@@ -44,18 +43,16 @@ unsigned  xpad_g_ticks;
 
 /* ---- the band client ----------------------------------------------------- */
 
-/* Ours alone, and past both the app's four and the stem row's 5. The kit reads
- * this back out of the app's mode register to tell "still ours" from "taken",
- * so two clients sharing a number would be two clients it cannot tell apart. */
+/* Unique, past the app's four modes and the stem row's 5. The kit reads it back
+ * from the app's mode register to tell "still ours" from "taken", so no two
+ * clients may share a number. */
 #define XPAD_BAND_MODE 6
 
-/* CLOSING IS WHAT STOPS THE FEATURE, whichever way it closes. Every voice goes
- * quiet, the gesture is dropped, the bar is freed, and the three borrowed
- * controls are back to being MEMORY, CALL/DELETE and the brake -- they read
- * xpad_open() on every gesture, so there is nothing to unwind for them.
+/* Closing, by any route, stops the feature: voices silenced, gesture dropped,
+ * bar freed. The three borrowed controls revert to MEMORY, CALL/DELETE and the
+ * brake on their own, since they check xpad_open() on every gesture.
  *
- * HOLD goes with it: it is a property of a gesture that no longer exists, and a
- * latch surviving a close would take hold of the next thing the DJ touched. */
+ * HOLD is cleared too, so a latch cannot carry over to the next open. */
 static void xpad_stop(void)
 {
     xpad_silence();
@@ -92,28 +89,20 @@ int xpad_open(void) { return xpad_g_open; }
 
 /* ---- the button ---------------------------------------------------------- */
 
-/* The deck's own title-bar dress, which is what STEMS wears and what the three
- * stock buttons beside it wear: a stippled surface and a short bar flush with the
- * bottom edge.
+/* The deck's title-bar style, as on STEMS and the stock buttons beside it: a
+ * stippled surface and a short bar flush with the bottom edge.
  *
- * BOTH GO DOWN BEFORE Label::paint. Label draws its background and its lettering
- * in one call, so a stipple laid afterwards falls across the word -- which is why
- * the Label's own background colour stays transparent and the plate is painted
- * here instead.
+ * Both are painted before Label::paint, which draws background and lettering
+ * in one call; a stipple drawn afterwards would cover the word. So the Label's
+ * own background stays transparent and the plate is painted here.
  *
- * The plate carries the state and the lettering does not: open is the surface
- * going accent, exactly as it is on STEMS. A word that changed colour as well
- * would be saying the same thing twice and reading differently from its
- * neighbours. */
-/* THE PLATE FOLLOWS THE THEME AND THE LETTERING HAS TO BE PUT BACK.
- *
- * Everything filled below is read out of mod_ui() on the spot, so it is right whatever
- * the theme is. A juce::Label's ink is not: it is STORED on the component when the
- * button is built and painted from there for ever after. Built under one theme and
- * looked at under another, the word kept the first theme's colour -- measured, X-PAD
- * still wearing SANDSTONE's near-black navy on ORIGINAL's dark plate, invisible, with
- * the four deck buttons beside it white and its own plate correctly dark. The stems
- * button never showed it because its own refresh already puts its ink back. */
+ * The plate carries the state, not the lettering: open turns the surface to
+ * the accent colour, as on STEMS. */
+/* The plate reads mod_ui() on every paint, so it follows the theme. A
+ * juce::Label's text colour is stored on the component at build time, so it
+ * must be re-applied when the theme changes; otherwise the word keeps the old
+ * theme's colour (e.g. SANDSTONE's near-black navy on ORIGINAL's dark plate,
+ * invisible). The stems button re-applies its own in its refresh. */
 static void xpad_ink_sync(const struct theme_ui *ui)
 {
     static unsigned seen;
@@ -128,16 +117,15 @@ static void xpad_ink_sync(const struct theme_ui *ui)
         juce_comp_colour(xpad_g_strip, LBL_COL_TEXT, ui->text);
 }
 
-/* The loud half of a refusal. Derived from the budget rather than stored, so the paint
- * cannot be looking at a phase the tick has already moved past. */
+/* The bright half of a refusal blink. Derived from the countdown rather than
+ * stored, so the paint always sees the current phase. */
 static int xpad_refuse_hot(void)
 {
     return xpad_g_refuse && !((xpad_g_refuse / MOD_BLINK_PERIOD) & 1);
 }
 
-/* One tick of it. Repainted only when the half turns over: the button is not otherwise
- * invalidated while the panel is shut, and an every-tick repaint is a shimmer rather
- * than a blink. */
+/* One tick of the countdown. Repaints only when the half changes; nothing else
+ * invalidates the button while the panel is shut. */
 static void xpad_refuse_step(void)
 {
     if (!xpad_g_refuse)
@@ -160,13 +148,13 @@ static void xpad_btn_paint(void *self, void *g)
                           xpad_refuse_hot() ? ui->refuse
                           : xpad_g_open     ? ui->accent
                                             : ui->surface, lift);
-        /* The bar lifts with the plate -- one colour, so directly rather than through
-         * the surface call, exactly as the stems button does it. */
+        /* The bar lifts with the plate; it is one colour, so lifted directly,
+         * as on the stems button. */
         mod_btn_bar(g, 0, 0, b[2], b[3],
                     mod_colour_lift(xpad_g_open ? ui->bar_on : ui->bar, lift));
     }
-    /* Bracketed: Label draws its lettering from a colour we set on it, already resolved
-     * through the theme, so the generic pass must not transform it again. */
+    /* Bracketed: the Label's text colour is already themed, so the generic pass
+     * must not transform it again. */
     mod_draw_enter();
     ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
     mod_draw_leave();
@@ -179,9 +167,8 @@ void xpad_sync(void)
 
     if (state == last) return;
     last = state;
-    /* THE GATE GOING OFF CLOSES THE PANEL, and closes it properly: hiding the
-     * strip alone would leave the waveform compacted around nothing and the band
-     * held by a client that is no longer on screen. */
+    /* Disabling closes the panel fully: hiding only the strip would leave the
+     * waveform compacted and the band held by an invisible client. */
     if (!xpad_g_on && xpad_g_open) {
         xpad_g_open = 0;
         xpad_stop();
@@ -196,24 +183,22 @@ void xpad_sync(void)
 void xpad_toggle(void)
 {
     if (!xpad_g_open) {
-        /* NOTHING TO OPEN INTO. A sampler with no samples is eight dead pads and a
-         * strip that plays nothing, so the press is ANSWERED rather than obeyed: the
-         * plate flashes and the panel stays shut. The finger gets the first flash in
-         * the frame it pressed, because mousedown repaints after this returns.
+        /* No samples: the plate blinks and the panel stays shut. The first
+         * flash shows immediately, because mousedown repaints after this
+         * returns.
          *
-         * Only OPENING is gated. A panel already up must always close, whatever became
-         * of the stick while it was open -- trapping the DJ under a strip they can see
-         * is worse than any warning.
+         * Only opening is gated; an open panel must always be able to close,
+         * whatever happened to the stick.
          *
-         * This is also what makes the pad claim below honest: with the open gated on
-         * having banks, an open panel always has at least one live pad. */
+         * deck.c's pad claim relies on this: an open panel always has at least
+         * one live pad. */
         if (xpad_bank_count() == 0) {
             xpad_g_refuse = MOD_BLINK_TICKS;
             MDBG("xpad: no loops in %s -> refusing to open, blinking\n", XP_LOOP_DIR);
             return;
         }
-        /* THE BAND FIRST, AND ONLY OPEN IF IT COMES. The app refuses the mode
-         * outright with no track loaded, and a strip drawn into a rect it never
+        /* Take the band first and open only if that succeeds. The app refuses
+         * the mode with no track loaded, and a strip drawn into a rect it never
          * laid out lands across the middle of the screen. */
         if (kit_band_take(&k_band_xpad) < 0) {
             MDBG("xpad: no band to open into (no track loaded?)\n");
@@ -230,21 +215,18 @@ void xpad_toggle(void)
          xpad_bank_count(), xpad_bank_count() == 1 ? "" : "s");
 }
 
-/* A FINGER ON IT LIFTS THE PLATE, which every other button in this band does and this
- * one did not: measured against the deck's held button, ours stayed at its resting
- * colour while BEAT LOOP went #323232 -> #616161. The toggle happens on the way DOWN, so
- * the lift rides on top of whichever plate that left -- the press reads as a press
- * whether the panel just opened or just closed. MOD_CHECKER_HOT_Q8 is the deck's own
- * fraction, measured off a stock button held down. */
+/* A held finger lifts the plate, like the other buttons in this band (BEAT LOOP
+ * goes #323232 -> #616161 when held). The toggle happens on press, so the lift
+ * applies to whichever plate state results. MOD_CHECKER_HOT_Q8 is the stock
+ * buttons' own held fraction. */
 static void xpad_btn_mousedown(void *self, void *event)
 {
     (void)event;
     if ((uintptr_t)self != xpad_g_btn) return;
     xpad_g_btn_held = 1;
     xpad_toggle();
-    /* THE PRESS IS THE BUTTON'S OWN STATE, so it paints whether or not the
-     * toggle took. A press the band refuses moves no panel state, so the
-     * repaint xpad_sync does when that state moves would never come. */
+    /* Repaint regardless of the toggle: a refused press changes no panel
+     * state, so xpad_sync would not repaint. */
     juce_comp_repaint(xpad_g_btn);
 }
 
@@ -278,9 +260,8 @@ static void xpad_build(uintptr_t anchor)
     }
     xpad_g_building = 1;
     panel = kit_band_rect();
-    /* The same three pixels the stem row takes: the band above the panel rect is
-     * not empty -- the loop indicator draws in it -- so this is what was measured
-     * to be free rather than the ten PANEL_GAP would suggest. */
+    /* The same three pixels the stem row takes. The loop indicator draws above
+     * the panel rect, so only 3px are free, not the 10 PANEL_GAP suggests. */
     y = panel[1] - 3;
     h = panel[3] + 3;
 
@@ -289,8 +270,8 @@ static void xpad_build(uintptr_t anchor)
                                 mod_ui()->text_deck, xpad_g_btn_vptr,
                                 kit_band_slot_x(&k_band_xpad), KIT_BAND_SLOT_Y,
                                 KIT_BAND_SLOT_W, KIT_BAND_SLOT_H);
-        /* Label ends its paint with a one-pixel drawRect and that is its whole
-         * outline. The stock buttons have none, so neither does this. */
+        /* No outline (Label's one-pixel drawRect), matching the stock
+         * buttons. */
         juce_comp_colour(xpad_g_btn, LBL_COL_OUTLINE, 0x00000000u);
         kit_band_own(xpad_g_btn);
     }
@@ -321,10 +302,9 @@ static void xpad_build(uintptr_t anchor)
 
 /* ---- the clocks ---------------------------------------------------------- */
 
-/* The title bar draws whenever the loaded track or its labels change, which is
- * what makes paint the trigger: it needs no user action and the parent chain is
- * already wired by the time anything is drawn. Chained -- the stem row hooks the
- * same slot. */
+/* The title bar paints whenever the loaded track or its labels change, so its
+ * paint triggers the build with no user action, after the parent chain is
+ * wired. Chained: the stem row hooks the same slot. */
 static void xpad_anchor_paint(void *self, void *g)
 {
     if (xpad_g_orig_anchor_paint)
@@ -343,20 +323,16 @@ static void xpad_tick(void *self)
         ((void (*)(void *))xpad_g_orig_tick)(self);
     xpad_g_ticks++;
     if (!xpad_g_built) return;
-    /* Ahead of the open gate, because a refusal is by definition a panel that did not
-     * open -- behind it, the flash would never be drawn. */
+    /* Before the open check: a refusal happens with the panel shut. */
     xpad_refuse_step();
     if (!xpad_g_open) return;
 
-    /* HOLD GOING OFF DROPS WHAT IT WAS HOLDING. Reconciled here rather than in
-     * the MEMORY handler because this thread owns xpad_g_touch and that one runs
-     * on the deck's task thread -- and because it catches every route that puts
-     * HOLD down, not just the button.
+    /* HOLD going off drops the latched gesture. Done here, not in the MEMORY
+     * handler, because this thread owns xpad_g_touch (MEMORY runs on the deck's
+     * task thread), and this catches every route that clears HOLD.
      *
-     * The values have to GO, not merely stop acting: left in place, pressing
-     * MEMORY again with no finger on the strip would bring the old brick back to
-     * life, and HOLD means "keep the gesture I am making", not "restore the last
-     * one I made". */
+     * The values must be cleared, not just made inert: otherwise pressing
+     * MEMORY again with no finger down would restore the old brick. */
     if (!xpad_g_hold && !xpad_g_touch.held &&
         xpad_g_touch.div != XP_DIV_NONE) {
         xpad_g_touch.div     = XP_DIV_NONE;
@@ -365,21 +341,20 @@ static void xpad_tick(void *self)
         juce_comp_repaint(xpad_g_pad);
         juce_comp_repaint(xpad_g_pane);
     }
-    /* The active brick's name blinks, and nothing else in the app invalidates
-     * this strip while a finger rests on it. */
+    /* The active brick's name blinks, and nothing else invalidates the strip
+     * while a finger rests on it. */
     if (xpad_gesture_live())
         juce_comp_repaint(xpad_g_pad);
-    /* The readout, when one of the three borrowed controls moved it. Taken here
-     * rather than repainted there: those run on the deck's task thread. */
+    /* The readout, when a borrowed control changed it. Repainted here because
+     * those controls run on the deck's task thread. */
     if (__atomic_exchange_n(&xpad_g_dirty, 0, __ATOMIC_ACQUIRE)) {
         juce_comp_repaint(xpad_g_pane);
-        /* The pad as well: MEMORY releasing the latch changes what the STRIP
-         * shows, not just the readout. */
+        /* The pad too: MEMORY releasing the latch changes the strip. */
         juce_comp_repaint(xpad_g_pad);
     }
 
-    /* What the mix did with the last second, printed from here because the mix
-     * itself may not log. Silent when nothing sounded. */
+    /* The mix's stats for the last second, logged here because the mix may not
+     * log. Silent when nothing happened. */
     if ((xpad_g_ticks % XPAD_STAT_TICKS) == 0) {
         struct xpad_mix_stat st;
 

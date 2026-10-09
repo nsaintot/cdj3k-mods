@@ -3,13 +3,11 @@
  * juce.hh - juce objects with a scope.
  *
  * juce::String, juce::Font and juce::StringArray are built by EP122's own
- * constructor and must be destroyed by its own destructor. Written out, that is
- * a buffer, a ctor call and a dtor call per object, and an early return between
- * the first and the last leaks into the app's heap.
+ * constructor and must be destroyed by its own destructor. Done by hand, an
+ * early return between the two leaks into the app's heap.
  *
- * These hold the storage and make the pair a scope. The object is still
- * EP122's: nothing here knows the layout, only the size and the two entry
- * points.
+ * These classes hold the storage and tie the ctor/dtor pair to a scope. They
+ * know only the object's size and the two entry points, not its layout.
  *
  *     juce::Font  f(14.0f);
  *     juce::String s("BROWSE");
@@ -40,7 +38,7 @@ public:
         ep_call(void(void *, const char *))::at(FN_STR_CTOR, buf_, ascii);
     }
 
-    /* Anything above U+007F takes the other door. See juce_string_utf8. */
+    /* For text above U+007F. See juce_string_utf8. */
     String(const char *text, FromUtf8) { juce_string_utf8(buf_, text); }
 
     ~String() { ep_call(void(void *))::at(FN_STR_DTOR, buf_); }
@@ -55,9 +53,9 @@ private:
     alignas(16) uint8_t buf_[16];
 };
 
-/* The deck's own font at a given height. Built rather than constructed: the
- * app returns it indirectly, which a 32-byte aggregate reproduces -- AAPCS64
- * returns anything above 16 bytes through x8. */
+/* The deck's own font at a given height. FN_FONT_BUILD returns it
+ * indirectly; a 32-byte aggregate reproduces that, since AAPCS64 returns
+ * anything above 16 bytes through x8. */
 class Font {
 public:
     explicit Font(float height)
@@ -79,8 +77,8 @@ private:
     storage store_;
 };
 
-/* juce::StringArray. add() MOVES the string in, so the String handed to it is
- * left empty and still needs its own destruction -- which its scope does. */
+/* juce::StringArray. add() moves the string in; the String passed to it is
+ * left empty and is still destroyed by its own scope. */
 class StringArray {
 public:
     StringArray() { ep_call(void(void *))::at(FN_STRARR_CTOR, buf_); }

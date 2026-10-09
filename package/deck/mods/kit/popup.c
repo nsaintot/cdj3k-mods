@@ -1,30 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * kit/popup.c - the deck's own gui::MessagePopupWidget, constructed the way the
- * deck constructs it. Tap-to-dismiss comes with it.
+ * kit/popup.c - the deck's own gui::MessagePopupWidget, with tap-to-dismiss.
  *
- * Built the way the browse-caution path builds one (sub_138a260 / sub_138a5d0):
- * allocate 0x360, run the ctor with PopupType 0 (NoTitle), push the message in as a
+ * Built the way the browse-caution path builds one:
+ * allocate 0x360, run the ctor with PopupType 0 (NoTitle), pass the message as a
  * juce::StringArray, then addAndMakeVisible it. The ctor sizes itself to the whole
  * screen (setBounds 0,0,0x500,0x2d0) and setMessage lays the frame out around the
  * line count, so there is no geometry to compute here.
  *
- * The app also keeps ONE popup in the global meow::ObjectMap, reachable via
- * MappedObjPtr::link() (sub_13dc158) -- but every one of that function's callers is
- * a browse view, and the instance is parented to one, so it would draw nowhere while
- * another screen is up. Hence our own instance, parented to whatever registers
- * itself.
+ * The app also keeps one popup in the global meow::ObjectMap, reachable via
+ * MappedObjPtr::link(), but it is parented to a browse view and draws
+ * nowhere while another screen is up. Hence our own instance, parented to whatever
+ * registers itself.
  */
 #include "kit/popup.h"
 #include "juce/juce.h"
 
 #define FN_POPUP_CTOR        ep122_sym(EP122_POPUP_CTOR)  /* MessagePopupWidget(PopupType, const juce::Identifier&) */
 #define FN_POPUP_SETMSG      ep122_sym(EP122_POPUP_SETMESSAGE)  /* setMessage(const juce::StringArray&) */
-/* addListener(IListener*) -- scans, then appends. MessagePopupWidget::mouseDown
- * (sub_1572238, its own vtable+0x28) walks the listener array at +0x310 (count at
- * +0x320) and calls each listener's vtable SLOT 0, so a tap needs a listener
- * registered here and nothing else: the shared MessagePopupWidget vtable is never
- * patched and stock popups are untouched. */
+/* addListener(IListener*): scans, then appends. MessagePopupWidget::mouseDown
+ * (its own vtable+0x28) walks the listener array at +0x310 (count at +0x320) and calls each listener's vtable slot 0, so a registered listener is
+ * enough for tap handling; the shared vtable and stock popups are untouched. */
 #define FN_POPUP_ADDLISTENER ep122_sym(EP122_POPUP_ADDLISTENER)
 #define FN_IDENT_CTOR        ep122_sym(EP122_JUCE_IDENTIFIER_CTOR)  /* juce::Identifier::Identifier(const char*) */
 
@@ -54,15 +50,13 @@ static int popup_api_ok(void)
            FN_STR_CTOR && FN_STR_DTOR;
 }
 
-/* The tap listener the popup calls on mouseDown. It only ever receives itself, and
- * the popup is the only thing that holds it, so it carries no state -- a bare vtable
- * with slot 0 filled in is a complete IListener as far as sub_1572238 is concerned.
- * `g_listener` IS the object: its first (only) word is the vtable pointer, which is
- * exactly what `(**listener)(listener)` dereferences.
+/* The tap listener the popup calls on mouseDown. It carries no state: a bare vtable
+ * with slot 0 filled in is a complete IListener for MessagePopupWidget::mouseDown.
+ * `g_listener` is the object; its only word is the vtable pointer that
+ * `(**listener)(listener)` dereferences.
  *
- * Registering it is the whole job. The popup covers the screen and takes clicks, and
- * its message lines are plain non-editable juce::Labels, which do not intercept, so a
- * tap reaches mouseDown from anywhere on it. */
+ * The popup covers the screen and its message lines are non-editable juce::Labels,
+ * which do not intercept clicks, so a tap anywhere reaches mouseDown. */
 static void popup_tapped(void *self)
 {
     (void)self;
@@ -74,9 +68,8 @@ static const void *g_listener = k_listener_vt;
 
 /* Build the popup on first use. It cannot be built at install time: the ctor pulls
  * the popup skin and links the font manager, neither of which exists that early.
- * Kept for the process lifetime once built -- re-showing is a single
- * addAndMakeVisible, and never freeing it means the parent can never hold a dangling
- * child pointer. */
+ * Kept for the process lifetime, so re-showing is a single addAndMakeVisible and the
+ * parent never holds a dangling child pointer. */
 static uintptr_t popup_get(void)
 {
     static uint8_t ident[8] __attribute__((aligned(8)));   /* juce::Identifier: one interned String */
@@ -92,8 +85,7 @@ static uintptr_t popup_get(void)
     }
 
     if (!ident_built) {
-        /* Interned for good, exactly like the guarded static the stock call sites
-         * share; the component copies it, but never outliving it costs nothing. */
+        /* Interned for good, like the guarded static the stock call sites share. */
         ((ident_ctor_t)FN_IDENT_CTOR)(ident, "MessagePopupWidget");
         ident_built = 1;
     }
@@ -102,9 +94,8 @@ static uintptr_t popup_get(void)
     memset(p, 0, POPUP_ALLOC_SIZE);
     ((popup_ctor_t)FN_POPUP_CTOR)(p, POPUP_TYPE_NOTITLE, ident);
 
-    /* Post-condition: the PopupType has to have landed where setMessage looks for it,
-     * because setMessage dispatches on that field -- a wrong ctor address would
-     * otherwise send the message to a layout that was never built. */
+    /* Post-condition: setMessage dispatches on the PopupType field, so a wrong ctor
+     * address would send the message to a layout that was never built. */
     if (mod_safe_read((uintptr_t)p + POPUP_TYPE_OFF, &type, sizeof(type)) != 0 ||
         type != POPUP_TYPE_NOTITLE) {
         MDBG("popup: ctor left type=%u at +%#x -> disabled\n", type, POPUP_TYPE_OFF);
@@ -148,12 +139,11 @@ int kit_popup_is_up(void)
     return g_up;
 }
 
-/* The popup is modal by construction -- it covers the screen and intercepts clicks,
- * so nothing behind it can be touched while it is up. Two ways out, and it needs
- * both:
- *   - a tap, which the popup already handles itself (see the listener above);
- *   - hardware input, which never passes through JUCE hit-testing, so the mod owning
- *     that dispatch has to call this from it. */
+/* The popup is modal: it covers the screen and intercepts clicks. It is dismissed
+ * two ways:
+ *   - a tap, handled by the listener above;
+ *   - hardware input, which bypasses JUCE hit-testing, so the mod owning that
+ *     dispatch must call this. */
 void kit_popup_dismiss(void)
 {
     if (!g_up) return;

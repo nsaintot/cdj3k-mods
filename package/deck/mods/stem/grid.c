@@ -2,14 +2,14 @@
 /*
  * stem/grid.c - the loaded track's beat grid, reduced to samples per beat.
  *
- * The groove circuit needs one number about the track: how long a beat is. With
- * it, a loop the DJ recorded at 124 BPM plays in time under a 126 BPM track;
- * without it, the loop runs at its own tempo and drifts within a bar.
+ * With the beat length, a loop recorded at 124 BPM plays in time under a 126 BPM
+ * track; without it, the loop runs at its own tempo and drifts within a bar.
  *
- * WHERE IT COMES FROM. A cue slot embeds a pcmbuf::PositionWithSourceInfo, and
- * that last field is the page source the position belongs to. The deck's own cue
- * quantiser walks it to reach the grid (sub_10dfac8, called from setAt), and
- * this walks the same chain:
+ * Sources. The deck's own beat-grid reply is preferred (see stem_grid_take).
+ * The fallback is a cue slot, which embeds a pcmbuf::PositionWithSourceInfo
+ * whose last field is the page source the position belongs to. The deck's cue
+ * quantiser walks it to reach the grid (from setAt), and this walks the same
+ * chain:
  *
  *     pwsi + 0x28    ->  source     the page source, a meow::RefCountedObjEx
  *     source + 0x68  ->  holder     the grid as this source publishes it
@@ -20,30 +20,23 @@
  *                        beat's BPM as a DOUBLE (see BEAT_STRIDE)
  *     content + 0x30 ->  how many
  *
- * A CUE, RATHER THAN THE BLOCK BEING READ. The audio thread has a position on
- * every block, but read() takes a RANGE -- two bare pcmbuf::Position, `from` and
- * an unbounded `to` -- and a bare Position carries a source ID, not the source.
- * The cue table is where the deck keeps the longer form, and it is already on the
- * path a pad press walks.
+ * The audio thread's block position cannot be used: read() takes a range of two
+ * bare pcmbuf::Position, which carry a source ID, not the source. The cue table
+ * keeps the longer form and is already on a pad press's path.
  *
- * ONE NUMBER, NOT THE GRID. The first and last beats and the count give the
- * average beat length, which for a fixed-tempo track is exactly its beat length
- * and for a drifting one is the honest average of it. Carrying the whole array
- * would let a loop follow a tempo change, and would also mean copying it,
- * versioning it against the track, and searching it on the audio thread -- for
- * material that is overwhelmingly fixed-tempo. The average is what the deck's
- * own BPM display is derived from, so a DJ can check this against the screen.
+ * The first and last beats and the count give the average beat length, exact
+ * for a fixed tempo. For a tempo that moves, the whole beat array is also
+ * copied and published (see GRID_BEATS_MAX in grid_internal.h).
  *
- * NOTHING HERE IS TRUSTED. The pointers are the app's, several links deep, and
- * read while it is playing; every step goes through mod_safe_read, both objects
- * are checked against the tag the app writes into them, and the result is
- * refused unless the rate is one the engine uses, the beats are ordered, and the
- * tempo lands in a range a track could actually have. A refused grid means loops
- * play at their own tempo, which is the behaviour without this file at all.
+ * Nothing read here is trusted. The pointers are the app's, several links deep,
+ * read while it plays: every step goes through mod_safe_read, objects are
+ * checked against the tag the app writes into them, and the result is refused
+ * unless the rate is positive, the beats are ordered and the tempo is in
+ * range. A refused grid means loops play at their own tempo.
  *
- * Threading. [deck] reads it as a pad is pressed, which is the only moment a cue
- * slot is reachable and the only moment the answer is wanted. [audio] loads one
- * double.
+ * Threading. [message] receives replies and arms from the tick; [deck] reads
+ * cue slots when a pad is pressed. [audio] loads one double and the beat
+ * array.
  */
 #include "stem/grid_internal.h"
 #include "cue/cue.h"
@@ -59,54 +52,26 @@
 
 
 /* Pool-rate samples per beat, as IEEE bits so the load is one aligned integer.
- * 0 means unknown, which is also 0.0 as a double. [deck] writes, [audio] reads. */
+ * 0 means unknown (also 0.0 as a double). [deck] writes, [audio] reads. */
 static int64_t grid_g_spb_bits;
 
-/* Where the grid's first downbeat sits on the pool timeline. Read by [deck] as a
- * slot is armed and never by the mix, which sees it only as the engage position
- * gc publishes. */
+/* The grid's first downbeat on the pool timeline. Read by [deck] when a slot is
+ * armed; the mix sees it only as the engage position gc publishes. */
 static int64_t grid_g_beat0;
 
-/* The last grid the deck was told about, in the grid's own units. [message]
- * writes as a reply lands, [deck] reads it as a slot is armed.
- *
- * THE LAST ONE IS THE LOADED ONE. Measured: across four track loads the reply
- * count rose by exactly one each time, and every one of those included selecting
- * a row in the browser first -- selecting a track and scrolling a list produce no
- * reply at all. Only loading does, which is what makes "the last one" a safe
- * answer rather than a guess. (The one case not measured is auditioning with
- * PREVIEW; if that turns out to request a grid, this wants the TrackID match --
- * the id arrives with the reply and only has to be compared, never parsed.)
- *
- * Used ONLY when no cue slot answers. A cue names the loaded track's own source,
- * so it cannot be another track's; this can only be checked by argument. */
-/* WHICH TRACK THAT GRID IS FOR, as the reply named it.
- *
- * THE TRACKID IS THE POOL SOURCEID. Measured: the id the audio thread reports
- * for the playing track is 1010200000001:b, and the TrackID bytes arriving with
- * that track's grid are 01000000 02010100 0b000000 00000000 -- the same pair of
- * little-endian words. So the answer to "is this grid the one being played" is a
- * comparison of two numbers we already have, with nothing to parse and nothing to
- * infer from timing.
- *
- * That matters because neither source is self-describing otherwise: a cue slot
- * keeps a source from the track before, and a reply is only re-sent when the deck
- * actually re-reads a grid. Matched, a stale reply is simply not used. */
-/* The loaded track's grid holder, remembered wherever one is walked so an edit
- * does not need a cue slot in hand. Defined here because grid_read sets it and
- * the edit code at the bottom of the file consumes it. [deck] */
+/* The loaded track's grid holder, remembered wherever one is walked
+ * (grid_read, grid_wrap_reply) so an edit in grid_edit.c does not need a cue
+ * slot. [deck] */
 uintptr_t grid_g_holder;
 
-/* WHICH TRACK THAT HOLDER IS FOR, or 0/0 for "we do not know".
+/* The track that holder is for, or 0/0 if unknown.
  *
- * An edit only has to move the object in front of it, so the holder alone is
- * enough for one. SAVING one is a different question: it names a track, and a
- * holder reached through a cue slot carries no id -- a slot keeps whatever
- * source was last put in it, so it can be the track before. The reply carries
- * its TrackID, so only a holder that came from a reply can be saved.
+ * An edit only needs the holder, but saving names a track. A holder reached
+ * through a cue slot has no id (the slot may hold the previous track's
+ * source); only a holder from a reply, which carries its TrackID, can be saved.
  *
- * 0/0 cannot be a real id: registerBeatGrid's own isValid() refuses one whose
- * first byte is zero. [deck] and [message] both write, in the same breath as
+ * 0/0 is never a real id: registerBeatGrid's isValid() refuses one whose first
+ * byte is zero. [deck] and [message] both write it together with
  * grid_g_holder. */
 uint64_t grid_g_holder_tid_lo, grid_g_holder_tid_hi;
 
@@ -116,25 +81,30 @@ uint64_t grid_g_holder_tid_lo, grid_g_holder_tid_hi;
 static struct grid_beats *grid_g_pending;
 
 
+/* Replies kept per track (see GRID_REPLY_SLOTS).
+ *
+ * Only loading a track produces a reply; browsing and selecting a row do not
+ * (whether auditioning with PREVIEW does is unknown). The TrackID that comes
+ * with a reply is the pool sourceId as the same two little-endian words: sid
+ * 1010200000001:b arrives as 01000000 02010100 0b000000 00000000. A reply is matched to the loaded
+ * track by comparing the two, so a stale one is never used. */
 struct grid_reply {
     uint64_t tid_lo, tid_hi;    /* 0/0 for an empty slot */
     int64_t  spb_bits;          /* as IEEE bits, like the published one */
     int64_t  beat0;
     int      rate;
-    /* AND ITS BEATS, ours, at the grid's own rate. Kept because the flat route
-     * is only right for a track whose tempo holds still, and a track coming
-     * back deserves the same route it got the first time. A long track is a
-     * couple of thousand beats, so sixteen of them is a couple of hundred
-     * kilobytes at the very worst. */
+    /* Our copy of its beats at the grid's own rate, so a reloaded track still
+     * gets the array route. A couple of thousand beats per long track, so all
+     * sixteen slots cost a few hundred kilobytes at worst. */
     struct grid_beats *beats;
 };
 
 static struct grid_reply grid_g_replies[GRID_REPLY_SLOTS];
 static int grid_g_reply_next;
 
-/* A copy of one, so an array can be in a slot AND on the mix's timeline without
- * either owning the other -- the published one is converted to the pool rate in
- * place, and the slot has to keep the rate it was replied at. */
+/* Duplicate a beats array, so a slot and the mix each own one: the published
+ * array is converted to the pool rate in place, while the slot keeps the
+ * reply's rate. */
 static struct grid_beats *grid_beats_dup(const struct grid_beats *b)
 {
     struct grid_beats *d;
@@ -149,8 +119,8 @@ static struct grid_beats *grid_beats_dup(const struct grid_beats *b)
     return d;
 }
 
-/* [message] Keep this track's answer, replacing its own slot if it has one --
- * or a track reloaded sixteen times would push out every other. */
+/* [message] Keep this track's answer, reusing its own slot if it has one so a
+ * frequently reloaded track does not evict the others. */
 static void grid_reply_keep(uint64_t lo, uint64_t hi, int64_t bits,
                             int64_t beat0, int rate,
                             const struct grid_beats *beats)
@@ -228,17 +198,16 @@ static int grid_reply_find(uint64_t lo, uint64_t hi, struct grid_reply *out)
     return 0;
 }
 
-/* What the mix reads: the same array converted to POOL samples. [deck] is the
- * only publisher; readers are counted so a publish cannot free one mid-read,
- * exactly as the stem store and the groove circuit do it. */
+/* What the mix reads: the array converted to pool samples. Readers are
+ * counted so a publish cannot free one mid-read, as in the stem store and the
+ * groove circuit. */
 static struct grid_beats *grid_g_beats;
 static int grid_g_beats_readers;
 static int grid_g_beats_live;
 
-/* The pool rate the live array was converted for. A rate change makes the
- * positions wrong rather than stale, and the raw ones are gone by then, so the
- * array is dropped instead -- a track change comes with a new reply, so this
- * heals on the next load rather than staying broken. */
+/* The pool rate the live array was converted for. The raw positions are gone
+ * after conversion, so on a rate change the array is rebuilt or dropped (see
+ * grid_beats_for). */
 static int grid_g_beats_rate;
 
 int stem_grid_beats_acquire(struct stem_grid_view *out)
@@ -282,33 +251,24 @@ static void grid_publish(double spb, int64_t beat0)
     __atomic_store_n(&grid_g_spb_bits, bits, __ATOMIC_RELAXED);
 }
 
-/* Take the array out of the mix's reach. Not freed: freeing waits for readers,
- * and the next publish frees it anyway -- this only has to be instant and to
- * leave nothing of the wrong track's behind. [any] */
+/* Take the array out of the mix's reach, instantly. Not freed, since freeing
+ * waits for readers; the next publish frees it. [any] */
 static void grid_beats_drop(void)
 {
     __atomic_store_n(&grid_g_beats_live, 0, __ATOMIC_RELEASE);
 }
 
-/* Which track the published grid is for, so a second ask is two atomic loads. */
+/* Which track and rate the published grid is for, so a repeat arm is cheap. */
 static uint64_t grid_g_armed_lo, grid_g_armed_hi;
 static int      grid_g_armed_rate;
 static int      grid_g_arming;
 
 void stem_grid_forget(void)
 {
-    /* Only the published answer, and the array that goes with it. The reply
-     * cache keeps its TrackID, so a track change cannot make it wrong -- it
-     * either matches the new track or is not used. Dropping that here would
-     * throw away the grid for the track being loaded, which arrives BEFORE the
-     * change is seen.
-     *
-     * AND THE LATCH, or nothing ever puts the grid back. The reply for the new
-     * track lands BEFORE the change is noticed, so the ordering is: arm the new
-     * grid, then forget it -- and grid_arm_reply answers "already armed, nothing
-     * to do" from then on, for that track, for as long as it is loaded. Which is
-     * a roll that plays one hit per touch and never repeats, on every track
-     * after the first. */
+    /* Drop only the published answer, its array and the armed latch. The reply
+     * cache is keyed by TrackID and stays: the new track's reply arrives before
+     * the change is seen. The latch must be cleared, or grid_arm_reply would
+     * keep answering "already armed" for the new track after it was dropped. */
     grid_beats_drop();
     grid_publish(0.0, 0);
     __atomic_store_n(&grid_g_armed_lo, 0, __ATOMIC_RELAXED);
@@ -317,25 +277,6 @@ void stem_grid_forget(void)
 }
 
 
-/* One holder, in POOL samples: what the mix and the engage position are counted
- * in. Grid positions are counted at the grid's own rate; they are the same
- * number today and the scale is what keeps this true when they are not. */
-/* ---- copying the beats out ------------------------------------------------ */
-
-/* Every beat of `holder`, in the grid's own units with the origin already added.
- * NULL when there is nothing to copy, which leaves the caller on the average.
- *
- * Read in chunks rather than a beat at a time: mod_safe_read is a pread on
- * /proc/self/mem, so a beat at a time is a syscall a beat -- a couple of
- * thousand of them while the DJ is pressing a pad. A chunk is one syscall for
- * five hundred.
- *
- * ASCENDING OR NOTHING. stem_beat_at bisects this, and a bisection over an
- * unordered array does not fail, it answers wrongly -- which here means a loop
- * quietly in the wrong place. Equal neighbours are allowed through (a beat of no
- * duration is something a hand-edited grid can contain, and the search handles
- * it); going backwards is refused outright, and said out loud, because nothing
- * we have seen produces one. */
 /* Make `b` the array the mix reads, converted to pool samples. Takes ownership
  * of it and of whatever it replaces. [deck] */
 static void grid_publish_beats(struct grid_beats *b, int pool_rate)
@@ -358,11 +299,9 @@ static void grid_publish_beats(struct grid_beats *b, int pool_rate)
 
 /* Point the mix's array at the loaded track, if it is not there already.
  *
- * `holder` is the one the cue walk reached, or 0 when the answer came from a
- * reply -- in which case the array was copied when that reply landed and is
- * waiting in `grid_g_pending`. Either way the TrackID decides: an array that is
- * not this track's is freed rather than used, because beats from the track
- * before are exactly the failure the average does not have. [deck] */
+ * `holder` is the one the cue walk reached, or the reply's holder, or 0; a
+ * reply's array is copied when it lands and waits in `grid_g_pending`. An
+ * array whose TrackID is not this track's is freed, never used. [deck] */
 static void grid_beats_for(uint64_t lo, uint64_t hi, uintptr_t holder,
                            int pool_rate)
 {
@@ -387,8 +326,7 @@ static void grid_beats_for(uint64_t lo, uint64_t hi, uintptr_t holder,
         }
     }
     if (!b) {
-        /* Nothing for this track. The average still stands -- that is the
-         * fixed-tempo route, and it is what every track had before this. */
+        /* Nothing for this track; the average (fixed-tempo route) stands. */
         __atomic_store_n(&grid_g_beats_live, 0, __ATOMIC_RELEASE);
         return;
     }
@@ -404,10 +342,9 @@ static double grid_read(uintptr_t pwsi, int pool_rate, int64_t *beat0,
     uintptr_t src = 0, holder = 0;
     int32_t sig = 0;
 
-    /* NO TAG TEST on the position itself. Its constant differs between a bare
-     * Position and this longer form, and a constant read off one build is a
-     * thing to get wrong quietly; the source's own signature below is the check
-     * the app makes, and an empty slot cannot pass it. */
+    /* No tag test on the position: its constant differs between a bare
+     * Position and this form. The source's signature below is the check the
+     * app itself makes, and an empty slot fails it. */
     *why = "no cue to read";
     if (!pwsi ||
         mod_safe_read(pwsi + PWSI_SOURCE_OFF, &src, sizeof(src)) != 0 || !src)
@@ -438,6 +375,15 @@ typedef void (*grid_reply_fn_t)(void *self, void *req, void *tid, void *grid,
 static uintptr_t grid_g_orig_reply;
 
 
+/* Hook on trackinfo_stocker::BeatGridRequestHandler::Reception::
+ * replyBeatGridRequest, the only route to a grid that does not go through a
+ * cue slot. A track with no cues has no reachable source (all ten kinds stay
+ * silent).
+ *
+ * The SharedBeatGridPtr is tried both as the holder and as a pointer to it.
+ * The TrackID is kept with the result and matched against the loaded track in
+ * grid_arm_reply, so a reply for a track that was only browsed is never
+ * armed. */
 static void grid_wrap_reply(void *self, void *req, void *tid, void *grid,
                             void *res)
 {
@@ -468,10 +414,9 @@ static void grid_wrap_reply(void *self, void *req, void *tid, void *grid,
 
         memcpy(&bits, &spb, sizeof(bits));
 
-        /* HERE, because this is the moment the object is certainly alive -- the
-         * deck is handing it over. Left for the next pad press to collect; if
-         * none comes before the next reply, the array we displace is ours to
-         * free, which is what makes the exchange the whole of the handoff. */
+        /* Copied here, while the object is certainly alive. The next arm
+         * collects it; an array displaced by a newer reply is freed by the
+         * exchange. */
         grid_g_holder = hop ? deref : (uintptr_t)grid;
         grid_g_holder_tid_lo = tlo;
         grid_g_holder_tid_hi = thi;
@@ -480,17 +425,14 @@ static void grid_wrap_reply(void *self, void *req, void *tid, void *grid,
             b->tid_lo = tlo;
             b->tid_hi = thi;
         }
-        /* KEPT BEFORE IT IS STAGED, because staging gives it away: the arm
-         * converts the staged array to the pool rate in place, and the slot has
-         * to hold the rate the reply came at. */
+        /* Kept before staging: the arm converts the staged array to the pool
+         * rate in place, and the slot must keep the reply's rate. */
         grid_reply_keep(tlo, thi, bits, beat0, rate, b);
         if (b)
             free(__atomic_exchange_n(&grid_g_pending, b, __ATOMIC_ACQ_REL));
 
-        /* The beat count is on this line rather than its own because a copy
-         * that failed is not an event, it is a track that will phase off the
-         * average -- and the only place that shows is next to the tempo it
-         * would otherwise have followed. */
+        /* The beat count sits next to the tempo, so a failed copy (the track
+         * will use the average) shows up beside it. */
         MDBG("grid: reply track %s -> %.1f BPM, beat0 %lld at %d Hz%s, %d beats"
              " copied\n", id, (double)rate * 60.0 / spb, (long long)beat0, rate,
              hop ? " (via *ptr)" : "", b ? (int)b->count : 0);
@@ -516,17 +458,12 @@ KIT_MOD(k_mod_stem_grid,
         .name = "stem_grid", .prio = 61, .install = grid_install,
         .what = "beat grid: watch the deck's own grid replies");
 
-/* The deck's own reply, armed without waiting for anything else.
+/* Arm the deck's own reply for the loaded track, without needing a pad press.
+ * The X-PAD's clock and the stems row's quantized MUTE run on this grid, so it
+ * must be armed as soon as the track loads.
  *
- * THE REPLY NEEDS NO PAD. It arrives BECAUSE a track loaded and carries its own
- * TrackID, so everything the mix needs is staged the moment it lands. Collecting
- * it only on a pad press left a freshly loaded track with no grid at all --
- * measured: spb 0 and no beats until a hot cue was pressed, and since the
- * X-PAD's clock runs on that grid and the stems row's quantized MUTE rides that
- * clock, every held mute committed on the block it was asked in.
- *
- * 0 when there is no reply for the source the audio thread is reading, which is
- * the case the cue walk in stem_grid_take exists for. NOT [audio]: publishing
+ * Returns 0 when there is no reply for the source the audio thread is reading;
+ * stem_grid_take then falls back to the cue walk. Not [audio]: publishing
  * frees the displaced array once its readers are gone. */
 static int grid_arm_reply(int rate, uint64_t tid_lo, uint64_t tid_hi, int have_id)
 {
@@ -535,8 +472,8 @@ static int grid_arm_reply(int rate, uint64_t tid_lo, uint64_t tid_hi, int have_i
     double  raw, spb;
     int     grate;
 
-    /* A reply is this track's only if the id it came with is the id the audio
-     * thread is reading. Anything else is another track's. */
+    /* A reply is this track's only if its id is the one the audio thread is
+     * reading. */
     if (!have_id || !grid_reply_find(tid_lo, tid_hi, &r))
         return 0;
 
@@ -550,11 +487,9 @@ static int grid_arm_reply(int rate, uint64_t tid_lo, uint64_t tid_hi, int have_i
         rate   == __atomic_load_n(&grid_g_armed_rate, __ATOMIC_RELAXED))
         return 1;
 
-    /* One arming at a time. The publish takes the beat array out of the mix's
-     * reach and frees it once the readers have gone, and two threads doing that
-     * to one array is a double free -- the pad press is [deck] and the tick is
-     * [message]. The loser answers 1 all the same: the reply is this track's
-     * either way, and the winner is publishing exactly what it would have. */
+    /* One arming at a time: [deck] (pad press) and [message] (tick) both
+     * publish, which frees the old array, so concurrent arms would double
+     * free. The loser returns 1 too; the winner publishes the same result. */
     if (__atomic_exchange_n(&grid_g_arming, 1, __ATOMIC_ACQ_REL))
         return 1;
 
@@ -562,15 +497,10 @@ static int grid_arm_reply(int rate, uint64_t tid_lo, uint64_t tid_hi, int have_i
     beat0 = grid_to_pool(r.beat0, rate, grate);
     MDBG("grid: %.1f BPM from the deck's own reply\n",
          (double)rate * 60.0 / spb);
-    /* WITH THE REPLY'S OWN HOLDER, so a second arm can REBUILD the array rather
-     * than drop it. grid_beats_for keeps a live array only while the track AND
-     * the pool rate both match, and the staged copy is consumed by the first
-     * arm -- so an arm that follows the pool rate settling had nothing left to
-     * offer and silently took the beats away, leaving the flat route to answer
-     * for a track whose grid was right there. */
-    /* WITH THIS TRACK'S OWN BEATS. The live reply stages a copy when it lands;
-     * a track coming back has no reply behind it, so the kept one is staged
-     * here instead and the array route survives a second load. */
+    /* Stage this track's kept beats, since a reloaded track gets no new reply,
+     * and pass the reply's holder so a later arm (e.g. after the pool rate
+     * settles, once the staged copy is consumed) can rebuild the array instead
+     * of dropping it. */
     grid_reply_stage_beats(tid_lo, tid_hi);
     grid_beats_for(tid_lo, tid_hi,
                    (grid_g_holder_tid_lo == tid_lo &&
@@ -583,10 +513,9 @@ static int grid_arm_reply(int rate, uint64_t tid_lo, uint64_t tid_hi, int have_i
     return 1;
 }
 
-/* Ask for it off the display clock, because the reply and the pool rate do not
- * arrive together: the reply lands when the track loads, the rate once the audio
- * path is running. Asked every frame until it takes, and two atomic loads after.
- * [message] */
+/* Arm from the display clock, because the reply lands when the track loads
+ * and the pool rate only once the audio path runs. Retried every frame until
+ * it takes; cheap after that. [message] */
 void stem_grid_tick(void)
 {
     uint64_t lo = 0, hi = 0;
@@ -599,19 +528,13 @@ void stem_grid_tick(void)
 
 /* The loaded track's grid: the deck's own answer first, cue slots second.
  *
- * THE REPLY WINS BECAUSE A CUE SLOT GOES STALE. A slot keeps whatever source was
- * last put in it, and loading a track does not clear one the new track has no cue
- * for -- so the memory cue slot answered for the PREVIOUS track. Measured: with
- * a 126.0 BPM track loaded, kind 0 returned 120.0 and the anchor 4404, both of
- * them the track before it. A grid from the wrong track is worse than no grid:
- * the loop is confidently in the wrong time, which is what "it does not latch"
- * looks like from the floor.
+ * Cue slots go stale: loading a track does not clear a slot the new track has
+ * no cue for, so a slot can return the previous track's tempo and anchor. A
+ * wrong-track grid is worse than none.
  *
- * The reply cannot be stale in that way. It arrives BECAUSE this track loaded,
- * carries its own TrackID, and nothing else produces one -- browsing and
- * selecting a row are silent, measured. The cue walk stays as the fallback for
- * the case the reply cannot cover: a shim that started mid-session, where no load
- * has happened since and there is nothing cached to prefer.
+ * The reply is produced only by a load and carries its TrackID. The cue walk
+ * remains for a shim started mid-session, with no load since and no reply
+ * cached.
  *
  * Called as a pad is pressed. [deck] */
 int stem_grid_take(const struct cue_event *ev)
@@ -619,10 +542,8 @@ int stem_grid_take(const struct cue_event *ev)
     int rate = stem_pool_rate();
     const char *why = "no cue to read";
     /* One character per kind, memory cue first: '-' no slot, '.' a slot that
-     * led nowhere, 'g' a slot that gave a grid. Printed on every arm because it
-     * is the only view of HOW MANY slots answer, which is what says whether an
-     * unset cue still names the source or whether this depends on the DJ having
-     * set one. */
+     * led nowhere, 'g' a slot that gave a grid. Logged on every arm to show
+     * how many slots answer. */
     char map[GRID_KIND_MAX + 2];
     uint64_t tid_lo = 0, tid_hi = 0;
     uintptr_t holder = 0;
@@ -635,9 +556,8 @@ int stem_grid_take(const struct cue_event *ev)
 
     have_id = stem_source_id(&tid_lo, &tid_hi);
 
-    /* Once, before the shortcut below can skip the walk entirely: does a source
-     * say which track it is? That is what would let the walk check its own
-     * answer rather than trust it. */
+    /* Probe once whether a source carries its sourceId (grid_probe_sid),
+     * before the reply shortcut below can skip the walk. */
     {
         static int probed;
         int k;
@@ -657,8 +577,7 @@ int stem_grid_take(const struct cue_event *ev)
         }
     }
 
-    /* The deck's own answer for the track it loaded, before anything that can be
-     * left over from the one before it. Usually already done by the tick. */
+    /* The reply first; usually the tick has already armed it. */
     if (grid_arm_reply(rate, tid_lo, tid_hi, have_id))
         return 1;
 
@@ -691,9 +610,8 @@ int stem_grid_take(const struct cue_event *ev)
     MDBG("grid: %.1f BPM from cue kind %d [%s]\n",
          (double)rate * 60.0 / spb, got, map);
 
-    /* The array only when the id says which track it is for. Without one there
-     * is nothing to stamp it with, and an array that cannot be checked against
-     * the next track is the stale-cue-slot failure again with more beats in it. */
+    /* Publish the array only with a track id to stamp it with; an unstamped
+     * array could not be checked against the next track. */
     if (have_id)
         grid_beats_for(tid_lo, tid_hi, holder, rate);
     else
@@ -702,72 +620,19 @@ int stem_grid_take(const struct cue_event *ev)
     return 1;
 }
 
-/* ---- editing the grid -----------------------------------------------------
- *
- * The four controls the CDJ-3000X has in its grid panel and the 3000 does not --
- * [x2], [x1/2], [Enlarge], [Reduce] -- are all one operation: rescale the beat
- * interval. Every mode the deck's own gridAdjustChengeReq offers moves the int16
- * OFFSET and nothing else, so there is no firmware path to borrow; the grid has
- * to be replaced.
- *
- * ---- why replacing the array is safe --------------------------------------
- *
- * Probed on the live deck, the array the deck loaded looks like this:
- *
- *     [ chunk size 0x3465 ][ 16 x 0xAF ][ N cells ][ 16 x 0xEF ]
- *                           ^ beats-16   ^ beats
- *
- * The 0xAF/0xEF runs are meow::overrun_helper::Checker's red zones -- the
- * "signiture" it asserts on -- and the word at beats-24 is a glibc chunk header
- * (0x3460 with PREV_INUSE|NON_MAIN_ARENA), sized exactly for 16 + N*16 + 16. So
- * the array is ORDINARY HEAP from operator new, not one of this binary's pool
- * allocators, and `operator delete` on it will be a plain free of beats-16.
- *
- * The shim is in the same process and on the same heap, so a replacement built
- * with malloc and handed over as ours+16, with both red zones written, is
- * indistinguishable from the deck's own. That is the whole safety argument, and
- * it is why [x2] -- which needs MORE cells than exist and so cannot be done in
- * place -- is no riskier than the three that can.
- *
- * THE ORIGINAL IS NEVER FREED AND NEVER WRITTEN TO. It is kept so RESET is a
- * restore rather than an inverse calculation; ours leak instead, at ~13 kB an
- * edit, which is the right way round for a control a DJ taps a few times.
- *
- * ---- why the swap is safe under live readers ------------------------------
- *
- * Pointer and count are two words and cannot be exchanged atomically, so the
- * ORDER is chosen to keep every intermediate state in bounds:
- *
- *   growing   pointer first, then count -- a reader in between sees the NEW,
- *             longer array with the OLD, smaller count
- *   shrinking count first, then pointer -- a reader in between sees the OLD
- *             array with the NEW, smaller count
- *
- * Either way no reader indexes past the end of whichever array it is holding.
- * The two arrays are swapped one after the other, so a reader can briefly pair
- * new beats with old bars -- which is a bar number one frame stale, not a read
- * out of bounds, because each pair is made consistent before the next.
- */
+/* ---- grid editing state (the edits are in grid_edit.c) ------------------ */
 
 
 
-/* What the deck loaded, so RESET is a restore. Both arrays: a reset that put
- * back the beats and left our bars would leave the grid describing itself in two
- * different time signatures. [deck] */
+/* What the deck loaded, so RESET is a restore. Both arrays, so a reset cannot
+ * leave the original beats with our bars. [deck] */
 uintptr_t grid_g_orig_content;
 uintptr_t grid_g_orig_beats;
 int32_t   grid_g_orig_count;
 uintptr_t grid_g_orig_bars;
 int32_t   grid_g_orig_barcnt;
 
-/* The first beat's own BPM field, which is the number the deck puts on the play
- * screen -- so the panel's readout and the deck's readout cannot disagree, and a
- * rescale moves both because it writes that field.
- *
- * Read from the holder rather than derived from the published interval: the
- * published one is in POOL-RATE samples, and the pool rate is the stem engine's.
- * A deck with STEMS off has no pool rate, so the derived route answered 0 on
- * exactly the deck this readout is for. */
+/* The Content of the remembered holder, or 0. */
 static uintptr_t grid_live_content(void)
 {
     uintptr_t content = 0;
@@ -784,6 +649,11 @@ uintptr_t stem_grid_id(void)
     return grid_live_content();
 }
 
+/* The first beat's own BPM field, the number the deck shows on the play
+ * screen, so the panel and the deck always agree and a rescale moves both.
+ *
+ * Read from the holder, not derived from the published interval, which is in
+ * pool-rate samples: with STEMS off there is no pool rate. */
 double stem_grid_bpm(void)
 {
     uintptr_t content = grid_live_content(), beats = 0;
@@ -798,14 +668,9 @@ double stem_grid_bpm(void)
     return grid_beat_bpm(beats, 0);
 }
 
-/* The tempo before anything the panel did. Every edit is computed against this
- * and REPLACES the last one rather than compounding, so a caller that wants two
- * presses of a fine adjust to add up has to state the total -- and it cannot do
- * that from the edited grid, which is what it is trying to move away from. */
-/* The offset the deck's own grid modes move -- every one of the six moves this
- * and nothing else, see [ep122_grid_adjust_surface] -- so non-zero means its
- * RESET has something to undo. 0 when there is no grid, which is also "nothing
- * to undo" and therefore the right answer either way. */
+/* The offset the deck's own grid modes move (all six move only this), so
+ * non-zero means its RESET has something to undo. 0 when there is no grid,
+ * which also means nothing to undo. */
 int64_t stem_grid_offset(void)
 {
     int64_t origin = 0;
@@ -817,6 +682,9 @@ int64_t stem_grid_offset(void)
     return origin;
 }
 
+/* The tempo before any panel edit. Each edit is computed against this and
+ * replaces the previous one instead of compounding, so a caller wanting two
+ * fine-adjust presses to add up must pass the total, computed from this. */
 double stem_grid_orig_bpm(void)
 {
     uintptr_t content = grid_live_content();
@@ -825,75 +693,3 @@ double stem_grid_orig_bpm(void)
         return grid_beat_bpm(grid_g_orig_beats, 0);
     return stem_grid_bpm();
 }
-
-/* The original grid's position at fractional beat index `x`, interpolated.
- * Outside the array the end intervals extend, so a rescale that needs beats
- * past the last one still gets sensible positions. */
-/* Point one (pointer, count) pair at a new array, in the order that keeps every
- * intermediate state in bounds. Both of a Content's arrays are swapped through
- * here; only the offsets differ. */
-/* The bar array for a grid of `n_new` beats whose original first downbeat was
- * `bar0`, rescaled by `k`.
- *
- * FOUR BEATS TO A BAR, PHASED ON THE ORIGINAL DOWNBEAT. Scaling the old bar
- * indices by k on their own would keep the number of bars, which after a x2
- * means bars of eight beats -- and a x2 is the DJ saying the track is twice as
- * fast, which is twice as many bars, not longer ones. So the phase is carried
- * and the spacing is rebuilt: the beat that was a downbeat still is one, and a
- * bar is still four beats.
- *
- * The phase is taken mod 4 because the deck's own reader assumes the first
- * downbeat lands inside the first bar -- for anything before it, it answers
- * i - bars[0] + 4, which goes negative if bars[0] is 4 or more.
- *
- * Returns the array (as the pointer the Content wants, guards already written)
- * or 0, and leaves the count in *n_out. */
-/* ---- making an edit stick -------------------------------------------------
- *
- * Everything above moves the Content object the deck cached for this track, and
- * that object is as long-lived as the cache entry -- so the edit is gone at the
- * next eject, and a media re-read can undo it sooner.
- *
- * The deck's own way to keep a grid is to REGISTER it, and that is the only
- * acceptable way here: no file is opened, no format is reimplemented, and the
- * write lands where the deck's own writes land. The chain, client end first:
- *
- *   TrackInfoRepositoryCache::registerBeatGrid    slot 0x50, the CACHE is
- *     |                                           updated on the way past
- *     -> CacheableBeatGrid::registerBeatGrid
- *        -> BeatGridBodyRegisterCommand::doExecute
- *           -> TrackInfoRepositoryRequestFacade, as IBeatGridRegistrar
- *              -> Quantize_RegisterTicket    CMD_SAV_SPECIFIED_ATOM_INFO
- *                 -> [DB][SRV] "update specified atom"
- *
- * The last step writes the Quantize atom of the track's own analysis file, the
- * ANLZ under PIONEER/USBANLZ -- which is where a beat grid lives on a rekordbox
- * stick, and is a different file from the library the browser reads.
- *
- * EVERY ARGUMENT WAS READ OFF A WORKING CALL, not inferred. The deck's own GRID
- * ADJUST registers an OFFSET through slot 0x58, whose argument list differs only
- * in carrying an int16 where this carries a grid, and
- * trackinfo_stocker::BeatGridOffsetRegistHandler::doRequest is where it is
- * assembled -- register by register, including the shape of the listener
- * reference and the priority byte.
- *
- * AND THE BROWSER'S NUMBER, which is not this. The tempo beside the title in the
- * list is DJDBCONTENT.BPM in the media library -- a different back end, so
- * registering a grid does not move it and mod_djdb_set_bpm does. Both happen
- * here because both are what "the track is now at this tempo" means, and
- * because this is where the TrackID that names the row is known.
- */
-
-
-
-
-
-/* meow::MappedObjPtr: the cached pointer and the id to fill it from. link()
- * leaves a non-null pointer alone, so this is kept between calls exactly as the
- * deck keeps its own. */
-
-/* meow::ListenerReference, a tagged union. Tag 2 is a shared listener with its
- * interface at +8 and its owner at +0x10; tag 0 is EMPTY, and the app's own copy
- * helper returns without reading anything else. Nothing here wants a callback,
- * so empty it is: the outcome is read from the deck's log and from the file. */
-

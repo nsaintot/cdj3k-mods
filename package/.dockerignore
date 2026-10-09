@@ -1,5 +1,5 @@
-# Keep the build context to sources. Two reasons this matters:
-#  - updater/packaging.key is the conventional key location and sits INSIDE the
+# Keep the build context to sources:
+#  - updater/packaging.key is the default key location and sits inside the
 #    context; excluding it keeps the secret out of the daemon and its cache.
 #  - build/ holds ~70 MB of finished .UPD images and binaries that would
 #    otherwise be uploaded on every rebuild, and deck/out/ could shadow the

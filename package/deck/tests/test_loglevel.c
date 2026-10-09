@@ -2,10 +2,9 @@
 /*
  * test_loglevel.c - the log level grammar (shared/loglevel.h).
  *
- * Both binaries read a level from the environment through this one parser, so
- * what it accepts IS the documented interface for EP122_MOD_LOGLEVEL and
- * STEMD_LOGLEVEL. The cases that matter are the ones that decide how a deck
- * behaves when someone gets it slightly wrong.
+ * Both binaries parse their level from the environment with this function, so
+ * what it accepts is the interface for EP122_MOD_LOGLEVEL and STEMD_LOGLEVEL.
+ * Most cases cover slightly wrong input.
  */
 #include "loglevel.h"
 
@@ -29,8 +28,7 @@ int main(void)
     CHECK_INT(log_level_from("0"), LOG_ERROR);
     CHECK_INT(log_level_from("3"), LOG_DEBUG);
     CHECK_INT(log_level_from("4"), LOG_TRACE);
-    /* Above the top level is not a mistake worth refusing: someone reaching for
-     * "as loud as it goes" gets it. */
+    /* A digit above the top level clamps to trace. */
     CHECK_INT(log_level_from("9"), LOG_TRACE);
 
     T_CASE("unset is the default, not an error");
@@ -43,9 +41,8 @@ int main(void)
     CHECK_INT(log_level_from("\tinfo"),   LOG_INFO);
     CHECK_INT(log_level_from("  warn  "), LOG_WARN);
 
-    /* The whole point of the -1: a value that was meant to select something and
-     * did not is REPORTED, rather than reading as the quietest setting and
-     * looking like the variable does nothing. */
+    /* -1 lets the caller report a bad value instead of silently falling back
+     * to the quietest level. */
     T_CASE("unrecognised is -1, never a level");
     CHECK_INT(log_level_from("verbose"), -1);
     CHECK_INT(log_level_from("quiet"),   -1);

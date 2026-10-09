@@ -1,31 +1,30 @@
 # mods.mk - the mod sources, the flags they need, and the gates that guard them.
 #
-# Included by every build that links the mods: this package's deck build and
-# cdj3k-emu's guest build. The includer sets MODS_DIR to the directory holding
-# this file and OUT to its own output root, then includes it:
+# Included by every build that links the mods, this package's deck build among
+# them. The includer sets MODS_DIR to the directory holding this file and OUT to
+# its own output root, then includes it:
 #
-#     MODS_DIR := ep122_shim/cdj3k-mods/package/deck
+#     MODS_DIR := path/to/cdj3k-mods/package/deck
 #     include $(MODS_DIR)/mods.mk
 #
 # The includer also sets, after the include:
 #     MODS_BUILD_CFLAGS   the full compile line for a mod object
 #     MODS_ABI_TARGET     the linked .so that mods-abi-check inspects
 #
-# One list and one flag set, so a new mod file reaches both builds and the
-# purity, test and ABI manifests cannot drift apart.
+# One source list and one flag set, so a new mod file reaches every build and
+# the purity, test and ABI manifests stay in sync.
 
 ifndef MODS_DIR
 $(error mods.mk: set MODS_DIR to the directory holding this file)
 endif
 
 # --- sources ---
-# Discovered, not listed: a new file or a new feature directory needs no edit
-# here. Four levels is what the tree uses.
+# Found by wildcard, so a new file or feature directory needs no edit here.
+# The globs reach two directory levels below mods/ (mods/stem/ui/), as deep
+# as the tree goes.
 #
-# mods/ is all shipped code. The prose and the host harnesses live in ../docs
-# and ../tools, out of reach of these wildcards -- a harness #includes a mod's
-# own .c to measure the shipped code, which would give every symbol in it two
-# definitions here.
+# mods/ holds only shipped code. Host harnesses must stay outside it: a harness
+# #includes a mod's .c, which would define every symbol in it twice.
 MODS_C_SRCS := $(wildcard $(MODS_DIR)/mods/*.c) \
                $(wildcard $(MODS_DIR)/mods/*/*.c) \
                $(wildcard $(MODS_DIR)/mods/*/*/*.c)
@@ -36,62 +35,56 @@ MODS_CXX_SRCS := $(wildcard $(MODS_DIR)/mods/*.cc) \
 
 MODS_SRCS := $(MODS_C_SRCS) $(MODS_CXX_SRCS)
 
-# Every .c depends on every mod header. Coarse on purpose: the headers are
-# small and the build is seconds, while a missed dependency ships a stale
-# object to a deck.
+# Every .c depends on every mod header. Coarse but cheap: the build takes
+# seconds, and a missed dependency would ship a stale object.
 MODS_HDRS := $(wildcard $(MODS_DIR)/mods/*.h)    $(wildcard $(MODS_DIR)/mods/*.hh) \
              $(wildcard $(MODS_DIR)/mods/*/*.h)  $(wildcard $(MODS_DIR)/mods/*/*/*.h) \
              $(wildcard $(MODS_DIR)/mods/*/*.hh) $(wildcard $(MODS_DIR)/mods/*/*/*.hh) \
              $(wildcard $(MODS_DIR)/shared/*.h)
 
 # The stem sidecar: the network half of STEMS, a separate binary so a wedged
-# HTTP client cannot take the audio process down with it. Shares
+# HTTP client cannot take down the audio process. It shares
 # shared/stem_proto.h with the mods, so the two ship as a versioned pair.
 MODS_STEMD_SRCS := $(wildcard $(MODS_DIR)/stemd_client/*.c)
 MODS_STEMD_HDRS := $(wildcard $(MODS_DIR)/stemd_client/*.h) \
                    $(wildcard $(MODS_DIR)/shared/*.h)
 
 # --- flags ---
-# -I$(MODS_DIR) is what makes "mods/..." resolve: the host's syscall
-# interposers and the tests both reach the mods by that path.
-# -I$(MODS_DIR)/mods makes an include root-relative to the mod tree, so
-# "kit/mod.h" reads the same from anywhere in it and moving a file costs
-# nothing. -I$(MODS_DIR) is how the host's interposers and the tests reach in
-# from outside, as "mods/...".
+# -I$(MODS_DIR) resolves "mods/...", the path the host's syscall interposers
+# and the tests use. -I$(MODS_DIR)/mods makes includes relative to the mod
+# tree root, so "kit/mod.h" reads the same from any file in it.
 MODS_INCLUDES := -I$(MODS_DIR) -I$(MODS_DIR)/mods -I$(MODS_DIR)/shared
 
-# expf and exp2f got new default versions in glibc 2.27. An ordinary link on
-# 2.27 stamps expf@GLIBC_2.27, the deck's 2.17 ld.so has no such version and
-# refuses the whole object, and this is an LD_PRELOAD: every process
-# apl_start.sh starts fails, /bin/sh included, and the deck comes up with no
-# app. The .symver in this header rewrites both references to the 2.17 symbols.
-# It must sit in the TU that references them, hence the force-include.
+# expf and exp2f got new default versions in glibc 2.27, so an ordinary link on
+# 2.27 stamps expf@GLIBC_2.27. The deck's 2.17 ld.so refuses that, and since
+# this is an LD_PRELOAD every process apl_start.sh starts fails, /bin/sh
+# included. The .symver in compat/glibc217_compat.h rewrites both references to
+# the 2.17 symbols; it must be in the TU that references them, hence the
+# force-include.
 #
-# Paired with MODS_LDLIBS below and not separable: -lm is what makes the linker
-# resolve expf against libm and stamp a version at all. Either both or neither.
+# Keep this paired with -lm in MODS_LDLIBS: -lm is what makes the linker
+# resolve expf against libm and stamp a version at all.
 MODS_COMPAT := -include $(MODS_DIR)/compat/glibc217_compat.h
 
 MODS_CFLAGS := $(MODS_INCLUDES) $(MODS_COMPAT)
 
 # The mods call libm (wave/codec.c's high-band curve) and libpthread (the stem
-# worker and analysis threads). Both were only absorbed into libc in glibc
-# 2.34. Omitting them still produces a .so -- a shared object may carry
-# undefined symbols -- with no DT_NEEDED able to supply them. That survives
-# lazy binding inside EP122 and dies under any BIND_NOW binary in the preload
-# path: "symbol lookup error: undefined symbol: pthread_detach".
+# worker and analysis threads), which only merged into libc in glibc 2.34.
+# Without them the .so still links, with undefined symbols and no DT_NEEDED to
+# supply them. That works under lazy binding in EP122 but fails in any
+# BIND_NOW binary in the preload path: "symbol lookup error: undefined symbol:
+# pthread_detach".
 MODS_LDLIBS := -lm -lpthread
 
-# --no-undefined turns a missing library into a link error rather than a deck
-# that boots to nothing. Weak undefined symbols stay legal, which is the wanted
-# distinction: the db mod's optional sqlite3_* imports are weak and resolve out
-# of EP122 at runtime.
+# --no-undefined turns a missing library into a link error instead of a deck
+# that boots to nothing. Weak undefined symbols stay legal: the db mod's
+# optional sqlite3_* imports are weak and resolve from EP122 at runtime.
 MODS_LDFLAGS := -Wl,--no-undefined
 
 # The mods export nothing. The object is LD_PRELOADed, so every global symbol
-# interposes that name in EP122 and in every library EP122 loads. A stray
-# exported mod_*/stem_*/wave_* can only collide with one of EP122's own.
-# -Wmissing-prototypes states the same rule in the source: a mods/ function
-# that is neither static nor header-declared fails the build.
+# interposes that name in EP122 and every library it loads. -Wmissing-prototypes
+# enforces the rule in the source: a mods/ function that is neither static nor
+# header-declared fails the build.
 MODS_OBJ_CFLAGS := -fvisibility=hidden -Wmissing-prototypes
 
 # --- C++ ---
@@ -100,26 +93,22 @@ MODS_OBJ_CFLAGS := -fvisibility=hidden -Wmissing-prototypes
 #
 # -fno-exceptions       a hook is entered from EP122's own frames; an exception
 #                       escaping one would unwind through code this does not own.
-# -fno-rtti             the mods walk EP122's RTTI themselves. The compiler's
-#                       own typeinfo in this object serves nothing.
+# -fno-rtti             the mods walk EP122's RTTI, not their own.
 # -fno-threadsafe-statics  keeps __cxa_guard_acquire out, so no libstdc++.
 #
 # Nothing here uses the STL, so NEEDED is unchanged by a .cc file. mods-abi-check
 # fails the build if that stops holding.
-# Derive the C++ compiler from CC, not from make's built-in. `?=` cannot do this:
-# make always defines CXX, with origin `default` rather than `undefined`, so `?=`
-# never fires and a cross build would compile .cc files with the HOST g++ while
-# every .c file went to the cross gcc. Only leave a value alone when it came from
-# the environment or the command line, which is the caller deliberately choosing.
+#
+# Derive the C++ compiler from CC. `?=` does not work here: make always defines
+# CXX (origin `default`), so a cross build would compile .cc files with the host
+# g++. A CXX from the environment or the command line is left alone.
 ifeq ($(filter environment command\ line,$(origin CXX)),)
 CXX := $(CC:gcc=g++)
 endif
 
 MODS_CXX_PROFILE := -std=gnu++14 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 
-# -Wmissing-prototypes is C-only; -Wmissing-declarations is the C++ spelling of
-# the same rule, and the rule is the point: a mod function that is neither
-# static nor header-declared must fail the build.
+# -Wmissing-declarations is the C++ equivalent of -Wmissing-prototypes.
 MODS_OBJ_CXXFLAGS := -fvisibility=hidden -Wmissing-declarations
 
 MODS_OBJS := $(patsubst $(MODS_DIR)/%.c,$(OUT)/%.o,$(MODS_C_SRCS)) \
@@ -140,9 +129,8 @@ $(OUT)/%.o: $(MODS_DIR)/%.cc $(MODS_HDRS) | $(OUT)
 
 # --- purity manifest ---
 # Mod sources compiling to an object with no undefined symbol outside
-# MODS_PURE_LIBC: no host state, no JUCE, no syscall. These are the part that
-# builds and tests on a dev host. The list is measured, not asserted --
-# `mods-purity` re-derives it with nm and fails on anything else.
+# MODS_PURE_LIBC: no host state, no JUCE, no syscall. These build and test on
+# a dev host. `mods-purity` checks each with nm and fails on anything else.
 MODS_PURE_SRCS := $(MODS_DIR)/mods/stem/loop.c \
                   $(MODS_DIR)/mods/stem/ui/state.c \
                   $(MODS_DIR)/mods/wave/codec.c
@@ -154,9 +142,9 @@ MODS_PURE_LIBC := memcpy memmove memset memcmp exp log sqrt
 # Sources the tests cover that are not pure: each reads state defined
 # elsewhere, and links only because tests/stubs.c stands in for it. Adding one
 # here means adding its externals to stubs.c.
-# theme/palette.c is here rather than in the pure list because its cache-stats
-# line logs: nm finds fprintf/fflush/stderr/time and g_mod_log, and stubs.c is
-# what stands in for the last of those.
+# theme/palette.c is here, not in the pure list, because its cache-stats line
+# logs: nm finds fprintf/fflush/stderr/time and g_mod_log, and stubs.c
+# provides g_mod_log.
 MODS_TEST_DEPS := $(MODS_DIR)/mods/theme/roles.c \
                   $(MODS_DIR)/mods/theme/presets.c \
                   $(MODS_DIR)/mods/theme/palette.c
@@ -165,10 +153,10 @@ MODS_TEST_SRCS := $(wildcard $(MODS_DIR)/tests/test_*.c)
 MODS_TEST_STUBS := $(MODS_DIR)/tests/stubs.c
 
 # --- ABI ceiling ---
-# The deck runs glibc 2.17. "It compiled" says nothing about whether it will
-# load, and three properties decide that: the glibc version ceiling, NEEDED
-# naming libc.so.6 rather than musl's libc.so, and nothing in NEEDED the deck
-# lacks. Failing any of them takes down every process apl_start.sh starts.
+# The deck runs glibc 2.17. Three properties decide whether the shim loads:
+# the glibc version ceiling, NEEDED naming libc.so.6 rather than musl's
+# libc.so, and nothing in NEEDED the deck lacks. Failing any of them takes
+# down every process apl_start.sh starts.
 MODS_GLIBC_MAX ?= 2.17
 MODS_DECK_LIBS := libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 \
                   ld-linux-aarch64.so.1

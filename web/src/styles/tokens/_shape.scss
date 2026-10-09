@@ -2,8 +2,8 @@
  * Radius, border, elevation and motion tokens.
  *
  * On motion: nothing here is longer than 180ms and nothing is driven by scroll
- * position. Transitions exist to soften a state change the user caused, and a
- * user who has asked for less of that gets none -- see base/_reset.scss.
+ * position. Transitions only soften a state change the user caused, and are
+ * disabled for reduced motion (see base/_reset.scss).
  */
 
 :root {

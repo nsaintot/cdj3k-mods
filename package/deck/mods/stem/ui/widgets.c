@@ -26,16 +26,15 @@ void stems_colour(uintptr_t comp, int id, uint32_t argb)
     juce_comp_colour(comp, id, argb);
 }
 
-/* Halfway to white: a marked bar reads as emphasis rather than as a bar belonging to
- * something else. The distance is the only thing that differs from a touched button
- * (MOD_CHECKER_HOT_Q8), which is why both come off one helper. */
+/* Halfway to white, for marked wedge bars. Same helper as the touch lift, with a
+ * different distance than MOD_CHECKER_HOT_Q8. */
 uint32_t stems_lighter(uint32_t argb)
 {
     return mod_colour_lift(argb, 128u);
 }
 
-/* Retext a Label we built. juce's ValueSource does not compare, so calling this
- * with an unchanged string still sends a repaint: don't, per frame. */
+/* Retext a Label we built. juce's ValueSource does not compare, so an unchanged
+ * string still repaints; do not call this per frame. */
 void stems_text(uintptr_t label, const char *text)
 {
     if (stems_g_api_ok) juce_label_text(label, text);
@@ -46,9 +45,8 @@ void stems_text(uintptr_t label, const char *text)
 /* ================================================================== */
 
 
-/* Clone once, at first use. The overrides are ours; the check that Label's paint
- * is still in Label's paint slot -- which stems_label_paint CHAINS to -- belongs
- * to juce_label_vt_clone and is why this is not a memcpy here. */
+/* Clone once, at first use. juce_label_vt_clone also checks that Label's paint is
+ * still in its slot, since stems_label_paint chains to it. */
 int stems_label_vt_ready(void)
 {
     const struct juce_vt_override ov[] = {

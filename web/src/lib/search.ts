@@ -1,15 +1,13 @@
 /*
  * Search.
  *
- * Section-level, over the documentation and the feature list. Written out
- * rather than pulled in: the corpus is about 200 KB of text, which is small
- * enough that a linear scan with a real scoring function beats shipping an
- * index library, and it keeps the ranking honest -- every rule below is one
- * line you can argue with.
+ * Section-level, over the documentation and the feature list. Hand-written
+ * rather than a library: the text is about 200 KB, small enough that a linear
+ * scan with a scoring function beats shipping an index library, and each
+ * ranking rule below is one line.
  *
- * Granularity is the SECTION, not the document. A hit that lands you on
- * `/docs/mods#cues` is an answer; one that lands you at the top of a
- * 700-line document is a second search.
+ * Granularity is the section, not the document: a hit opens
+ * `/docs/mods#cues`, not the top of a 700-line document.
  *
  * The index is a separate chunk, fetched the first time the dialog opens. A
  * visitor who never searches never downloads it.
@@ -43,8 +41,8 @@ export interface SearchResult {
   snippet: string
 }
 
-/* Identifiers matter here -- `sub_10dd0d8` and `pcmbuf` are things people look
- * for -- so underscores and digits are part of a word. */
+/* Identifiers such as `ep122_shim` and `pcmbuf` are searched for, so
+ * underscores and digits are part of a word. */
 const WORD = /[^\p{L}\p{N}_]+/u
 
 export function tokenize(input: string): string[] {
@@ -105,8 +103,8 @@ export function loadIndex(): Promise<SearchRecord[]> {
  * How well one token scores against one record.
  *
  * A whole-word hit outranks a prefix hit, a heading outranks the body, and
- * repetition is capped -- a section that says "stem" forty times is not forty
- * times the answer.
+ * repetition is capped, so a section that says "stem" forty times does not
+ * score forty times higher.
  */
 function scoreToken(record: SearchRecord, token: string): number {
   let score = 0
@@ -201,8 +199,8 @@ export function search(query: string, limit = 20): SearchResult[] {
       total += score
     }
 
-    // Every token has to land somewhere in the section. An OR would return the
-    // whole corpus for any query with a common word in it.
+    // Every token must match somewhere in the section. An OR would return
+    // nearly every section for any query containing a common word.
     if (!matchedAll) continue
 
     results.push({ record, score: total, snippet: makeSnippet(record.text, tokens) })

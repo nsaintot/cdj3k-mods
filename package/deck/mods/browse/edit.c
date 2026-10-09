@@ -2,26 +2,22 @@
 /*
  * browse/edit.c - the EDIT toggle in the browse header.
  *
- * The gate in front of the reorder gesture. See browse.h for why the feature
- * needs a gate at all and where it attaches.
+ * Enables the reorder gesture. See browse.h for why it needs a mode and where
+ * it attaches.
  *
  * ---- the plate ------------------------------------------------------------
  *
- * It is one of the header's buttons, not a decoration beside them: the deck's
- * PREVIEW and font-size plates are 114x90 four-pixel checkerboards on a 124
- * stride, and this takes the free slot to their left with the same surface from
- * the shared draw kit. Both numbers come off the neighbour at run time -- the
- * point of reading the layout is not to have written it down.
+ * Styled as one of the header's buttons: the deck's PREVIEW and font-size
+ * plates are 114x90 four-pixel checkerboards on a 124 stride, and this takes
+ * the free slot to their left with the same surface from the shared draw kit.
+ * Size and stride are read from the neighbour at run time.
  *
- * Including the bottom lip: 56x3 flush with the bottom edge, #7d7d7d unlit and
- * #afafaf lit, which is mod_btn_bar unchanged. It is the same mark the waveform
- * title bar's quick menu wears, and a plate without one does not read as a
- * button on this deck.
+ * It has the same bottom lip: 56x3 flush with the bottom edge, #7d7d7d unlit
+ * and #afafaf lit (mod_btn_bar), as on the waveform title bar's quick menu.
  *
- * Lit is YELLOW rather than the deck's blue, through the `mode` role -- see the
- * note beside it in draw.h -- and the lettering and the mark go NEAR-BLACK with
- * it, through text_on_accent. Ink that stays white over a light chromatic fill
- * is the one combination on this deck that does not hold at arm's length.
+ * Lit is yellow, not the deck's blue, through the `mode` role (see draw.h), and
+ * the lettering and mark turn near-black through text_on_accent, since white
+ * on a light chromatic fill is hard to read.
  */
 #include "browse/browse.h"
 
@@ -36,12 +32,10 @@ static uintptr_t be_g_orig_bar_paint;
 static uintptr_t be_g_orig_mouseup;
 static uintptr_t be_g_orig_tick;
 static uintptr_t be_g_list;                 /* the track list the mode is on    */
-/* The top of the tree the header hung from when the mode was entered. The deck
- * DETACHES a view rather than hiding it -- measured: stepping to the play screen
- * leaves gui::BrowseView with no parent at all, still visible, still holding its
- * list. So "is the browse screen up" is not a visibility question, and the walk
- * that looks for the list happily found it inside the orphaned subtree. What
- * changes is what the header's chain ends at. */
+/* The root of the header's tree when the mode was entered. The deck detaches a
+ * view instead of hiding it: on the play screen gui::BrowseView has no parent
+ * but is still visible and still holds its list. So whether the browse screen
+ * is up is decided by the header's root, not by visibility. */
 static uintptr_t be_g_root;
 static int       be_g_on;                   /* the mode itself                  */
 static int       be_g_held;                 /* a finger is on the plate         */
@@ -75,8 +69,8 @@ static void be_repaint(uintptr_t comp)
 
 /* ---- is the list on screen a PLAYLIST? ------------------------------------
  *
- * See browse.h. Under gui::PlayListView -- the PLAYLIST button's screen -- a
- * track list is a playlist by construction. */
+ * See browse.h. Under gui::PlayListView (the PLAYLIST button's screen) every
+ * track list is a playlist. */
 static int be_under_playlist_view(uintptr_t list)
 {
     uintptr_t ti = juce_class_of(ep122_sym(EP122_PLAYLIST_VIEW)), c = list;
@@ -90,8 +84,8 @@ static int be_under_playlist_view(uintptr_t list)
     return 0;
 }
 
-/* The model's row count, through the slot the deck reads it from: the list's
- * visible row's owner is the box, and the box holds the model. */
+/* The model's row count, via the visible row's owning list box and its
+ * model. */
 static int be_num_rows(uintptr_t list)
 {
     uintptr_t rc = bs_find_visible_class(list, ep122_sym(EP122_ROWCOMP));
@@ -108,10 +102,10 @@ static int be_num_rows(uintptr_t list)
     return (int)((int64_t (*)(void *))fn)((void *)model);
 }
 
-/* The browse screen's answer: the collector's newest held track-list cache,
- * asked every BE_GATE_TICKS, and at once when the list on screen changes --
- * the widget is reused between an album and a playlist, so the row count is
- * the change that shows. Kept in be_g_pid so the log can quote it. */
+/* The playlist id from the collector's newest held track-list cache, polled
+ * every BE_GATE_TICKS and immediately when the list on screen changes. The
+ * widget is reused between albums and playlists, so a change is detected by
+ * its row count. Kept for the log. */
 static uint32_t be_g_pid;
 
 static void be_poll_playlist(uintptr_t list)
@@ -138,16 +132,12 @@ static int be_on_playlist(uintptr_t list)
 
 /* ---- the mark -------------------------------------------------------------
  *
- * One arrow: a shaft the full height, and a solid triangular head widening away
- * from the tip a row at a time. `up` only chooses which end the head grows
- * from; everything else is shared, which is what keeps the two arrows identical
- * rather than nearly identical.
+ * One arrow: a full-height shaft and a solid triangular head widening one pixel
+ * per row from the tip. `up` only selects which end the head is at, so both
+ * arrows are identical.
  *
- * The two BASE CORNERS come back at half alpha instead of at full, which is the
- * whole of "rounded" at eleven pixels across: the tip is already blunt at three
- * pixels and the diagonals are already a staircase, so the corners are the only
- * hard thing in the shape. Alpha in the colour blends, so this is real coverage
- * rather than a lighter dot. */
+ * The two base corners are drawn at half alpha to round them; at eleven pixels
+ * across they are the only sharp part of the shape. The alpha blends. */
 static void be_arrow(void *g, int x, int y, uint32_t col, int up)
 {
     int r, last = BE_HEAD_ROWS - 1;
@@ -167,8 +157,8 @@ static void be_arrow(void *g, int x, int y, uint32_t col, int up)
     mod_gfx_fill(g, x + BE_ARROW_X + BE_GLYPH_T - 1 + last, base_y, 1, 1);
 }
 
-/* {left, right, top} of each bar. The middle one reaches further left because
- * it has no arrow beside it -- that asymmetry is the icon, not a slip. */
+/* {left, right, top} of each bar. The middle one extends further left because
+ * it has no arrow beside it; this is intentional. */
 static const int8_t k_be_bars[3][3] = {
     { 20, 43,  2 },
     {  8, 43, 17 },
@@ -198,13 +188,11 @@ static void be_paint(void *self, void *g)
     if ((uintptr_t)self != be_g_btn || juce_comp_bounds((uintptr_t)self, b) != 0)
         return;
     lift = be_g_held ? MOD_CHECKER_HOT_Q8 : 0;
-    /* Near-black on the lit plate, which is what text_on_accent is for: white
-     * on a light chromatic fill is the one combination on this deck that does
-     * not hold at arm's length, and the yellow is a light fill. */
+    /* Near-black (text_on_accent) on the lit yellow plate, for legibility. */
     ink = be_g_on ? ui->text_on_accent : ui->text;
 
-    /* Unlit takes the theme's authored second grey; lit is chromatic, which
-     * the duotone leaves alone, so a derived partner is right for it. */
+    /* Unlit uses the theme's second grey; lit is chromatic, which the duotone
+     * does not change, so a derived partner colour is used. */
     mod_draw_enter();
     if (be_g_on)
         mod_checker_lift(g, 0, 0, b[2], b[3], ui->mode, lift);
@@ -212,10 +200,9 @@ static void be_paint(void *self, void *g)
         mod_checker_lift2(g, 0, 0, b[2], b[3], ui->surface, ui->surface2, lift);
     mod_btn_bar(g, 0, 0, b[2], b[3],
                 mod_colour_lift(be_g_on ? ui->bar_on : ui->bar, lift));
-    /* Our own lettering rather than the Label's, which can only centre in its
-     * own bounds -- and this plate carries a word AND a mark. The Label holds no
-     * text at all, which is also why Label::paint is not chained here: with a
-     * transparent background and nothing to write it would draw nothing. */
+    /* Our own lettering: the Label can only centre in its bounds, and this
+     * plate has a word and a mark. The Label holds no text, so Label::paint is
+     * not chained (it would draw nothing). */
     mod_gfx_text(g, BE_TEXT, BE_FONT, ink, 0, BE_LABEL_CY - b[3] / 2,
                  b[2], b[3], JUCE_JUSTIFY_CENTRED);
     be_glyph(g, (b[2] - BE_GLYPH_W) / 2, BE_GLYPH_Y, ink);
@@ -227,32 +214,26 @@ static void be_mousedown(void *self, void *event)
     (void)event;
     if ((uintptr_t)self != be_g_btn)
         return;
-    /* On the press, like the deck's own buttons: the lift below is what the
-     * finger is for, and a toggle that waits for the release reads as lag. */
+    /* Toggle on press, like the deck's own buttons; waiting for release feels
+     * laggy. */
     be_g_held = 1;
     if (be_g_on) {
         be_g_on = 0;
         be_g_list = be_g_root = 0;
         browse_sort_give_back(1);
     } else {
-        /* The mode does not come on if the sort could not be taken. A reorder
-         * under someone else's sort would move the row the DJ is looking at to
-         * a position they cannot see, so half of this feature is worse than
-         * none of it. */
+        /* The mode stays off if the sort could not be taken: under another
+         * sort a moved row would land at a position the DJ cannot see. */
         be_g_on = browse_sort_take(be_g_bar) == 0;
-        /* WHICH list, not just "a mode is on". RowComp is the row of every
-         * touchable table in the app -- the browse sidebar and DJ SETTINGS
-         * included -- so a gesture gated on the mode alone carries THOSE rows
-         * too, and a tap on the sidebar becomes a drag that eats the tab. */
+        /* Record which list: RowComp is the row of every touchable table in
+         * the app, including the browse sidebar and DJ SETTINGS, so the
+         * gesture is limited to this list. */
         be_g_list = be_g_on ? browse_track_list(be_g_bar) : 0;
         be_g_root = be_g_on ? juce_comp_root(be_g_bar) : 0;
     }
     be_repaint(be_g_btn);
-    /* AND THE LIST, because the mode changes how its rows draw -- the selection
-     * plate goes while EDIT is on -- and nothing else would invalidate them. The
-     * rows are painted once and left alone until something touches them, so
-     * without this the mode's first effect on a row is whenever it next happens
-     * to repaint for an unrelated reason. */
+    /* Also repaint the list: EDIT hides the selection plate, and the rows would
+     * otherwise not repaint until something else invalidated them. */
     be_repaint(be_g_list ? be_g_list : browse_track_list(be_g_bar));
     MDBG("browse: EDIT %s\n", be_g_on ? "on" : "off");
 }
@@ -284,14 +265,13 @@ static int be_vt_ready(void)
 
 /* ---- placement ------------------------------------------------------------
  *
- * The group is gui::BrowseDispSwitchButtonsWidget and the plates are ITS
+ * The group is gui::BrowseDispSwitchButtonsWidget and the plates are its
  * children: PREVIEW at 0, the font-size button at 124, INFO at 267, each 114
- * wide except INFO. So the group's own x is where the right-hand run starts, the
- * first two children give the stride, and our slot is one stride before it.
+ * wide except INFO. The group's x is where the run starts, the first two
+ * children give the stride, and our slot is one stride before it.
  *
- * Only gui::TogglesImageButton exactly, which is a typeinfo compare and so does
- * not catch the back arrow -- that is a gui::TogglesImageButtonEx, a different
- * class deriving from it.
+ * Matches gui::TogglesImageButton exactly by typeinfo, which excludes the back
+ * arrow (a gui::TogglesImageButtonEx, a derived class).
  */
 static int be_slot(uintptr_t bar, int32_t out[4])
 {
@@ -328,8 +308,8 @@ static int be_slot(uintptr_t bar, int32_t out[4])
         return -1;
     }
 
-    /* The group's x, not the button's: the button's is relative to the group and
-     * ours is relative to the header. */
+    /* Offset by the group's x: button positions are relative to the group, ours
+     * to the header. */
     out[0] = gb[0] - (next_x ? next_x - first[0] : first[2] + BE_GAP);
     out[1] = gb[1] + first[1];
     out[2] = first[2];
@@ -343,16 +323,12 @@ static int be_slot(uintptr_t bar, int32_t out[4])
     return 0;
 }
 
-/* ONE PLATE PER HEADER. There is more than one gui::BrowseTitleWidget: the
- * browse screen has one and the screen behind the deck's own PLAYLIST button has
- * another, both live at once under the ViewTransitionManager. Binding to the
- * first one that painted meant the second screen -- the one a DJ reaches with a
- * dedicated button, showing nothing but a playlist -- could never carry an EDIT
- * at all.
+/* One plate per header. There are two gui::BrowseTitleWidgets, the browse
+ * screen's and the PLAYLIST button screen's, both live under the
+ * ViewTransitionManager.
  *
- * Small and fixed: the app builds these once and keeps them, so a table this
- * size is the whole set rather than a cache. A header past the end simply goes
- * without, which is the same failure the single binding had, for the same cost. */
+ * Fixed size: the app builds these once and keeps them. A header beyond
+ * BE_MAX_BARS gets no plate. */
 static struct be_plate {
     uintptr_t bar, btn, peer;
 } be_g_plate[BE_MAX_BARS];
@@ -376,9 +352,8 @@ static void be_attach(uintptr_t bar)
         return;
     for (i = 0; i < BE_MAX_BARS; i++) {
         if (be_g_plate[i].bar == bar) {
-            /* Already ours. Follow it: this runs from the paint of whichever
-             * header is on screen, so it is also how the module learns which
-             * one that is. */
+            /* Already attached. This runs from the paint of the header on
+             * screen, so it also tracks which one that is. */
             be_g_bar = bar;
             be_g_btn = be_g_plate[i].btn;
             be_g_peer = be_g_plate[i].peer;
@@ -393,8 +368,8 @@ static void be_attach(uintptr_t bar)
         return;
 
     be_g_bar = bar;
-    /* Empty: the plate paints its own word. The Label is here to be a component
-     * with a vtable we own -- somewhere to put a press and a paint. */
+    /* Empty: the plate paints its own word. The Label only provides a
+     * component with a vtable we own for press and paint. */
     be_g_btn = juce_label(bar, "", BE_FONT, 0x00000000u, mod_ui()->text,
                           be_g_vptr, slot[0], slot[1], slot[2], slot[3]);
     if (!be_g_btn) {
@@ -413,22 +388,17 @@ static void be_attach(uintptr_t bar)
 
 /* ---- when it is on screen at all ------------------------------------------
  *
- * A VISIBLE TRACK LIST, and one the deck filled from djdbSongPlaylist.
+ * Shown over a visible track list that the deck filled from djdbSongPlaylist.
  *
- * The first version mirrored PREVIEW, on the grounds that the deck hides that
- * whole button group where there are no tracks. It does -- but PREVIEW is also
- * hidden on the playlist screen reached directly rather than through BROWSE,
- * which is a track list, and is exactly where a DJ would look for this. The
- * widget itself is the honest question.
+ * Do not key visibility on PREVIEW: it is also hidden on the PLAYLIST button's
+ * screen, which is a track list.
  *
- * The second half is the PLAYLIST-ONLY gate. An artist's or album's `#` is the
- * track's own album number out of its tags, so a reorder there would rewrite
- * metadata rather than move anything; be_on_playlist is 0 unless the list on
- * screen is served from a playlist's cache or sits on the PLAYLIST screen.
+ * Playlist-only: an artist's or album's `#` is the track's album number from
+ * its tags. be_on_playlist is 0 unless the list is served from a playlist's
+ * cache or sits on the PLAYLIST screen.
  *
- * Turning the mode OFF on the way out, not just hiding the plate: coming back to
- * a browse screen with an invisible EDIT still latched would leave the list in a
- * mode with nothing on screen saying so. */
+ * be_tick turns the mode off when leaving, not just the plate, so EDIT is never
+ * latched while invisible. */
 static void be_sync(void)
 {
     uintptr_t vptr = 0, list;
@@ -436,11 +406,10 @@ static void be_sync(void)
 
     if (!be_g_btn || !be_g_peer)
         return;
-    /* Our plate is a CHILD of the deck's header, so the deck deletes it if it
-     * ever rebuilds the browse view -- and this runs 44 times a second off a
-     * pointer we are holding. One read says whether the object is still ours;
-     * anything else and the whole attachment is dropped, so the header's next
-     * paint builds it again rather than this writing into freed memory. */
+    /* Our plate is a child of the deck's header, so the deck deletes it if it
+     * rebuilds the browse view, and this runs at 44 Hz on a held pointer. If the
+     * vptr no longer matches, drop the attachment so the header's next paint
+     * rebuilds it, instead of writing into freed memory. */
     if (mod_safe_read(be_g_btn, &vptr, sizeof(vptr)) != 0 || vptr != be_g_vptr) {
         struct be_plate *p = be_find_plate(be_g_btn);
 
@@ -452,11 +421,9 @@ static void be_sync(void)
         be_g_on = be_g_held = 0;
         return;
     }
-    /* A TRACK LIST WITH POSITIONS IN IT. `#` is the whole question: a list that
-     * shows one has a stored order to move a row within, and a list that does
-     * not -- all tracks, an artist's tracks, a search result -- has nothing a
-     * reorder could mean. The deck clears the column's flags on those, so this
-     * is one bit rather than a guess about which view is up. */
+    /* A track list with a `#` column has a stored order. Lists without one
+     * (all tracks, an artist's tracks, a search result) have the column's
+     * flags cleared by the deck, so this is one bit. */
     list = browse_track_list(be_g_bar);
     be_poll_playlist(list);
     want = list != 0 && browse_sort_has_position(be_g_bar) && be_on_playlist(list);
@@ -471,10 +438,9 @@ static void be_sync(void)
 
 /* ---- the anchor ---------------------------------------------------------- */
 
-/* Every gui::BrowseTitleWidget's paint, which is how the module learns both that
- * a header exists and which one is on screen. There is more than one -- the
- * browse screen has its own and gui::PlayListView another, alive together -- so
- * this attaches per header rather than to the first that paints. */
+/* Every gui::BrowseTitleWidget's paint: tells the module that a header exists
+ * and which one is on screen. The browse screen and gui::PlayListView each have
+ * one, so this attaches per header. */
 static void be_bar_paint(void *self, void *g)
 {
     if (be_g_orig_bar_paint)
@@ -482,21 +448,19 @@ static void be_bar_paint(void *self, void *g)
     be_attach((uintptr_t)self);
 }
 
-/* The deck's own 44 Hz display refresh. The header paint would be the cheaper
- * clock and is the wrong one: PREVIEW appearing is not a reason for the bar to
- * be invalidated, so following it from there leaves our plate a screen behind
- * whichever way it moved. */
+/* The deck's 44 Hz display refresh. The header paint is not used as the clock:
+ * the bar is not repainted when PREVIEW appears or disappears, so the plate
+ * would lag a screen behind. */
 static void be_tick(void *self)
 {
     if (be_g_orig_tick)
         ((void (*)(void *))be_g_orig_tick)(self);
     be_sync();
     browse_drag_tick();
-    /* THE MODE BELONGS TO ONE LIST, and ends when that list is not what is on
-     * screen -- which covers walking back up to the playlist chooser, switching
-     * category, and leaving the browse screen altogether. Two conditions rather
-     * than one because they fail at different moments: the list changes as soon
-     * as the view does, and `#` can go while the same list is still up. */
+    /* The mode belongs to one list and ends when that list leaves the screen:
+     * going back to the playlist chooser, switching category, or leaving the
+     * browse screen. The list check and the `#` check are both needed: the list
+     * changes with the view, while `#` can disappear with the same list up. */
     if (be_g_on) {
         uintptr_t now = browse_track_list(be_g_bar);
         const char *why = NULL;
@@ -520,11 +484,9 @@ static void be_tick(void *self)
 
 static int be_install(void)
 {
-    /* THE GESTURE FIRST, and the plate only if it took. A plate that cannot
-     * reorder is worse than none: pressing it still borrows the DJ's sort and
-     * forces `#`, and hands back nothing for it. Failing here leaves the row
-     * hooks in place and inert -- they all return to stock unless EDIT is on,
-     * and without a plate it never can be. */
+    /* Install the gesture first, and the plate only if it succeeded; a plate
+     * that cannot reorder would still take the DJ's sort. If a later step fails
+     * the row hooks stay installed but inert, since EDIT can never turn on. */
     if (browse_drag_install() != 0)
         return -1;
     if (!FN_LABEL_CTOR || !FN_ADD_VISIBLE || !FN_SET_BOUNDS || !FN_FONT_BUILD ||
@@ -539,12 +501,8 @@ static int be_install(void)
         MDBG("browse: no header anchor -> no EDIT\n");
         return -1;
     }
-    /* REQUIRED. The tick is not decoration: it is what ends the mode when its
-     * list leaves, what holds the header disabled against the deck putting the
-     * sortable bits back, and what commits a drop once the release has settled.
-     * Without it the sort stays clamped on whatever list follows and no drag
-     * ever writes -- so the feature does not go up at all rather than going up
-     * broken. */
+    /* Required: the tick ends the mode when its list leaves, keeps the header's
+     * sortable bits cleared, and commits a drop once the release has settled. */
     if (mod_patch_vslot("browseTick", EP122_DISPLAY_REFRESH, BE_TICK_SLOT,
                         (void *)be_tick, &be_g_orig_tick) != 0) {
         MDBG("browse: no display tick -> no EDIT (the mode could not end, the"
@@ -554,9 +512,8 @@ static int be_install(void)
     return 0;
 }
 
-/* ONE MOD FOR THE WHOLE FEATURE. The plate, the sort it borrows and the gesture
- * are three files but a single thing, and there is no useful state where some of
- * them are installed: see be_install. */
+/* One mod for the whole feature: the plate, the sort and the gesture are three
+ * files but install together (see be_install). */
 KIT_MOD(k_mod_browse_reorder,
         .name = "browse_reorder", .prio = 36, .install = be_install,
         .what = "drag a track to a new place in a playlist, behind an EDIT gate");

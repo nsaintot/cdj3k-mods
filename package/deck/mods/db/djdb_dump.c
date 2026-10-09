@@ -50,7 +50,7 @@ static void djdb_dump_table(uintptr_t tbl)
         djdb_name(nameptr, name, sizeof(name)) != 0)
         return;
 
-    /* The count sub_1c66f80 compares against before it walks the columns. */
+    /* The count the row insert compares against before it walks the columns. */
     if (mod_safe_read(tbl + 0x04, &ncol, sizeof(ncol)) != 0 ||
         mod_safe_read(tbl + DJDB_TBL_COLS_OFF, &cols, sizeof(cols)) != 0 ||
         !cols || ncol <= 0 || ncol > DJDB_COLS_MAX) {
@@ -74,16 +74,13 @@ static void djdb_dump_table(uintptr_t tbl)
     }
     MDBG("djdb:   %-24s %2d cols, types [%s]\n", name, (int)ncol, line);
 
-    /* COLUMN NAMES, for the tables a writer actually needs. A type list says a
-     * playlist entry is three integers; it does not say which one is the order,
-     * and guessing that is how a DJ's playlist ends up shuffled. The name is a
-     * packed string at col+0x00 -- found by dumping the whole 32-byte entry and
-     * seeing which field decoded for every column.
+    /* Column names, for the tables a writer needs: the types alone do not say
+     * which integer is the playlist order. The name is a packed string at
+     * col+0x00.
      *
-     * Named tables only, so this stays a readable block rather than 74 of them. */
-    /* EXACT names: "DJDBCONTENT" is a prefix of DJDBCONTENTPREPARE and a
-     * substring of DJDBEXCONTENTOPTION, so a strstr here quietly dumps three
-     * tables and the interesting one scrolls off. */
+     * Only these tables, out of 74, to keep the log readable. */
+    /* Exact match: "DJDBCONTENT" is a prefix of DJDBCONTENTPREPARE and a
+     * substring of DJDBEXCONTENTOPTION. */
     if (strcmp(name, "DJDBSONGPLAYLIST") != 0 &&
         strcmp(name, "DJDBPLAYLIST") != 0 &&
         strcmp(name, "DJDBCONTENT") != 0)
@@ -101,8 +98,7 @@ static void djdb_dump_table(uintptr_t tbl)
 
         n += snprintf(line + n, sizeof(line) - (size_t)n, "%s%d:%s",
                       i ? " " : "", i, cn[0] ? cn : "?");
-        /* Flushed in chunks: one line of fifty names is unreadable and the
-         * journal truncates it anyway. */
+        /* Flushed in chunks; the journal truncates long lines. */
         if ((size_t)n >= sizeof(line) - 40 || i == ncol - 1) {
             MDBG("djdb:     %s\n", line);
             n = 0;
@@ -110,13 +106,11 @@ static void djdb_dump_table(uintptr_t tbl)
         }
     }
 
-    /* THE INDEXES, and WHICH COLUMNS EACH COVERS. A write addresses a row
-     * through an index, so this decides what a key even is: the deck's own
-     * playlist cursor passes ONE key to idxSongPlaylist and gets a whole
-     * playlist back, which means that key is a prefix and the index is
-     * compound. Whether its second column is TRACKNO or CONTENTID is the
-     * difference between addressing a row by its position and addressing it by
-     * its track, and a reorder wants the first. */
+    /* The indexes and the columns each covers. A write addresses a row through
+     * an index. The deck's playlist cursor passes one key to idxSongPlaylist
+     * and gets a whole playlist back, so the key is a prefix of a compound
+     * index; its second column (TRACKNO or CONTENTID) decides whether a row is
+     * addressed by position or by track. */
     {
         uintptr_t idx = 0;
         int guard = 0;
@@ -134,9 +128,8 @@ static void djdb_dump_table(uintptr_t tbl)
                 (void)djdb_name(nptr, in, sizeof(in));
             if (mod_safe_read(idx, w, sizeof(w)) != 0)
                 break;
-            /* The pointer slots, decoded as column descriptors: a column's name
-             * is a packed string at its +0x00, so a slot that names a column is
-             * a key column and one that does not is something else. */
+            /* The pointer slots, decoded as column descriptors: a slot whose
+             * +0x00 decodes as a name is a key column. */
             n = 0;
             for (j = 0x08; j <= 0x38; j += 8) {
                 uintptr_t p = 0;
@@ -203,19 +196,9 @@ void djdb_try_dump(const char *where, const char *table)
     djdb_dump(ctx);
 }
 
-/* A playlist id seen going past on a djdbSongPlaylist cursor, which
- * idxSongPlaylist takes ALONE, so the single key is it. Cleared by nothing: it
- * is a fallback for the moment before the collector has been seen, and the id
- * that gets used is the one the cache names. */
-/* EVERY query's table, in order, with consecutive repeats collapsed.
- *
- * The playlist latch is held over a timeout rather than dropped when some other
- * list is filled, and that is wrong in a way the deck showed: it CACHES a list,
- * so returning to a playlist already visited re-queries nothing and the id is
- * never re-stated. Which query fills what -- and whether a cached re-entry
- * queries at all -- is the thing to know before any rule can replace the
- * timeout, and only the deck can say. Consecutive repeats collapse because a
- * list fill is one table asked many times. */
+/* Log every query's table in order, collapsing consecutive repeats (a list
+ * fill queries one table many times). Shows which query fills which list, and
+ * that returning to a cached list queries nothing. */
 void djdb_note_table(const char *name)
 {
     static char last[24];
@@ -233,9 +216,8 @@ void djdb_note_table(const char *name)
 }
 
 /* The context slot holds a pointer and a flag. The flag is always set, so every
- * context this firmware hands out is manufactured by the function beside it --
- * which is why the plain pointer is always NULL and caching one is not a route.
- * Both halves are reported here so the producer can be named. */
+ * context comes from the function beside it and the plain pointer is always
+ * NULL; there is nothing to cache. Both halves are logged. */
 void djdb_report_slot(void)
 {
     uintptr_t slot = ep122_sym(EP122_DJDB_CONTEXT_SLOT);

@@ -2,18 +2,15 @@
 /*
  * stemd_client - the network half of the STEMS feature.
  *
- * A small daemon that sits between the EP122 shim and a `stemd` server. It
- * exists so that no HTTP client, retry loop, resolver or blocking socket runs
- * inside the process that owns the deck's audio thread: if this wedges or
- * crashes, EP122 keeps playing and the deck simply shows STEMS as unavailable.
- * On a device someone is performing on, that is worth the extra moving part.
+ * A small daemon between the EP122 shim and a `stemd` server, so that no HTTP
+ * client, retry loop, resolver or blocking socket runs in the process that owns
+ * the deck's audio thread: if this hangs or crashes, EP122 keeps playing and
+ * STEMS shows as unavailable.
  *
- * What deliberately does NOT move here is decoding. The decoder we need is
- * EP122's own -- decoding a second time out here would risk the two decoders
- * disagreeing about encoder delay, and the deck pads its output (4116 frames on
- * the reference track), so a stem set built from an independent decode comes
- * back misaligned and reads as a phase problem rather than an off-by-N. The
- * shim decodes and streams PCM in; this process never opens a track file.
+ * Decoding stays in the shim, using EP122's own decoder. An independent decode
+ * could disagree on encoder delay and the deck pads its output, so the stems
+ * would come back misaligned. The shim
+ * streams PCM in; this process never opens a track file.
  *
  * Shape:
  *
@@ -25,17 +22,16 @@
  *                   GET  /v1/jobs/{id}/stems/{name} -> tmpfs WAV -> STEM_READY
  *     CANCEL     -> DELETE /v1/jobs/{id}
  *
- * Discovery and the health probe live in discovery.c; the HTTP/1.1 client in
- * http.c. This file is the socket loop and the state machine, and nothing else.
+ * Discovery and the health probe are in discovery.c, the HTTP/1.1 client in
+ * http.c, the state machine in session.c. This file is the socket loop.
  */
 #include "stemd_client.h"
 
 static volatile sig_atomic_t g_stop;
 
-/* session.c blocks in read() for as long as a client is connected. With
- * SA_RESTART cleared the signal does reach it as EINTR, but a read loop that
- * simply retries on EINTR swallows that just as effectively -- which is why
- * systemd still had to SIGKILL. This is how the loop knows the difference. */
+/* session.c blocks in read() while a client is connected. With SA_RESTART
+ * cleared the signal arrives as EINTR; the read loop checks this to tell a
+ * shutdown from a retryable interrupt. */
 int session_should_stop(void)
 {
     return g_stop != 0;
@@ -47,18 +43,12 @@ static void on_signal(int sig)
     g_stop = 1;
 }
 
-/* sigaction with SA_RESTART deliberately CLEARED.
+/* sigaction with SA_RESTART cleared.
  *
- * signal() gives BSD semantics, which means SA_RESTART, which means a SIGTERM
- * arriving while we sit in accept() silently restarts the call instead of
- * returning EINTR -- so `while (!g_stop)` is never re-tested and the daemon
- * only ever dies to SIGKILL. It shows up as
- *
- *   stemd-client.service: State 'stop-sigterm' timed out. Killing.
- *
- * on every restart, and worse, a job in flight never gets the chance to close
- * its session with the server. Clearing the flag is what makes the interrupt
- * actually reach the loop. */
+ * signal() gives BSD semantics (SA_RESTART), so a SIGTERM during accept()
+ * restarts the call, `while (!g_stop)` is never re-tested, and systemd has to
+ * SIGKILL ("State 'stop-sigterm' timed out. Killing."), leaving any in-flight
+ * job's server session unclosed. */
 static void install_stop_handler(int sig)
 {
     struct sigaction sa;
@@ -72,21 +62,17 @@ static void install_stop_handler(int sig)
 
 /* Clear the spool at startup.
  *
- * /dev/shm is guest RAM. Stems are named per part now, so the live footprint is
- * two files whatever happens -- but a deck that ran an older build still has one
- * file per job sitting there (380 MB across five jobs, on a 3 GiB guest), and
- * they outlive this process because only a reboot clears tmpfs.
+ * /dev/shm is RAM and survives this process until reboot. Stems are named per
+ * part, so the live footprint is two files, but older builds left one file per
+ * job.
  *
- * Restricted to names this daemon owns: the two parts, their .part staging
- * files, and the stem-<uuid>-<part>.wav that earlier builds wrote. Nothing else
- * in /dev/shm is touched. Startup is the only safe moment for this -- there is
- * exactly one client, so nothing is in flight yet. */
+ * Only names this daemon owns are removed: the two parts, their .part staging
+ * files, and the legacy stem-<uuid>-<part>.wav. Startup is the safe moment, as
+ * nothing is in flight with the single client. */
 static void spool_sweep(void)
 {
-    /* Matched on the stem name and any extension, rather than on a list of
-     * suffixes: the container is the server's choice and has already changed
-     * once (wav -> flac). A sweep that knows only the old one silently stops
-     * working the day the format moves. */
+    /* Matched on the stem name and any extension: the container is the
+     * server's choice and has changed before (wav -> flac). */
     static const char *const own[] = { STEM_WIRE_HARMONICS, STEM_WIRE_VOCALS };
     char path[256];
     struct dirent *de;
@@ -137,9 +123,8 @@ static int listen_socket(void)
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, STEM_SOCK_PATH, sizeof(addr.sun_path) - 1);
 
-    /* A stale socket from a previous run refuses bind with EADDRINUSE even
-     * though nothing is listening, so clear it. Safe because the path is ours
-     * by convention and /run is tmpfs, wiped on boot. */
+    /* A stale socket from a previous run makes bind fail with EADDRINUSE, so
+     * remove it. The path is ours and /run is tmpfs. */
     unlink(STEM_SOCK_PATH);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         perror("bind");
@@ -173,8 +158,8 @@ int main(int argc, char **argv)
                  "(error|warn|info|debug|trace, or 0-4); staying at error\n", lvl);
     }
 
-    /* A client that goes away mid-upload must give us EPIPE to handle, not a
-     * signal that kills the daemon. */
+    /* A client that goes away mid-upload yields EPIPE instead of killing the
+     * daemon. */
     signal(SIGPIPE, SIG_IGN);
     install_stop_handler(SIGINT);
     install_stop_handler(SIGTERM);
@@ -196,8 +181,8 @@ int main(int argc, char **argv)
             perror("accept");
             break;
         }
-        /* One EP122, so one client at a time and no concurrency to get wrong.
-         * A second connection waits in the backlog until this one ends. */
+        /* One EP122, so one client at a time; a second connection waits in
+         * the backlog until this one ends. */
         session_run(cfd);
         close(cfd);
     }

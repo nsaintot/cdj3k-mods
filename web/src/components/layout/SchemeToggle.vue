@@ -5,8 +5,8 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 
 const { scheme, toggle } = useScheme()
 
-/* The icon shows what the button will DO, not what is currently on. `auto`
- * has no icon of its own -- it is one of the two, decided elsewhere. */
+/* The icon shows what the button will do, not the current scheme. `auto` has
+ * no icon of its own; it resolves to one of the two elsewhere. */
 const label = computed(() =>
   scheme.value === 'light' ? 'Switch to dark' : scheme.value === 'dark' ? 'Switch to light' : 'Switch colour scheme',
 )

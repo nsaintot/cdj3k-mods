@@ -6,7 +6,7 @@ vtables, masked instruction signatures for free functions. This emits the table
 the runtime resolver (core/resolve.c) walks at startup, so a mod is not pinned
 to one firmware build.
 
-Everything is resolved HERE, against the reference binary, so a spec that cannot
+Everything is resolved here, against the stock binary, so a spec that cannot
 be resolved fails on the Mac. What ships is the description, not the answer: the
 addresses in the generated header are comments, and the deck recomputes them
 against whatever binary it is actually running.
@@ -14,7 +14,7 @@ against whatever binary it is actually running.
     tools/gen-syms.py            # regenerate + verify
     tools/gen-syms.py --check    # verify only, non-zero if stale
 
-The reference binary comes from $EP122 and must be the DECK's copy. It is not
+The stock binary comes from $EP122 and must be the deck's own copy. It is not
 in this repository.
 """
 
@@ -29,13 +29,13 @@ DEFAULT_ALT = os.environ.get("EP122_RENESAS")
 SPEC = os.path.join(ROOT, "mods", "core", "ep122_syms.spec")
 HEADER = os.path.join(ROOT, "mods", "core", "ep122_syms.h")
 
-# How far a signature is allowed to grow before we call it ambiguous. 64
-# instructions is well past any shared prologue and still a cheap memcmp.
+# Signature lengths tried, shortest first; past the last one an entry is
+# ambiguous. 64 instructions is well past any shared prologue and still a cheap
+# memcmp.
 SIG_LENGTHS = [8, 12, 16, 24, 32, 48, 64, 96, 128]
 
-# sig_matches() stops collecting here. A list this long says nothing about
-# whether the signature covers its own address -- it only says the window is
-# still far too common, so grow it rather than reading the truncation as a fault.
+# sig_matches() stops collecting here. A full list only means the window is too
+# common: grow it, and do not read the truncation as a missing self-match.
 SIG_MATCH_LIMIT = 64
 
 
@@ -202,14 +202,14 @@ class Rtti:
         pool = set(cands)
         kinds = {}
         for v in sorted(cands, key=lambda k: -cands[k]):
-            # find_ptrs matches any qword, and a vtable address point is
+            # find_ptrs matches any qword, and a vtable address point is also
             # referenced from places that are not type_info heads; keep only
             # the ones that carry a name.
             recs = [p for p in self.elf.find_ptrs(v) if self._looks_like_ti(p)][:64]
-            # A real flavour vptr is worn by hundreds of type_infos. Reading a
-            # base-less record's tail as if it held a base pointer occasionally
-            # lands on something that passes _looks_like_ti, and that stray is
-            # worn by exactly one record -- so the count is what separates them.
+            # A real flavour vptr is used by hundreds of type_infos. Reading a
+            # base-less record's tail as a base pointer occasionally lands on
+            # something that passes _looks_like_ti, but such a stray is used by
+            # a single record, so the count filters it out.
             if len(recs) < 4:
                 continue
             si = vmi = 0
@@ -221,10 +221,10 @@ class Rtti:
                     si += 1
                 if 1 <= (nxt >> 32) <= 64 and (nxt & 0xFFFFFFFF) < 0x20:
                     vmi += 1
-            # __si_ is allowed a few stragglers: a base can be a pointer or
-            # fundamental type_info, whose own flavour vptr is not one of the
-            # three class ones and so is not in the pool. __vmi_ and the
-            # base-less flavour have no such escape and must be unanimous.
+            # __si_ tolerates a few misses: a base can be a pointer or
+            # fundamental type_info, whose flavour vptr is not one of the three
+            # class ones and so is not in the pool. __vmi_ and the base-less
+            # flavour must be unanimous.
             n = len(recs)
             if vmi == n and si == 0:
                 kinds[v] = "vmi"
@@ -255,7 +255,7 @@ class Rtti:
         want = mangled.encode() if isinstance(mangled, str) else mangled
         hits = []
         for sva in self.elf.find_bytes(want + b"\0"):
-            # must be the START of the string, not a suffix of a longer one
+            # must be the start of the string, not a suffix of a longer one
             if self.elf.data[self.elf.off(sva) - 1:self.elf.off(sva)] not in (b"\0", b""):
                 prev = self.elf.data[self.elf.off(sva) - 1]
                 if 0x20 <= prev < 0x7F:
@@ -421,9 +421,9 @@ def window_digest(elf, addr, n_insn):
     instructions.
 
     The resolver recomputes this from whatever it is looking at, so nothing of
-    the vendor's code needs to be carried in the tree -- not the bytes, and not
-    the masks derived from them. Measured equivalent to masking with the
-    reference's masks over every symbol on every extracted build.
+    the stock code needs to be carried in the tree -- not the bytes, and not
+    the masks derived from them. Gives the same result as masking with the
+    stock binary's own masks.
     """
     off = elf.off(addr)
     if off is None:
@@ -501,10 +501,10 @@ def adrp_pair_target(elf, fn, insn):
         imm -= 1 << 21
     page = (va & ~0xFFF) + imm * 4096
     rd = w & 0x1F
-    # The ADD need not follow the ADRP: the compiler is free to schedule other
-    # work between them, and on the Renesas build it does -- POPUP_CTOR's pair is
-    # eight apart. Every completion found here is checked against the address the
-    # spec declares, so looking further can only find a pair, never invent one.
+    # The ADD need not directly follow the ADRP: on the Renesas build
+    # POPUP_CTOR's pair is eight instructions apart. Every completion found is
+    # checked against the address the spec declares, so a wide search cannot
+    # produce a wrong result.
     for k in range(1, 16):
         w2 = elf.w32(va + 4 * k)
         if w2 is None or ((w2 >> 5) & 0x1F) != rd:
@@ -557,8 +557,8 @@ def resolve(elf, rtti, entries, alt=None, rtti_alt=None):
     """Resolve every entry; returns (results, errors)."""
     out, errors = [], []
     by_name = {}
-    # Same names, resolved against the OTHER processor's binary, so a from=/in=
-    # parent can be followed there too. Empty when no second binary was given.
+    # Same names resolved against the other processor's binary, so a from=/in=
+    # parent can be followed there too. Empty when no second binary is given.
     by_name_alt = {}
 
     def fail(lineno, name, msg):
@@ -615,9 +615,9 @@ def resolve(elf, rtti, entries, alt=None, rtti_alt=None):
                 continue
             by_name[name] = fn
             if "ren" in kv:
-                # Named, not derived: the child's ren_insn check reads this
-                # address and compares what it finds against the child's own
-                # ren=, so a wrong parent fails the build rather than the deck.
+                # Given explicitly, not derived. The child's ren_insn check
+                # reads this address and compares the result with its own ren=,
+                # so a wrong parent fails the build, not the deck.
                 by_name_alt[name] = int(kv["ren"], 0)
             out.append(dict(kind="slot", name=name, addr=fn,
                             vtable=kv["vtable"], off=off))
@@ -626,12 +626,10 @@ def resolve(elf, rtti, entries, alt=None, rtti_alt=None):
             addr = int(kv["addr"], 0)
             scope = kv.get("in")
             chosen = None
-            # `min=` forces a longer signature than uniqueness-here demands.
-            # Uniqueness is measured against ONE build; a signature that is
-            # barely unique in the reference can collide in a neighbouring
-            # firmware, and the resolver then sees a match COUNT that differs
-            # from the recorded one and refuses the symbol. Where a shorter
-            # signature is known to do that, say so here.
+            # `min=` forces a longer signature than uniqueness in the stock
+            # application binary requires. A signature that is barely unique here can collide in a
+            # neighbouring firmware; the resolver then sees a match count that
+            # differs from the recorded one and refuses the symbol.
             floor = int(kv.get("min", "0"), 0)
             for n in [x for x in SIG_LENGTHS if x >= floor]:
                 sig = signature(elf, addr, n)
@@ -695,12 +693,12 @@ def resolve(elf, rtti, entries, alt=None, rtti_alt=None):
 
             # The same function on the other application processor.
             #
-            # A CDJ-3000 .UPD carries two EP122 binaries, built by different
-            # compilers, so one signature cannot cover both. Measured over every
-            # extracted build, the two variants' windows never match in the
-            # wrong image, so a symbol simply carries both descriptors and the
-            # resolver keeps whichever hits its recorded count -- no variant
-            # detection, no global state, and a miss is still a refusal.
+            # A CDJ-3000 .UPD carries two EP122 binaries built by different
+            # compilers, so one signature cannot cover both. Neither variant's
+            # window matches in the other image, so a symbol carries both
+            # descriptors and the resolver keeps whichever hits its recorded
+            # count. No variant detection is needed, and a miss is still a
+            # refusal.
             if "ren" in kv:
                 if alt is None:
                     fail(lineno, name,
@@ -726,10 +724,10 @@ def resolve(elf, rtti, entries, alt=None, rtti_alt=None):
                              "ren= signature does not match its own address")
                         break
                     if rscope:
-                        # Scoped: uniqueness is not the bar, position is. A run of
-                        # siblings that differ only in the global each touches is
-                        # exactly what the mask removes, so take the shortest
-                        # signature and let the enclosing function separate them.
+                        # Scoped: position decides, not uniqueness. Siblings
+                        # that differ only in the global they touch look
+                        # identical once masked, so take the shortest signature
+                        # and let the enclosing function separate them.
                         rchosen = (rn_, rsig, rhits)
                         break
                     if len(rhits) == 1:
@@ -867,16 +865,16 @@ def emit(results):
     a = L.append
     a("// SPDX-License-Identifier: MIT OR Apache-2.0")
     a("/*")
-    a(" * ep122_syms.h - GENERATED by scripts/gen-ep122-syms.py. Do not edit.")
+    a(" * ep122_syms.h - GENERATED by tools/gen-syms.py. Do not edit.")
     a(" *")
-    a(" * Source of truth: core/ep122_syms.spec")
+    a(" * Source of truth: mods/core/ep122_syms.spec")
     a(" *")
-    a(" * Every address in here is a COMMENT. What ships is the description --")
-    a(" * an RTTI class name, a masked instruction signature, a vtable slot")
-    a(" * offset -- and mods/resolve.c recomputes the address on the deck")
-    a(" * against whatever binary is actually running. The recorded values are")
-    a(" * what the reference build resolved to, so a firmware that moves")
-    a(" * something shows up as a diff here rather than as a wild patch there.")
+    a(" * The addresses in this file are comments only. What ships is the")
+    a(" * description (an RTTI class name, a masked instruction signature, a")
+    a(" * vtable slot offset); mods/core/resolve.c recomputes each address on")
+    a(" * the deck against the running binary. The recorded values are what the")
+    a(" * stock application binary resolved to at generation time, so a firmware")
+    a(" * that moves a symbol shows up as a diff here.")
     a(" */")
     a("#ifndef EP122_SYMS_H")
     a("#define EP122_SYMS_H")
@@ -890,9 +888,9 @@ def emit(results):
     a("    EP122_SYM__COUNT")
     a("};")
     a("")
-    a("/* The spec tables are static, so exactly one translation unit may take")
-    a(" * them. mods/resolve.c defines EP122_SYMS_IMPL; everything else gets the")
-    a(" * enum above and nothing else. */")
+    a("/* The spec tables are static, so only one translation unit may include")
+    a(" * them: mods/core/resolve.c defines EP122_SYMS_IMPL. Every other file gets")
+    a(" * only the enum above. */")
     a("#ifdef EP122_SYMS_IMPL")
     a("")
 
@@ -912,7 +910,7 @@ def emit(results):
     a("")
 
     sl = [r for r in results if r["kind"] == "slot"]
-    a("/* ---- virtuals: whatever the slot holds IS the implementation ---- */")
+    a("/* ---- virtuals: the slot's contents are the implementation ---- */")
     a("static const struct ep122_slot_spec {")
     a("    unsigned short sym;")
     a("    unsigned short vt;     /* the vtable symbol it lives in */")
@@ -933,7 +931,7 @@ def emit(results):
     a("    unsigned short sym;")
     a("    unsigned short scope;  /* enclosing function symbol, or 0xffff */")
     a("    unsigned short nth;    /* which scoped match to take */")
-    a("    unsigned short total;  /* how many the reference build had */")
+    a("    unsigned short total;  /* how many the stock binary had */")
     a("    unsigned int   span;   /* bytes of the enclosing function to scan */")
     a("    unsigned short insns;  /* window length, in instructions */")
     a("    unsigned short anchor; /* instruction index of the fully-kept word */")
@@ -984,7 +982,7 @@ def emit(results):
     a(f"#define EP122_N_CALL {len(ct)}")
     a("")
 
-    a("/* Names, for the one log line that says what did and did not resolve. */")
+    a("/* Names, for the log line listing what did and did not resolve. */")
     a("static const char *const k_ep122_sym_name[] = {")
     for r in results:
         if r["kind"] in ("capture", "func_alt", "call_alt", "data_alt"):
@@ -994,7 +992,7 @@ def emit(results):
     a("")
     cap = [r["name"] for r in results if r["kind"] == "capture"]
     if cap:
-        a("/* Deliberately not resolved statically -- taken from a live call:")
+        a("/* Not resolved statically; captured from a live call:")
         for c in cap:
             a(f" *   {c}")
         a(" */")
@@ -1018,7 +1016,7 @@ def main():
     if not os.path.exists(args.binary):
         raise SystemExit(
             f"{args.binary}: missing. Pull the deck's own copy:\n"
-            f"  ssh root@10.10.50.113 'cat /home/root/pdj/EP122' > build/EP122-deck")
+            f"  ssh root@<deck-ip> 'cat /home/root/pdj/EP122' > build/EP122-deck")
 
     elf = Elf(args.binary)
     alt = Elf(args.renesas) if args.renesas and os.path.exists(args.renesas) else None
@@ -1026,9 +1024,9 @@ def main():
     # The spec's own class names seed the RTTI bootstrap; see Rtti.kinds().
     rtti = Rtti(elf, [kv["class"] for _, kind, _, kv in entries
                       if kind == "vtable" and "class" in kv])
-    # The RTTI bootstrap identifies type_info vptrs by sampling, and its sample is
-    # the reference build's. It need not carry over, and it is not needed to: the
-    # only parents a derived entry follows are named explicitly with ren= below.
+    # The RTTI bootstrap samples the $EP122 binary, and its result may not
+    # hold for the Renesas binary. It is not needed there: derived entries
+    # follow only parents named explicitly with ren=.
     rtti_alt = None
     results, errors = resolve(elf, rtti, entries, alt, rtti_alt)
 
@@ -1048,7 +1046,7 @@ def main():
     old = open(HEADER).read() if os.path.exists(HEADER) else None
     if args.check:
         if old != text:
-            print(f"{HEADER} is stale; run scripts/gen-ep122-syms.py",
+            print(f"{HEADER} is stale; run scripts/gen-syms.py",
                   file=sys.stderr)
             return 1
         print("header up to date", file=sys.stderr)

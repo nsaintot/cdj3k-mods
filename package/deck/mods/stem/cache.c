@@ -2,27 +2,26 @@
 /*
  * cache.c - the stem cache on the DJ's own media.  [worker]
  *
- * For the case with no server on the network: stick in, track loads, stems play.
+ * Lets stems play with no server on the network.
  *
  *   <volume>/mods/stemd-cache/<separation-id>/<ab>/<track-id>/
  *       meta   harmonics.flac (or .wav)   vocals.flac
  *
- * `separation-id` is the server's and opaque to us: backend, model, preset and
- * stemd's version in one string, so the server owns what invalidates its output.
- * <ab> is the first byte of the track-id -- exfat directories are a linear scan.
+ * `separation-id` comes from the server and is opaque: backend, model, preset
+ * and stemd version in one string, so the server decides what invalidates its
+ * output. <ab> is the first byte of the track-id, because exfat directories are
+ * a linear scan.
  *
- * The track id is size + first 64 KiB + last 64 KiB, hashed. Not the sourceId:
- * across the eleven tracks on the reference stick it took the values 1, 7, 8 and
- * 0xb, all <= the track count, so it indexes the browse list and moves with sort
- * order. Not the path either, which survives no reorganisation.
+ * The track id is a hash of size + first 64 KiB + last 64 KiB. The sourceId is
+ * unusable (it indexes the browse list and changes with sort order), and so is
+ * the path, which changes on any reorganisation.
  *
- * The frame count is hashed in and is not optional: the stems are aligned to
- * EP122's own decode including its padding (4116 frames on the reference track),
- * so a firmware that pads differently would otherwise produce a structurally
- * perfect, silently misaligned entry -- which presents as a phase problem.
+ * The frame count is hashed in: stems are aligned to EP122's own decode
+ * including its padding, so a firmware that pads differently would otherwise
+ * find a silently misaligned entry, heard as a phase problem.
  *
- * Cached files keep whatever extension the sidecar wrote and lookup tries the
- * known ones in turn, so the server can start offering FLAC with no migration.
+ * Cached files keep the extension the sidecar wrote and lookup tries each known
+ * one, so the server can switch formats (e.g. to FLAC) with no migration.
  */
 #include "stem/stem.h"
 
@@ -30,30 +29,27 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 
-/* One volume, one cache root. Relative to the mount point, so it travels with
- * the stick rather than with the deck, and UNDER mods/ with everything else this
- * shim puts on a DJ's media -- mods/loops/ is already there. A cache directory in
- * the root of a stick is one more thing in the folder the DJ browses.
+/* The cache root on each volume, relative to the mount point so it travels with
+ * the stick. Under mods/ with everything else the shim puts on a DJ's media
+ * (e.g. mods/loops/), keeping the browsed root folder clean.
  *
- * NO FALLBACK TO THE OLD ROOT PATH. A lookup that tried both would keep writing
- * entries in one place and finding them in two for as long as any stick had the
- * old layout, which is a migration that never ends. A stick with the old
- * directory re-separates, or is moved by hand. */
+ * There is deliberately no fallback to the old root path: a stick with the old
+ * directory re-separates or is moved by hand. */
 #define CACHE_ROOT      "mods/stemd-cache"
 
-/* Headroom left on the volume after a write. A stick filled to the last block
- * is a stick that fails the DJ's next export, and exfat itself wants slack. */
+/* Headroom left on the volume after a write: a full stick fails the DJ's next
+ * export, and exfat needs slack. */
 #define FREE_MARGIN     (128ull * 1024 * 1024)
 
-/* Hashed from each end of the file. Large enough that two different tracks
- * sharing both windows AND a byte count is not a thing that happens, small
- * enough that the read is invisible next to opening the track at all. */
+/* Bytes hashed from each end of the file: large enough that two tracks will not
+ * share both windows and a byte count, small enough that the read cost is
+ * negligible. */
 #define KEY_WINDOW      (64 * 1024)
 
 #define COPY_CHUNK      (256 * 1024)
 
-/* Bumped if the meta format changes. An entry whose meta we cannot parse is
- * treated as absent, so an old shim and a new one can share a stick. */
+/* Bumped if the meta format changes. An entry with unparseable meta is treated
+ * as absent, so old and new shims can share a stick. */
 #define META_VERSION    1
 
 static const char *const k_ext[] = { ".flac", ".wav" };
@@ -78,9 +74,8 @@ static uint64_t fnv1a(uint64_t h, const void *buf, size_t len)
 
 /* Hash the track's identity into `out` as hex. Returns 0 on success.
  *
- * FNV-1a rather than anything stronger on purpose: this is a cache key, not a
- * boundary anyone is attacking, and a 64-bit space against a stick holding a
- * few thousand tracks makes a collision far less likely than the eMMC failing. */
+ * FNV-1a is enough for a cache key that nobody attacks: with 64 bits and a few
+ * thousand tracks per stick, a collision is negligible. */
 static int key_of(const char *track_path, int64_t frames, char *out, size_t cap)
 {
     unsigned char win[KEY_WINDOW];
@@ -126,40 +121,33 @@ static int key_of(const char *track_path, int64_t frames, char *out, size_t cap)
 
 /* ---- choosing the volume ---------------------------------------------------
  *
- * The deck can have a USB stick, an SD card, or both, and an entry is written to
- * whichever one HOLDS THE TRACK. Nothing else is a candidate -- see store_root
- * for why stems that do not sit beside their own source can never be looked up
- * and can never be identified again either.
+ * The deck can have a USB stick, an SD card, or both, and an entry is written
+ * only to the one that holds the track (see store_root). A DJ with both gets a
+ * cache on each, so pulling a volume removes its tracks and their stems
+ * together. A lookup never has to choose between volumes, since the key is the
+ * track's content and only one volume holds that track.
  *
- * So a DJ with both gets a cache on each, and that is the point rather than a
- * split: pulling a volume takes its tracks and their stems away together and
- * leaves the other pair intact. A lookup has no winner to pick, because the key
- * is the track's own content and only one volume holds that track.
+ * Remote media is a source, never a destination
  *
- * REMOTE MEDIA IS A SOURCE, NOT A DESTINATION
- *
- * A linked player's media appears as /media/player<N>/<slot> -- a FuseFilsine
- * mount served over PRO DJ LINK. Those are read-only, and not by our policy:
+ * A linked player's media appears as /media/player<N>/<slot>, a FuseFilsine
+ * mount served over PRO DJ LINK. The remote end stubs every write:
  *
  *     touch /media/player03/usb/.stemtest  ->  No such file or directory
  *
- * The remote end stubs every write, so remote volumes are searched on LOOKUP and
- * never considered for a STORE. A stick that already carries cached stems still
- * serves them over LINK, where 61 MB of FLAC is seconds. The read-only mount is
- * only the mechanism -- "a track's stems belong on the track's own volume" reaches
- * the same answer and would hold if a linked player ever became writable.
+ * so remote volumes are searched on lookup and never used for a store. A stick
+ * with cached stems still serves them over LINK, where 61 MB of FLAC takes
+ * seconds. The same rule would follow from "stems belong on the track's own
+ * volume" even if a linked player became writable.
  *
- * /media/rekordbox is excluded outright: it is a linked laptop's library rather
- * than a mounted volume, and nothing about it survives the laptop closing.
+ * /media/rekordbox is excluded: it is a linked laptop's library, not a mounted
+ * volume, and disappears when the laptop closes.
  *
- * THE DEVICE NAME IS NOT A SIGNAL. On hardware the slots come up as
+ * The device name does not identify the slot. The slots usually come up as
  *
  *     /dev/sda1 -> /media/usb/sda1        /dev/sdb1 -> /media/sd/sdb1
  *
- * while the emulator's loop-mounted stick lands on /media/usb/sdb1 -- the same
- * letter that means SD on a real deck. So the BASE DIRECTORY is the only thing
- * that says which slot a volume is in, which is why this enumerates whatever is
- * mounted under each base instead of deriving anything from sd[a-z]. */
+ * but a USB stick can also land on /media/usb/sdb1. Only the base directory identifies the slot, so
+ * this enumerates whatever is mounted under each base. */
 static const char *const k_media_base[] = { "/media/usb", "/media/sd" };
 #define N_MEDIA_BASE ((int)(sizeof(k_media_base) / sizeof(k_media_base[0])))
 
@@ -168,10 +156,9 @@ static const char *const k_media_base[] = { "/media/usb", "/media/sd" };
 #define REMOTE_PREFIX   "player"
 #define MEDIA_DIR       "/media"
 
-/* A directory under a media base is only interesting if something is actually
- * mounted on it: the mount scripts mkdir before they mount and do not always
- * rmdir after, so an empty leftover would otherwise read as a volume with no
- * space. Different st_dev from its parent is the mount test. */
+/* Whether something is mounted on `base`/`sub`. The mount scripts mkdir before
+ * mounting and do not always rmdir after, so an empty leftover directory must
+ * not count as a volume. Mounted means a different st_dev from the parent. */
 static int is_mounted(const char *base, const char *sub, char *out, size_t cap)
 {
     struct stat sb, sd;
@@ -210,19 +197,10 @@ static int has_cache_dir(const char *root)
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* LOOKUP AND STORE ASK DIFFERENT QUESTIONS, and conflating them breaks the
- * hybrid case outright.
- *
- * A store asks "which ONE volume does the cache live on" -- there is a single
- * answer and it has to stay stable.
- *
- * A lookup asks "where might THIS ENTRY be", and the answer is plural: the
- * local stick may hold a cache full of other tracks while the stems for the one
- * now playing sit on a linked player's media. Picking a volume and then looking
- * only there would miss it every time.
- *
- * So the two paths are separate below: collect_roots for lookup, store_root for
- * writing. */
+/* Lookup and store choose volumes differently. A store needs the single volume
+ * holding the track (store_root). A lookup must search every candidate
+ * (collect_roots): the local stick may hold a cache of other tracks while the
+ * stems for the current one are on a linked player's media. */
 
 /* Append every mounted volume under `base` that holds a cache. Returns the new
  * count. */
@@ -249,18 +227,16 @@ static int base_collect(const char *base, char (*roots)[STEM_CACHE_PATH_MAX],
     return n;
 }
 
-/* The DJ's own first bank, for things that belong to the DECK rather than to a
- * track -- the groove circuit's slot files are the case this exists for.
+/* The DJ's first bank, for files that belong to the deck rather than to a
+ * track (the groove circuit's slot files).
  *
- * USB only, and the first mount under it: k_media_base[0] IS the first bank by
- * the same argument the base list makes above, that the directory says which
- * slot a volume is in and the device letter does not. A second stick is not
- * searched, because two of them could disagree about what slot 3 is and there
- * is no track to break the tie with -- the cache can answer "the volume holding
- * the track" and this cannot.
+ * USB only, first mount under it: k_media_base[0] is the first bank because the
+ * base directory, not the device letter, identifies the slot. A second stick is
+ * not searched: two could disagree about slot 3 and there is no track to decide
+ * between them.
  *
- * readdir order is the kernel's, so "first" is only meaningful when one volume
- * is mounted; that is the case this is for. Returns 0 when nothing is. */
+ * readdir order is the kernel's, so "first" is only meaningful with one volume
+ * mounted, which is the intended case. Returns 0 when nothing is mounted. */
 int stem_media_first_root(char *out, size_t cap)
 {
     char cand[STEM_CACHE_PATH_MAX];
@@ -281,10 +257,9 @@ int stem_media_first_root(char *out, size_t cap)
     return got;
 }
 
-/* Every place an entry could be, in the order worth trying: our own media
- * first, then each linked player's. Local is faster and is the copy we can
- * maintain; remote is read-only but perfectly readable, and a stick carrying
- * cached stems should serve them to a deck reading it over LINK. */
+/* Every root an entry could be under: our own media first (faster, and
+ * writable), then each linked player's (read-only, but a stick with cached
+ * stems should serve them over LINK). */
 static int collect_roots(char (*roots)[STEM_CACHE_PATH_MAX], int max)
 {
     struct dirent *de;
@@ -320,33 +295,17 @@ static int under_volume(const char *root, const char *path)
     return strncmp(path, root, n) == 0 && path[n] == '/';
 }
 
-/* The volume a TRACK lives on, if that volume is one of our own. -1 otherwise.
+/* The volume a track lives on, if it is one of our own; -1 otherwise. This
+ * alone decides where a new entry goes, not which volume has room.
  *
- * This is the whole of "where does a new entry go", and it is the source that
- * decides -- not a search for somewhere with room.
+ * Stems live beside the track they came from. A key is computed by hashing the
+ * track's bytes (see key_of), so an entry can only be found by someone who has
+ * the source. On any other volume the entry would be either unreachable (the
+ * track's volume is gone) or redundant (the track's own cache is reachable),
+ * and it could never be cleaned up, since identifying it needs the source.
  *
- * STEMS LIVE BESIDE THE TRACK THEY CAME FROM.
- *
- * A key is computed by opening the track and hashing its bytes (see key_of), so
- * an entry can only ever be FOUND by someone who has the source to hash. Put
- * stems on a volume that does not hold their track and one of two things is
- * true: the track's volume is unreachable, and the entry can never be looked up
- * at all -- or it is reachable, in which case its own cache is reachable too and
- * holds the copy that sits beside the music. Unreachable or redundant; never the
- * entry that gets used.
- *
- * And they cannot be cleaned up either. Identifying an entry means hashing its
- * source, so stems whose track is gone are not merely dead weight, they are dead
- * weight nothing can name. The only way not to accumulate them is not to create
- * them.
- *
- * This is what a deck playing another player's media over LINK would otherwise
- * do: separate a track it is only borrowing, then write 60 MB of stems for it
- * onto the DJ's own stick, where the track itself is not.
- *
- * A DJ with a stick and a card therefore gets a cache on each, which is right
- * rather than a split: each volume carries the stems for its own tracks, so
- * pulling either takes a self-consistent pair away and leaves one behind. */
+ * In particular, a deck playing another player's media over LINK must not
+ * write 60 MB of stems for a borrowed track onto the DJ's own stick. */
 static int store_root(const char *track_path, char *out, size_t cap,
                       uint64_t want)
 {
@@ -370,9 +329,8 @@ static int store_root(const char *track_path, char *out, size_t cap,
                 continue;
 
             closedir(d);
-            /* From here the volume is decided, so every remaining reason to
-             * refuse is reported: this is the DJ's own stick and them not
-             * getting a cache on it is worth a line. */
+            /* The volume is decided; log every remaining reason to refuse,
+             * since this is the DJ's own media. */
             if (statvfs(cand, &vfs) == 0 && (vfs.f_flag & ST_RDONLY)) {
                 MDBG("stem_cache: %s is read-only -> not caching\n", cand);
                 return -1;
@@ -391,10 +349,8 @@ static int store_root(const char *track_path, char *out, size_t cap,
         closedir(d);
     }
 
-    /* Remote media lands here, and so does anything else we are reading but do
-     * not hold: the track is someone else's and so are its stems. Whoever owns
-     * the volume it came from is the one that caches it, and this deck will find
-     * that entry over LINK on a later load -- lookup already searches there. */
+    /* Remote media, or anything else not on our volumes. The deck owning the
+     * volume caches it, and lookup finds that entry over LINK. */
     MDBG("stem_cache: %s is not on our media -> its stems are not ours to keep\n",
          track_path);
     return -1;
@@ -408,8 +364,8 @@ static int entry_dir(const char *root, const char *sep_id, const char *key,
                             sep_id, key[0], key[1], key) < cap ? 0 : -1;
 }
 
-/* Where a track's entry sits under a given root, for the CURRENT separation
- * id -- the store's question. Creates nothing. */
+/* Where a track's entry sits under a given root for the current separation id,
+ * as the store needs. Creates nothing. */
 static int entry_path(const char *root, const char *track_path, int64_t frames,
                       char *out, size_t cap)
 {
@@ -424,10 +380,9 @@ static int entry_path(const char *root, const char *track_path, int64_t frames,
 
 /* ---- meta ----------------------------------------------------------------- */
 
-/* The gains the server applied are part of the entry: without them a cached
- * stem plays back at the wrong level, and they are not recoverable from the
- * audio. The frame count rides along as a second, independent check on the
- * alignment the key already guards. */
+/* The gains the server applied are stored with the entry, since they cannot be
+ * recovered from the audio and a stem without them plays at the wrong level.
+ * The frame count is a second check on the alignment the key already guards. */
 static int meta_write(const char *dir, int64_t frames, float hg, float vg)
 {
     char path[STEM_CACHE_PATH_MAX], buf[128];
@@ -484,8 +439,8 @@ static int meta_read(const char *dir, int64_t *frames, float *hg, float *vg)
 
 /* ---- lookup --------------------------------------------------------------- */
 
-/* How many volumes a lookup will consider. Two local slots plus a handful of
- * linked players is the whole of a realistic booth. */
+/* How many volumes a lookup considers: two local slots plus a few linked
+ * players. */
 #define MAX_ROOTS 8
 
 /* Find `stem` in `dir` under any extension we know. Returns 0 and fills `out`. */
@@ -512,9 +467,8 @@ static int try_entry(const char *dir, int64_t frames, struct stem_cache_entry *o
     if (meta_read(dir, &meta_frames, &out->harmonics_gain,
                   &out->vocals_gain) != 0)
         return -1;
-    /* The key already covers the frame count, so a disagreement here means an
-     * entry written by something that did not agree with us about what the key
-     * means. Skip it rather than reason about it -- another may still be good. */
+    /* The key already covers the frame count, so a mismatch means the entry was
+     * written with a different key scheme. Skip it; another may be good. */
     if (meta_frames != frames) {
         MDBG("stem_cache: %s frames %lld != %lld, ignoring entry\n",
              dir, (long long)meta_frames, (long long)frames);
@@ -542,17 +496,11 @@ int stem_cache_lookup(const char *track_path, int64_t frames,
     if (key_of(track_path, frames, key, sizeof(key)) != 0)
         return -1;
 
-    /* Every candidate, not the first volume that happens to hold a cache: the
-     * local stick can be full of other tracks while the stems for the one now
-     * playing sit on a linked player's media.
-     *
-     * And under each, EVERY separation id, the current one first. The id only
-     * says which model made the pair; the key is the track and the meta is the
-     * alignment, so a pair another model made is a pair this track can play.
-     * Without this a deck that last spoke to the server under one model could
-     * not read what its own stick holds under another, and two linked decks
-     * with different ids could not share a cache at all -- offline, that was
-     * the whole feature gone. */
+    /* Search every root, and under each every separation id, the current one
+     * first. The id only says which model made the pair; the key and meta
+     * guarantee it fits this track. This lets a deck read entries made under
+     * another model and lets linked decks with different ids share a cache,
+     * which matters most offline. */
     n = collect_roots(roots, MAX_ROOTS);
     for (i = 0; i < n; i++) {
         struct dirent *de;
@@ -645,9 +593,8 @@ static int copy_file(const char *src, const char *dst)
             goto out;
         }
     }
-    /* A stick can be pulled at any moment, and an entry that is visible but not
-     * on the medium is worse than no entry: it would be found, read short, and
-     * play as a truncated stem. */
+    /* A stick can be pulled at any moment; an entry visible but not on the
+     * medium would be read short and play as a truncated stem. */
     if (fsync(outfd) != 0)
         goto out;
     rc = 0;
@@ -661,9 +608,8 @@ out:
     return rc;
 }
 
-/* Copy `src` into `dir` as `stem` + whatever extension the source carried, so
- * the cached file stays openable by the same reader that would have opened the
- * original. */
+/* Copy `src` into `dir` as `stem` plus the source's extension, so the same
+ * reader can open it. */
 static int copy_part(const char *dir, const char *stem, const char *src)
 {
     char dst[STEM_CACHE_PATH_MAX];
@@ -709,9 +655,8 @@ int stem_cache_store(const char *track_path, int64_t frames,
     if (!track_path || !harmonics_src || !vocals_src || frames <= 0)
         return -1;
 
-    /* Ask for exactly what is about to be copied rather than a guess: the two
-     * files are right there to stat, and the difference between a WAV pair and
-     * a FLAC pair is nearly threefold. */
+    /* Size the request from the actual files: a WAV pair is nearly three times
+     * a FLAC pair. */
     {
         struct stat hs, vs;
 
@@ -729,11 +674,11 @@ int stem_cache_store(const char *track_path, int64_t frames,
             return -1;
     }
 
-    /* The entry has to appear whole or not at all: two files, and a directory
-     * holding only `harmonics` looks complete to anything that stats one path
-     * at a time. So everything is built beside the destination and the
-     * DIRECTORY is renamed into place -- one operation, and a stick pulled at
-     * any point before it leaves nothing that will ever be found. */
+    /* The entry must appear whole or not at all: a directory holding only
+     * `harmonics` looks complete to code that stats one path at a time. It is
+     * built in a staging directory beside the destination and renamed into
+     * place in one operation, so a stick pulled earlier leaves nothing that
+     * will be found. */
     if ((size_t)snprintf(staging, sizeof(staging), "%s.incoming-%d", final,
                          (int)getpid()) >= sizeof(staging))
         return -1;
@@ -746,9 +691,9 @@ int stem_cache_store(const char *track_path, int64_t frames,
     *slash = '\0';
 
     if (mkdir_p(parent) != 0) {
-        /* Read-only media, or a stick with no room. Not an error worth failing
-         * the job over: the stems are already in RAM and will play. The tmpfs
-         * copy simply becomes the whole of the cache, and dies with the track. */
+        /* Read-only media or no room. Not fatal: the stems are already in RAM
+         * and will play; only the tmpfs copy exists, and it goes with the
+         * track. */
         MDBG("stem_cache: cannot create %s (errno=%d) -> not caching\n",
              parent, errno);
         return -1;
@@ -768,8 +713,8 @@ int stem_cache_store(const char *track_path, int64_t frames,
         return -1;
     }
 
-    /* Losing the race against another deck writing the same entry is a success,
-     * not a failure: whatever is there is as valid as what we built. */
+    /* If another deck already wrote this entry, the rename fails and its copy,
+     * equally valid, is kept. */
     if (rename(staging, final) != 0) {
         MDBG("stem_cache: rename -> %s failed (errno=%d)\n", final, errno);
         rm_rf_shallow(staging);

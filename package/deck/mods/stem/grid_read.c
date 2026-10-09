@@ -7,11 +7,15 @@
 #include "db/db.h"
 #include "kit/mod.h"
 
+/* Grid units to pool samples. The one expression used for both the beat array
+ * and the anchor: the anchor is one of the beats, and two differently written
+ * float computations might not land on the same sample. */
 int64_t grid_to_pool(int64_t raw, int pool_rate, int grid_rate)
 {
     return (int64_t)((double)raw * (double)pool_rate / (double)grid_rate);
 }
 
+/* Beat `i`'s own BPM field (a double). */
 double grid_beat_bpm(uintptr_t beats, int i)
 {
     double b = 0.0;
@@ -22,12 +26,21 @@ double grid_beat_bpm(uintptr_t beats, int i)
     return b;
 }
 
+/* The grid's anchor is its first beat: the cell's second field is a BPM, not a
+ * bar number, so nothing in the cells marks a downbeat. */
 int grid_downbeat(uintptr_t beats, int count)
 {
     (void)beats; (void)count;
     return 0;
 }
 
+/* One grid holder (meow::UpdatableSharedObject<appnd_trk_info::BeatGrid>)
+ * reduced to a beat length and a downbeat; returns 0 if any check fails. Shared
+ * by both routes to a holder: a cue slot's source and the deck's grid reply.
+ *
+ * Results are in the grid's own units: the reply arrives while the track loads,
+ * before the audio path has a pool rate. The grid's own rate is enough to
+ * sanity-check the tempo; callers convert to pool samples. */
 int grid_from_holder(uintptr_t holder, double *spb_out,
                             int64_t *beat0_out, int *rate_out,
                             const char **why)
@@ -66,16 +79,15 @@ int grid_from_holder(uintptr_t holder, double *spb_out,
 
     spb = (double)(last - first) / (double)(count - 1);
 
-    /* Checked against the GRID's rate, which is the one number here that does
-     * not depend on anything outside the grid. */
+    /* Checked against the grid's own rate, which depends on nothing outside
+     * the grid. */
     *why = "tempo out of range";
     bpm = (double)rate * 60.0 / spb;
     if (!(bpm >= GRID_MIN_BPM) || !(bpm <= GRID_MAX_BPM))
         return 0;
 
-    /* The anchor needs the origin the deck adds to every beat, which the tempo
-     * above did not because it cancels in a difference. A missing origin is
-     * zero, not a failure: the grid is still a grid. */
+    /* The anchor needs the origin the deck adds to every beat (it cancels out
+     * of the tempo). A missing origin is treated as zero, not a failure. */
     if (mod_safe_read(holder + HOLDER_ORIGIN_OFF, &origin, sizeof(origin)) != 0)
         origin = 0;
     db = grid_downbeat(beats, count);
@@ -86,8 +98,7 @@ int grid_from_holder(uintptr_t holder, double *spb_out,
     *beat0_out = origin + anchor;
     *rate_out  = rate;
 
-    /* The anchor longhand, because "in time but turned around" and "not in time"
-     * are the same complaint from the floor and different numbers here. */
+    /* Log the anchor in full to tell a phase error from a tempo error. */
     MDBG("grid: origin %lld first %lld anchor %lld (beat %d of %d, cell BPM"
          " %.2f %.2f) rate %d -> %.1f BPM from the interval, beat0 %lld\n",
          (long long)origin, (long long)first, (long long)anchor, db, count,
@@ -98,6 +109,10 @@ int grid_from_holder(uintptr_t holder, double *spb_out,
     return 1;
 }
 
+/* Log where in a page source its own sourceId sits, if anywhere. A cue slot
+ * can name the previous track's source; if the source carries its id, the walk
+ * could check it against the id the audio thread reports. Scans the first
+ * GRID_SID_SCAN bytes, once. */
 void grid_probe_sid(uintptr_t src)
 {
     static int said;
@@ -122,6 +137,9 @@ void grid_probe_sid(uintptr_t src)
          (unsigned long long)hi, GRID_SID_SCAN);
 }
 
+/* One holder's beat length and anchor in pool samples, the unit the mix and
+ * the engage position use. The grid and pool rates are the same today; the
+ * scale keeps this correct if they differ. */
 double grid_scale(uintptr_t holder, int pool_rate, int64_t *beat0,
                          const char **why)
 {
@@ -139,6 +157,16 @@ double grid_scale(uintptr_t holder, int pool_rate, int64_t *beat0,
     return spb * (double)pool_rate / (double)rate;
 }
 
+/* Every beat of `holder`, in the grid's own units with the origin added. NULL
+ * when there is nothing to copy, leaving the caller on the average.
+ *
+ * Read in chunks: mod_safe_read is a pread on /proc/self/mem, so one beat at a
+ * time would be thousands of syscalls during a pad press.
+ *
+ * Must be ascending: stem_beat_at bisects it, and a bisection over an unordered
+ * array silently gives wrong answers. Equal neighbours are allowed (a
+ * hand-edited grid can contain them); a beat going backwards is refused and
+ * logged. */
 struct grid_beats * grid_copy_beats(uintptr_t holder)
 {
     uintptr_t content = 0, beats = 0;
@@ -166,26 +194,19 @@ struct grid_beats * grid_copy_beats(uintptr_t holder)
     if (mod_safe_read(holder + HOLDER_ORIGIN_OFF, &origin, sizeof(origin)) != 0)
         origin = 0;
 
-    /* ONE-SHOT OWNERSHIP PROBE, for the grid-edit work.
+    /* One-shot ownership probe for grid editing. A x2 needs 2N-1 cells where N
+     * exist, so the deck must accept a different beat array. This logs:
      *
-     * Three questions decide whether a mod can hand the deck a DIFFERENT beat
-     * array -- which is what a x2 needs, because doubling the beats needs 2N-1
-     * cells where N exist:
+     *   before the array   the allocator header, which says who frees it (a
+     *                      glibc chunk has a size at -8 with flag bits; freeing
+     *                      a malloc'd pointer through a pool free corrupts the
+     *                      heap)
+     *   after the last cell the overrun guard the app asserts on
+     *                      (Checker<Cell,int>::assertIfSignitureBroken), which a
+     *                      replacement must reproduce
+     *   the slack          enough rounding would allow x2 in place
      *
-     *   what is BEFORE the array   an allocator header says who frees it. A
-     *                              glibc chunk has a size at -8 with the low
-     *                              bits as flags; a pool block looks nothing
-     *                              like that, and freeing a malloc'd pointer
-     *                              through a pool free is heap corruption on a
-     *                              DJ's deck.
-     *   what is AFTER the last cell the overrun guard the app asserts on
-     *                              (Checker<Cell,int>::assertIfSignitureBroken).
-     *                              A replacement array has to reproduce it.
-     *   how much SLACK there is    if the allocation is rounded up far enough,
-     *                              x2 can be done in place and the whole
-     *                              ownership question never arises.
-     *
-     * Reads only, once, and only around an array the deck already holds. */
+     * Reads only, once, around an array the deck already holds. */
     {
         static int probed;
 
@@ -212,11 +233,9 @@ struct grid_beats * grid_copy_beats(uintptr_t holder)
                  (unsigned long long)after[2], (unsigned long long)after[3],
                  (unsigned long long)after[4], (unsigned long long)after[5]);
 
-            /* THE WHOLE CELL, not just the position. A rescaled grid the deck
-             * accepts but reads as 0.0 BPM means the eight bytes after the
-             * position are not the nothing they looked like -- so print them
-             * verbatim rather than inferring again. Plus the holder's own head,
-             * in case a length or count lives there and has to move too. */
+            /* The whole cell, including the BPM double after the position,
+             * and the holder's head in case a length or count there must move
+             * too. */
             for (k = 0; k < 4 && k < count; k++) {
                 uint64_t c[2] = { 0, 0 };
 
@@ -235,17 +254,11 @@ struct grid_beats * grid_copy_beats(uintptr_t holder)
                      (unsigned long long)h);
             }
 
-            /* AND THE BAR ARRAY, which is the other half of a Content and was
-             * missing from every earlier reading of one. The PQTZ writer asks
-             * sub_a1e670(content, i) for the beat's place in its bar, and that
-             * reads an int32 array at content+0x38 with its count at +0x40:
-             * bars[m] is the beat INDEX of the m'th downbeat, and the answer is
-             * i minus the nearest one below. Rescaling the beats and leaving
-             * this alone is why a saved x2 grid counted 1,2,3,4 to the end of
-             * the original bars and then ran away as 5,6,7...
-             *
-             * Probed the same way the cell array was: what is in front of it
-             * says who frees it, what is behind says which guard to reproduce. */
+            /* The bar array (see CONTENT_BARS_OFF): the PQTZ writer gets a
+             * beat's place in its bar from a helper taking (content, i), which reads
+             * the int32 array at content+0x38, count at +0x40. Probed like the
+             * cells: the bytes before say who frees it, the bytes after which
+             * guard to reproduce. */
             {
                 uintptr_t bars = 0;
                 int32_t   nbar = 0, first = 0, last = 0;

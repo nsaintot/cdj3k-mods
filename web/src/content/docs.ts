@@ -1,14 +1,10 @@
 /*
  * The documentation manifest.
  *
- * Titles, leads, headings and body all come from the markdown itself, via the
- * build-time plugin. What this file adds is the only thing the markdown does
- * not carry: what order to read the documents in, and which ones belong
- * together.
+ * Titles, leads, headings and body come from the markdown via the build-time
+ * plugin. This file only adds the reading order and the grouping.
  *
- * A doc not named in `sections` still appears, under "Other" -- dropping a new
- * .md into docs/ publishes it, and forgetting to list it here is not a way to
- * lose it.
+ * A doc not named in `sections` still appears, under "Other".
  */
 import { docs as manifest, loaders } from 'virtual:docs'
 import type { DocMeta } from '@/types/docs'
@@ -32,10 +28,7 @@ export function getDoc(slug: string): Doc | undefined {
   return bySlug.get(slug)
 }
 
-/**
- * A document's rendered HTML, as its own chunk. Resolved once and remembered,
- * so going back to a document already read costs nothing.
- */
+/** A document's rendered HTML, loaded as its own chunk and cached. */
 const htmlCache = new Map<string, string>()
 
 export async function loadDocHtml(slug: string): Promise<string> {

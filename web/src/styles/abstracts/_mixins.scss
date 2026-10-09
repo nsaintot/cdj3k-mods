@@ -1,6 +1,6 @@
 /*
- * Mixins. Compile-time only -- this file emits nothing on its own, which is why
- * it is safe as the auto-injected prelude for every component.
+ * Mixins. Compile-time only: this file emits nothing on its own, so it is safe
+ * as the auto-injected prelude for every component.
  */
 @use 'breakpoints' as *;
 

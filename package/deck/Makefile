@@ -3,17 +3,16 @@
 #   ep122_shim.so           the LD_PRELOAD shim: the feature mods (glibc, aarch64)
 #   stemd_client_aarch64    the STEMS network sidecar   (musl-static, aarch64)
 #
-# The sources, their flags and the ABI gates are in mods.mk, which cdj3k-emu's
-# guest build includes as well. Nothing about the mods is stated twice.
+# The sources, their flags and the ABI gates are in mods.mk, which any other
+# build that links the mods also includes.
 #
-# Two toolchains, on purpose (see the musl guard below):
+# Two toolchains (see the musl guard below):
 #   make            uses aarch64-linux-musl-gcc if present  -> fine for the sidecar
 #   make CC=gcc     what the Docker stages pass (native aarch64 gcc)
 #
-# The shim is the one thing musl cannot build. The real build path is
-# ../docker/Dockerfile: an Alpine (musl) stage for the sidecar and an Ubuntu
-# 18.04 (glibc 2.27) stage for the shim. Building on the host is for `make
-# check` and quick iteration.
+# musl cannot build the shim. The release build is ../docker/Dockerfile: an
+# Alpine (musl) stage for the sidecar and an Ubuntu 18.04 (glibc 2.27) stage for
+# the shim. Host builds are for `make check` and quick iteration.
 
 MUSL_CC  := aarch64-linux-musl-gcc
 HAS_MUSL := $(shell command -v $(MUSL_CC) 2>/dev/null)
@@ -29,9 +28,9 @@ NO_OUTLINE_ATOMICS := $(shell printf 'int main(void){return 0;}\n' \
     | $(CC) -x c -mno-outline-atomics -c -o /dev/null - 2>/dev/null \
     && echo -mno-outline-atomics)
 
-# Version stamp, in the two forms mods/version.h documents. Overridable from the
-# command line so the Docker build can pass the host's git values in (the build
-# context has no .git). No checkout gives "unknown".
+# Version stamp, in the two forms mods/core/version.h documents. Overridable
+# from the command line so the Docker build can pass the host's git values in
+# (the build context has no .git). No checkout gives "unknown".
 GIT_DESCRIBE := $(shell git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null)
 GIT_TAG      := $(shell git -C $(CURDIR) describe --tags --abbrev=0 2>/dev/null)
 MOD_BUILD    ?= $(or $(GIT_DESCRIBE),unknown)
@@ -72,9 +71,9 @@ $(OUT):
 	mkdir -p $(OUT)
 
 # --- shim ---
-# A musl-linked .so records `NEEDED: libc.so`; the deck has no musl and glibc's
-# ld.so refuses it -- into /bin/sh as well, so apl_start.sh dies with status 127
-# and the deck comes up with no app.
+# A musl-linked .so records `NEEDED: libc.so`; the deck has no musl, so glibc's
+# ld.so refuses it in every process including /bin/sh: apl_start.sh dies with
+# status 127 and the deck comes up with no app.
 $(EP122_SHIM): $(MODS_OBJS)
 	@case '$(CC)' in *musl*) \
 	  echo "ERROR: $(CC) links the shim against musl (NEEDED: libc.so)."; \
@@ -93,8 +92,8 @@ $(STEMD_CLIENT): $(MODS_STEMD_SRCS) $(MODS_STEMD_HDRS) | $(OUT)
 
 # --- host tests ---
 HOST_CC ?= cc
-# The SDK headers carry nullability annotations and the sources call syscall(2),
-# which Apple deprecated; neither says anything about the code under test.
+# Silence macOS SDK nullability annotations and the deprecated syscall(2);
+# neither concerns the code under test.
 HOST_QUIET := $(shell printf 'int main(void){return 0;}\n' \
     | $(HOST_CC) -x c -Wno-nullability-completeness -Wno-deprecated-declarations \
       -c -o /dev/null - 2>/dev/null \

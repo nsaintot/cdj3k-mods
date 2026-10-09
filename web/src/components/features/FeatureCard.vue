@@ -2,9 +2,8 @@
 /*
  * One feature.
  *
- * Says what it does and where it is switched, then hands off. The link out is
- * the point of the card: how to actually use the thing is written down once, in
- * the documentation, and this is how you get to it.
+ * Says what it does and where it is switched on, then links to the
+ * documentation, the one place that describes how to use it.
  */
 import type { Feature } from '@/content/features'
 import StatusTag from '@/components/ui/StatusTag.vue'

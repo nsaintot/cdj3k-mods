@@ -26,23 +26,23 @@ The markdown in `../docs/` is read, rendered and indexed **at build time** by
 that every page loads, one chunk per page, and the search index. The browser
 never sees a markdown parser or a syntax highlighter.
 
-Adding a page is dropping a `.md` into `../docs/`. It is picked up
-automatically; naming it in `src/content/docs.ts` only decides where it sits
-in the reading order. Cross-page links are written as plain
+To add a page, drop a `.md` into `../docs/`. It is picked up automatically;
+listing it in `src/content/docs.ts` only sets its place in the reading order. Cross-page links are written as plain
 `other-page.md#anchor` and rewritten to routes at build time. A link to a page
-that does not exist is unwrapped to plain text rather than left dead.
+that does not exist is rendered as plain text.
 
 Screenshots go in `public/img/` and are referenced from the markdown as
 `img/name.png`; the base path is applied at build time.
 
-Two rules the codebase tries to keep:
+Two conventions:
 
-- **One fact, one place.** The documentation says how to use something. The feature
-  list (`src/content/features.ts`) is a catalogue: one line each, plus where it
-  is switched, and links into the documentation. Neither restates the other.
+- **One fact, one place.** The documentation says how to use something. The
+  feature list (`src/content/features.ts`) is a catalogue: one line per feature,
+  where it is switched, and links into the documentation. Neither restates the
+  other.
 - **Tokens, not values.** Every colour, space, size and duration is a custom
-  property in `src/styles/tokens/`. A component that needs a raw hex is a token
-  that is missing.
+  property in `src/styles/tokens/`. If a component needs a raw hex value, add a
+  token instead.
 
 ## Deploying
 

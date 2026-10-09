@@ -12,6 +12,9 @@
 #include "kit/popup.h"
 #include <pthread.h>
 
+/* Separator -> loader: stems for `track` are at these two files. Published
+ * under a generation the loader polls; if `track` is no longer current the
+ * loader drops it, and the media cache keeps the durable copy. */
 static void sep_deliver(const char *track, const char *h, float hg,
                         const char *v, float vg, int tmpfs)
 {
@@ -30,19 +33,21 @@ static void sep_deliver(const char *track, const char *h, float hg,
     MDBG("stem_job: separated %s -> handed to the loader\n", track);
 }
 
-/* Separator -> UI, by way of the loader's judgement about relevance. */
+/* Separator -> UI, only for the current track. */
 static void sep_progress(const char *track, int stage, int pct, int queue)
 {
     if (track_is_current(track))
         ui_publish(stage, pct, queue);
 }
 
+/* Sink for stem_decode_pull: one chunk straight onto the socket. Returning
+ * non-zero aborts the decode, which is how a cancel reaches a thread inside the
+ * deck's decoder. */
 int upload_chunk(const float *pcm, int64_t frames, void *user)
 {
     struct upload_ctx *ctx = user;
 
-    /* Two very different reasons to stop, and telling them apart matters: a
-     * cancel is the deck doing its job, a send failure is ours. */
+    /* A cancel and a send failure are reported differently. */
     if (__atomic_load_n(&g_sep_supersede, __ATOMIC_ACQUIRE) || g_quit) {
         MDBG("stem_job: upload superseded at frame %lld\n", (long long)ctx->sent);
         ctx->cancelled = 1;
@@ -52,16 +57,16 @@ int upload_chunk(const float *pcm, int64_t frames, void *user)
         return -1;
 
     ctx->sent += frames;
-    /* The STAGE's own progress, 0..100, exactly like every other stage reports. Where
-     * that lands on the bar is the UI's problem, not this one's -- see the segment map
-     * in ui.c. Publishing a pre-weighted number here is what made a finished upload read
-     * as 20% and stalled. */
+    /* The stage's own progress, 0..100, like every other stage. The UI maps it
+     * onto the bar (see the segment map in ui.c); do not pre-weight it here. */
     if (ctx->total > 0)
         job_progress(STEM_STAGE_UPLOADING,
                      (int)(ctx->sent * 100 / ctx->total));
     return 0;
 }
 
+/* Map a sidecar frame onto the UI snapshot and stem store. Returns 0 to keep
+ * waiting, 1 when the job reached a terminal state. */
 int handle_frame(uint32_t type, const void *buf, uint32_t len)
 {
     switch (type) {
@@ -73,11 +78,9 @@ int handle_frame(uint32_t type, const void *buf, uint32_t len)
             return 0;
         ui_publish_status((int)s->reachable, (int)s->compatible);
 
-        /* Learn the server's identity and keep it across reboots. The cache is
-         * for the deck with no server to ask, so this has to survive the server
-         * being gone -- a deck that has met one once can play from the stick
-         * forever after. Saved only when it changes: this arrives on every
-         * connect and the settings file lives on eMMC. */
+        /* Persist the server's identity across reboots so the cache stays
+         * usable with no server present. Saved only when it changes: this
+         * arrives on every connect and the settings file is on eMMC. */
         snprintf(id, sizeof(id), "%.*s", (int)sizeof(s->sep_id), s->sep_id);
         if (id[0] && strcmp(id, g_stem_sep_id) != 0) {
             MDBG("stem_job: separation id \"%s\" (was \"%s\")\n",
@@ -92,9 +95,8 @@ int handle_frame(uint32_t type, const void *buf, uint32_t len)
 
         if (len < sizeof(*p))
             return 0;
-        /* Attributed to the track it is about. The bar belongs to whatever the
-         * DJ is looking at, so a separation they have left must not paint on
-         * it -- sep_progress drops it in that case. */
+        /* Attributed to the job's track; sep_progress drops it if that track
+         * is no longer loaded. */
         sep_progress(g_job_path, (int)p->stage, (int)p->percent,
                      (int)p->queue_position);
         return 0;
@@ -116,31 +118,28 @@ int handle_frame(uint32_t type, const void *buf, uint32_t len)
         g_arrived[part].gain = r->gain;
         g_arrived[part].have = 1;
 
-        /* Both parts, or nothing: they are published together so the audio
+        /* Wait for both parts: they are published together so the audio
          * thread never sees a half-built set. */
         if (!g_arrived[STEM_PART_HARMONICS].have ||
             !g_arrived[STEM_PART_VOCALS].have)
             return 0;
 
-        /* The media cache is the separator's to write -- it is the thread that
-         * has fresh stems -- and doing it HERE rather than after the handover is
-         * what makes a separation the DJ switched away from still worth having:
-         * the entry lands whether or not anyone is waiting for it. The store
-         * rule decides whether this volume may hold it at all. */
+        /* The separator writes the media cache, before the handover, so the
+         * entry lands even if the DJ has switched tracks. The store rule
+         * decides whether this volume may hold it. */
         stored = stem_cache_store(g_job_path, g_job_frames,
                                   g_arrived[STEM_PART_HARMONICS].path,
                                   g_arrived[STEM_PART_HARMONICS].gain,
                                   g_arrived[STEM_PART_VOCALS].path,
                                   g_arrived[STEM_PART_VOCALS].gain) == 0;
 
-        /* Then hand the loader the paths and let it decide whether they are
-         * still wanted. Nothing here touches g_set.
+        /* Hand the loader the paths; it decides whether they are still
+         * wanted. Nothing here touches g_set.
          *
-         * THE MEDIA'S COPY, once there is one, and the tmpfs pair goes first.
-         * /dev/shm is RAM, and a 9-minute pair is 100 MB of it sitting there
-         * for the whole of a 415 MB load -- the difference between the pair
-         * fitting and the kernel killing EP122. The loader reads the media at
-         * the speed a cache hit already does. */
+         * Prefer the media copy and unlink the tmpfs pair first: /dev/shm is
+         * RAM, and a 9-minute pair holds 100 MB of it during a 415 MB load,
+         * enough for the kernel to kill EP122. Reading from the media is as
+         * fast as a cache hit. */
         if (stored && stem_cache_lookup(g_job_path, g_job_frames, &e) == 0) {
             unlink(g_arrived[STEM_PART_HARMONICS].path);
             unlink(g_arrived[STEM_PART_VOCALS].path);
@@ -190,8 +189,8 @@ int await_sidecar_ready(void)
             waited += JOB_RECV_TIMEOUT_MS;
             continue;
         }
-        /* Routed through the normal handler so STATUS still teaches us the
-         * separation id and still drives the warn icon. */
+        /* Through the normal handler so STATUS still records the separation
+         * id and drives the warn icon. */
         handle_frame(type, frame, len);
         if (type != STEM_MSG_STATUS)
             continue;
@@ -219,8 +218,8 @@ uint32_t sep_output_rate(const char *path)
 
     for (waited = 0; rate <= 0 && waited < SEP_RATE_WAIT_MS;
          waited += SEP_RATE_POLL_MS) {
-        /* ASK, rather than wait for the passive figure: the report only runs
-         * while the play screen paints, and a track is loaded from BROWSE. */
+        /* Measure actively: the passive report only runs while the play
+         * screen paints, and a track is loaded from BROWSE. */
         rate = stem_engine_rate_measure();
         if (rate > 0)
             break;
@@ -252,15 +251,15 @@ void * separator_main(void *arg)
 
         if (want != seen_want) {
             seen_want = want;
-            /* Whatever was in flight is now unwanted: the supersede flag has
-             * already told the upload and the poll loop to unwind. */
+            /* The supersede flag has already told the in-flight upload and
+             * poll loop to unwind. */
             __atomic_store_n(&g_sep_supersede, 0, __ATOMIC_RELEASE);
             memset(g_arrived, 0, sizeof(g_arrived));
             __atomic_store_n(&g_sep_busy, 1, __ATOMIC_RELEASE);
             run_separation();
             __atomic_store_n(&g_sep_busy, 0, __ATOMIC_RELEASE);
-            /* Only a job that got somewhere defers the probe. Deferring on the
-             * failures too is what let a retry loop starve its own status. */
+            /* Only a successful job defers the probe; failures must not, or a
+             * retry loop starves the status. */
             if (!g_probe_now)
                 next_status = job_now_sec() + STATUS_REFRESH_SEC;
             continue;
@@ -273,9 +272,8 @@ void * separator_main(void *arg)
             g_probe_now = 0;
             next_status = job_now_sec() + STATUS_REFRESH_SEC;
             refresh_status();
-            /* AFTER the refresh and unconditionally, because the answer it just
-             * published is the one worth acting on -- and because three of that
-             * call's four exits never reach its own bottom. */
+            /* Unconditionally after the refresh, which just published the
+             * status to act on; three of its four exits return early. */
             server_arrived();
             continue;
         }

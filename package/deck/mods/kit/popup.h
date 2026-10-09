@@ -2,10 +2,10 @@
 /*
  * kit/popup.h - a message on the glass, for any mod.
  *
- * The widget is the deck's own gui::MessagePopupWidget and needs a juce::Component
- * to parent it to, which whichever mod holds one registers. Until that happens --
- * and on a firmware where the JUCE primitives do not resolve -- every call here is
- * a NO-OP, so a caller needs no guard of its own and may call from install.
+ * The widget is the deck's own gui::MessagePopupWidget. It needs a parent
+ * juce::Component, registered by whichever mod holds one. Until then, and on a
+ * firmware where the JUCE primitives do not resolve, every call here is a no-op,
+ * so callers need no guard and may call from install.
  *
  * [message] throughout: these build and show juce Components.
  */
@@ -29,8 +29,8 @@ void kit_popup_set_parent(uintptr_t comp);
  * them. A count outside 1..KIT_POPUP_MAX_LINES shows nothing. */
 void kit_popup_show(const char *const *lines, int n);
 
-/* It is on screen. What an input path tests before swallowing the event that
- * dismisses it. */
+/* Whether it is on screen; an input path tests this before swallowing the
+ * event that dismisses it. */
 int  kit_popup_is_up(void);
 
 void kit_popup_dismiss(void);

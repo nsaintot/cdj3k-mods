@@ -1,9 +1,9 @@
 /*
  * Routes.
  *
- * Three real pages, because the header links to pages and not to anchors on the
- * one below it. The docs reader is a nested route so the sidebar and the
- * contents column are mounted once and only the article changes.
+ * Three pages, because the header links to pages, not to anchors on one page.
+ * The docs reader is a nested route so the sidebar and the contents column are
+ * mounted once and only the article changes.
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { site } from '@/content/site'
@@ -70,10 +70,10 @@ export const router = createRouter({
 /*
  * The document title, decided in one place.
  *
- * A document's title is not in `meta` because it comes from the markdown, so
- * the doc route resolves it from the slug here rather than leaving the view to
- * set it -- which it cannot do reliably anyway: on a cold load the view is
- * created before this hook runs, so anything it wrote would be overwritten.
+ * A document's title comes from the markdown, not `meta`, so the doc route
+ * resolves it from the slug here. The view cannot set it reliably: on a cold
+ * load the view is created before this hook runs, so its title would be
+ * overwritten.
  */
 router.afterEach((to) => {
   const title =

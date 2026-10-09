@@ -2,9 +2,9 @@
 /*
  * The document list.
  *
- * Grouped by the reading order in content/docs.ts. Each entry shows its own
- * lead sentence on the wide layout -- the documents are long and their titles
- * do not always say which one you want.
+ * Grouped by the reading order in content/docs.ts. Each entry shows its lead
+ * sentence on the wide layout, since the titles alone do not always say which
+ * document you want.
  */
 import { docSections } from '@/content/docs'
 </script>

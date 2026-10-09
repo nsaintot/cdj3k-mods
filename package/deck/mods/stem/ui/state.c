@@ -20,42 +20,33 @@ int       stems_g_building;      /* re-entry guard: building repaints        */
 int       stems_g_row_open;      /* the STEMS button is lit / the row is up  */
 
 uintptr_t stems_g_btn_stems;     /* the 4th quick-menu button (a Label)       */
-/* Its plate colour, held here instead of in the Label's own background.
- *
- * The stipple has to go down BEFORE juce::Label::paint, because Label draws its
- * background and its lettering in one call and a pattern laid after would fall across
- * the word. So the Label's background is transparent and this is what the paint hook
- * reads -- which also keeps it off findColour, a keyed-array walk that has no business
- * running per frame. */
-/* Its STATE, not its colour: a stored ARGB is a cache that goes stale on a theme
- * change, leaving the button on the previous palette until something rewrites it.
- * The colour is resolved at paint from whatever theme is in force. */
+/* Its state, read by the paint hook, which lays the stipple before Label::paint (the
+ * Label's own background is transparent). Stored as state rather than ARGB so the
+ * colour is resolved at paint from the theme in force. */
 enum btn_state stems_g_btn_state = BTN_OFF;
 uintptr_t stems_g_warn;          /* the badge in its corner, hidden unless earned */
-/* Blink budget, counted down on the display tick. Odd/even decides the badge's
- * colour, so one variable carries both "still blinking" and "which half". */
+/* Blink budget, counted down on the display tick; its value also gives the phase. */
 int       stems_g_warn_blink;
 int       stems_g_warn_up;       /* the badge is currently shown               */
-uintptr_t stems_g_edit;          /* "the stems are doing something", other corner */
+uintptr_t stems_g_edit;          /* the edit mark, in the other corner            */
 uint32_t  stems_g_edit_col;      /* what it is currently painted, 0 = hidden   */
 uintptr_t stems_g_row;           /* the control strip (a Label, used as a panel) */
-uintptr_t stems_g_btn_bypass;  /* BYPASS, left of the sliders             */
+uintptr_t stems_g_btn_bypass;  /* BYPASS, left of the wedges              */
 uintptr_t stems_g_caption[N_STEMS];
 
-/* The row holds two full-size containers and shows exactly one. Swapping state is then
- * a pair of setVisible calls instead of hiding eleven widgets by hand, and the progress
- * bar genuinely replaces the row rather than covering it. */
-uintptr_t stems_g_controls;      /* BYPASS + captions + rails + fills + sliders */
+/* The row holds two full-size containers and shows exactly one, so swapping state is
+ * two setVisible calls. */
+uintptr_t stems_g_controls;      /* BYPASS + captions + wedges                    */
 uintptr_t stems_g_progress;      /* the processing bar                            */
 uintptr_t stems_g_prog_fill, stems_g_prog_text, stems_g_prog_track;
 uintptr_t stems_g_prog_mark[N_PROG_BOUND];  /* one per handover boundary */
 /* The bar's rect inside the progress container. Y is derived from the wedge band at
- * build time rather than written as a constant -- see PROG_BAR_H in ui.h. */
+ * build time (stems_build_row). */
 int32_t   stems_g_prog_x, stems_g_prog_y, stems_g_prog_w;
-int       stems_g_bypass_on;   /* bypass: stems out of circuit, sliders inert    */
+int       stems_g_bypass_on;   /* bypass: stems out of circuit, wedges inert     */
 
-/* The audio thread's view of the row. See ../stem.h: these exist so stem/audio.c
- * never has to read a juce::Value from the audio callback. */
+/* The audio thread's view of the row (see ../stem.h), so the audio callback never
+ * reads UI state. */
 float   g_stem_gain[N_STEMS] = { 1.0f, 1.0f, 1.0f };
 int     g_stem_bypass;
 int       stems_g_processing;
@@ -64,9 +55,7 @@ const char *const k_stem_name[N_STEMS] = { "DRUMS", "HARMONICS", "VOCALS" };
 
 
 
-/* Our clone of the juce::Label vtable: identical to stock except mouseDown. The two
- * words ahead of the slots (offset-to-top, typeinfo) are cloned too, so anything that
- * reaches for RTTI through vptr[-1] still finds Label's. */
+/* Our clone of the juce::Label vtable; see ui.h. */
 uintptr_t stems_g_label_vt[VT_CLONE_WORDS];
 uintptr_t stems_g_label_vptr;
 uintptr_t stems_g_label_mouseup;  /* stock juce::Label::mouseUp, chained by ours */

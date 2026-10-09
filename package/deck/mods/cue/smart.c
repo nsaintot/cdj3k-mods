@@ -2,39 +2,30 @@
 /*
  * cue/smart.c - SMART CUE: the memory cue follows the pad you last pressed.
  *
- * IT GOES WHERE THE HOT CUE IS, taken from the pad's own slot, and it is placed
- * on the RELEASE. Not the play head, and not on the press.
+ * The memory cue is set to the hot cue's position, read from the pad's slot,
+ * on the release.
  *
- * The play head only ever worked by coincidence: the press jumps there first, so
- * "where the deck is now" happened to be the hot cue. That coincidence is what
- * made a DELETE go wrong -- a press under CALL/DELETE erases the cue instead of
- * jumping to it, the deck reports both the same way ("the pad was already set"),
- * and the memory cue landed wherever the needle happened to be.
+ * Reading the slot instead of the play head means nothing depends on the
+ * press's jump having landed, so the decision can wait for the release, the
+ * first point where an erase can be told from a recall. A press under
+ * CALL/DELETE erases the cue, and the deck reports it the same way as a recall
+ * ("the pad was already set").
  *
- * Reading the position out of the slot removes the coincidence. Nothing depends
- * on the jump having landed, so nothing has to be ordered behind it, so the
- * decision can wait for the release -- which is the first moment an erase is
- * distinguishable from a recall. A deleted cue is simply never followed, and the
- * memory cue never moves at all: no jump to the needle and no correction after
- * it, which is what an undo-afterwards version looked like on screen.
+ * Only a press that recalled an existing cue is followed: the pad must have had
+ * a cue when it went down and still have one when it comes up. A press on an
+ * empty pad sets a hot cue at the play head, which is not a recall.
  *
- * ONLY A PRESS THAT WENT TO A CUE ALREADY THERE. A press on an empty pad SETS
- * the hot cue rather than going to one, and there is nothing to follow: the
- * memory cue would land where the play head already is, which is not a decision
- * the DJ made. So the pad must have had a cue when it went down AND still have
- * one when it comes up.
- *
- * PLACED THROUGH THE DECK'S OWN setAt, never by writing the slot: setting a cue
- * also takes a reference on the source, sets the exists and on-grid bytes, bumps
- * the version and tells the lamp and the waveform marker. preview.c reached the
- * same conclusion for the same reason, and its setHere hook is where the engine
- * setAt needs is captured from.
+ * The cue is placed through the deck's own setAt, not by writing the slot,
+ * because setting a cue also takes a reference on the source, sets the exists
+ * and on-grid bytes, bumps the version and notifies the lamp and the waveform
+ * marker (see preview.c). The engine setAt needs is captured by preview.c's
+ * setHere hook.
  */
 #include "cue/cue.h"
 #include "kit/menu.h"
 #include "kit/mod.h"
 
-int g_smart_on;                 /* persisted; see mods/common.c */
+int g_smart_on;                 /* persisted; see core/common.c */
 
 typedef int64_t (*set_at_fn_t)(void *engine, uint32_t kind, const void *pos,
                                uint32_t on_grid, void *desc);
@@ -50,20 +41,18 @@ typedef int64_t (*set_at_fn_t)(void *engine, uint32_t kind, const void *pos,
 
 #define FN_SET_AT           ep122_sym(EP122_CUE_SET_AT)
 
-/* What setPoint gives a cue it creates, and therefore what the memory cue looks
- * like on a track where the DJ has never coloured one. Used only when there is
- * no memory cue to take a colour from. */
+/* setPoint's default cue colour. Used only when there is no memory cue to take
+ * a colour from. */
 static const uint8_t k_mem_desc[SLOT_DESC_LEN] = { 255, 113, 0 };
 
-/* The pressed pad's cue, read while it is still there, and the memory cue's own
- * colour so following one does not repaint it. [deck] */
+/* The pressed pad's cue, read at press, and the memory cue's colour so moving
+ * it does not recolour it. [deck] */
 static uint8_t smart_g_pos[SLOT_POS_INFO_LEN];
 static uint8_t smart_g_desc[SLOT_DESC_LEN];
 static uint8_t smart_g_on_grid;
 static int     smart_g_have;
 
-/* Pads that had a cue when they went down. A press that SET one is not a press
- * that went to one, and only the second kind is followed. */
+/* Bit per pad: the pad had a cue when it went down. */
 static unsigned smart_g_had;
 
 /* Copy the pad's cue out of its slot, plus a colour for the memory cue. */
@@ -111,8 +100,8 @@ static void smart_pad(const struct cue_event *ev, enum cue_phase phase)
 
     switch (phase) {
     case CUE_PAD_DOWN:
-        /* Both read before the deck's press can change either: whether this pad
-         * held a cue, and where it was. */
+        /* Read before the deck's press can change them: whether this pad held
+         * a cue, and where. */
         if (cue_slot_pos(ev, ev->pad + 1, &at))
             smart_g_had |= 1u << ev->pad;
         else

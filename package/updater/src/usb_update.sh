@@ -1,5 +1,5 @@
 #!/bin/bash
-# usb_update.sh - INSTALL entry point. The deck unpacks the update media and
+# usb_update.sh - install entry point. The deck unpacks the update media and
 # runs:  usb_update.sh <ISO_MOUNTPOINT> <LANGUAGE>
 #
 # Stages an overlay (pdj.tar.gz) on the application partition carrying the two
@@ -77,8 +77,8 @@ function safe_cp() {
     cp "$SRC" "$DST"
 }
 
-# gui_image never returns - it holds the screen until killed. Always
-# `pkill gui_image` then background it.
+# gui_image never returns; it holds the screen until killed. Always
+# `pkill gui_image`, then run it in the background.
 #
 # Fatal: show the reason and hang, so it stays on screen until power-cycle.
 function mods_fail() {
@@ -91,7 +91,7 @@ function mods_fail() {
     while true; do sleep 1; done
 }
 
-# ROCKCHIP ONLY - GPIO 71
+# Rockchip only: GPIO 71
 LED_GPIO=71
 LED_WORKING="0.08 0.08 0.08 0.6"   # heartbeat: pulse-pulse-pause
 LED_DONE="1 1"                     # slow
@@ -113,7 +113,7 @@ function led_start() {
     [[ "$LED_READY" == 1 ]] || return 0
     [[ -n "$LED_PID" ]] && { kill "$LED_PID" 2>/dev/null || true; }
     # stdio to /dev/null: an inherited log fd keeps the update media busy.
-    # DEBUG trap off - the loop never ends.
+    # DEBUG trap off: the loop never ends.
     (
         trap - DEBUG
         while :; do
@@ -137,10 +137,10 @@ function install_phase1() {
 
     PDJ_TAR_WORKDIR=$(mktemp -d)
 
-    # Built fresh, replacing whatever is there: everything in the overlay came
+    # Built fresh, replacing whatever is there: everything in the overlay comes
     # from an update, so the last one flashed defines it.
     #
-    # phase1 runs as the app launcher, hands off to phase2, which installs
+    # phase1 runs as the app launcher and hands off to phase2, which installs
     # payload.sh as the persistent apl_start.sh prefix.
     safe_cp "$ISO_MOUNTPOINT"/phase1.sh  "$PDJ_TAR_WORKDIR"/scripts/apl_start.sh
     safe_cp "$ISO_MOUNTPOINT"/phase2.sh  "$PDJ_TAR_WORKDIR"/phase2.sh
@@ -172,11 +172,11 @@ function install_phase1() {
 }
 
 # The deck's firmware version, as u-boot holds it: <major>.<minor>, e.g. 3.22.
-# The mods resolve against 3.13 and newer; below that they find nothing to
-# install and the deck would flash an overlay that never activates.
+# The mods resolve against 3.13 and newer; below that they resolve nothing and
+# the deck would flash an overlay that never activates.
 #
 # Only the floor is enforced. A version above the tested range still installs:
-# the shim resolves the firmware itself and installs all of it or none.
+# the shim checks the firmware itself and installs all of its mods or none.
 FW_RELEASE=$(fw_printenv -n release 2>/dev/null || true)
 case "$FW_RELEASE" in
     [0-9]*.[0-9]*)

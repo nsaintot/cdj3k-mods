@@ -1,13 +1,12 @@
 /*
  * Colour scheme.
  *
- * Three states, not two: `auto` follows the OS, and the other two are an
- * explicit choice that outranks it. Written to the root element as a data
- * attribute, which is what tokens/_color.scss keys on, and remembered in
- * localStorage so the choice survives a reload.
+ * Three states: `auto` follows the OS; `light` and `dark` are explicit choices
+ * that override it. Written to the root element as a data attribute, which
+ * tokens/_color.scss keys on, and kept in localStorage across reloads.
  *
- * The first application happens in index.html, before Vue mounts, so the page
- * never paints in the wrong scheme and then corrects itself.
+ * index.html applies the saved scheme before Vue mounts, so the page never
+ * paints in the wrong scheme first.
  */
 import { ref, watch, readonly } from 'vue'
 

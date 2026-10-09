@@ -19,6 +19,9 @@ static int gp_btn_index(uintptr_t self)
     return -1;
 }
 
+/* The plate for one control: a GP_BTN_EDGE outline around a fill, in the
+ * colours for `state`. Callers inset it GP_PLATE_INSET inside the bounds so it
+ * lands where the deck's artwork does. */
 static void gp_plate(void *g, int x, int y, int w, int h, int state)
 {
     int e = GP_BTN_EDGE;
@@ -33,14 +36,16 @@ static void gp_plate(void *g, int x, int y, int w, int h, int state)
         line = GP_COL_LINE_OFF;
         fill = GP_COL_FILL_OFF;
     }
-    /* Through the theme, because these are deck values and not roles -- see
-     * mod_colour_stock, and the note on the colours in panel_internal.h. */
+    /* Through the theme, because these are deck values, not roles; see
+     * mod_colour_stock and the colour note in panel_internal.h. */
     mod_gfx_colour(g, mod_colour_stock(line));
     mod_gfx_fill(g, x, y, w, h);
     mod_gfx_colour(g, mod_colour_stock(fill));
     mod_gfx_fill(g, x + e, y + e, w - 2 * e, h - 2 * e);
 }
 
+/* The deck's own "something to undo" byte (GP_ACTIVE_OFF). If it cannot be read,
+ * falls back to the grid offset, which every firmware grid mode moves. */
 static int gp_reset_active(uintptr_t comp)
 {
     uint8_t v = 0;
@@ -50,6 +55,9 @@ static int gp_reset_active(uintptr_t comp)
     return v == GP_ACTIVE_VAL;
 }
 
+/* The deck's RESET, repainted to our shape. Its stock paint is not chained (it
+ * draws the artwork this replaces); the rest of the button, including the press,
+ * is untouched. */
 void gp_reset_paint(void *self, void *g)
 {
     int32_t b[4];
@@ -80,6 +88,8 @@ static void gp_tri(void *g, int cx, int cy, int right)
     }
 }
 
+/* Enlarge points out (the beats spread), Reduce points in. Only these two have
+ * arrows. */
 static void gp_arrows(void *g, int which, int w, int h)
 {
     int cy = h / 2;
@@ -91,6 +101,10 @@ static void gp_arrows(void *g, int which, int w, int h)
     gp_tri(g, w / 2 + GP_ARROW_OFF, cy, which == GP_ENLARGE);
 }
 
+/* The plate, then the stock Label::paint for the lettering. Label draws its
+ * background and text in one call, so a plate drawn afterwards would cover the
+ * text; the Label's own background and outline colours are transparent for this
+ * reason (Label::drawRect cannot draw the 2px edge anyway). */
 void gp_label_paint(void *self, void *g)
 {
     int i = gp_btn_index((uintptr_t)self);
@@ -102,9 +116,8 @@ void gp_label_paint(void *self, void *g)
         ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
         return;
     }
-    /* OUR RESET says whether there is anything to undo, the same as the deck's
-     * beside it -- and here the answer is exact, because this is the state the
-     * panel itself keeps. */
+    /* Our RESET shows whether there is anything to undo, like the deck's, from
+     * the edit state the panel keeps. */
     if (i == GP_RESET && !hot && gp_g_mult == 1.0 && gp_g_steps == 0) {
         state = GP_STATE_OFF;
         juce_comp_colour((uintptr_t)self, LBL_COL_TEXT, GP_COL_TEXT_OFF);
@@ -118,6 +131,8 @@ void gp_label_paint(void *self, void *g)
     gp_arrows(g, i, b[2], b[3]);
 }
 
+/* Press acts, release only un-lights, as on the deck's own grid buttons. Nothing
+ * repeats while held, which would make [x2] unusable. */
 void gp_label_mousedown(void *self, void *event)
 {
     int i = gp_btn_index((uintptr_t)self);
@@ -128,8 +143,8 @@ void gp_label_mousedown(void *self, void *event)
     gp_g_hot = i;
     gp_repaint((uintptr_t)self);
     gp_action(i);
-    /* The readout and the deck's own BPM both come off the grid we just moved,
-     * so the whole strip is asked to redraw rather than just the button. */
+    /* The readout and the deck's own BPM both follow the grid just moved, so the
+     * whole strip is repainted. */
     gp_repaint(gp_g_panel);
 }
 

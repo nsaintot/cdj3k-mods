@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+/* The active slot's file as a loop over the track's timeline. The arithmetic
+ * is in loop.c, which is pure and has its own tests. */
 static struct stem_loop gc_loop_for(int64_t engage, int64_t span)
 {
     struct stem_loop l = { 0, 0 };
@@ -44,6 +46,11 @@ static inline double gc_phase_at(struct gc_phase *p, int64_t at)
                            - p->engaged) * p->file_spb, p->fl.span);
 }
 
+/* The file's stereo frame at fractional index `u`, linearly interpolated and
+ * scaled out of s16. `u` is strictly below the span, so the successor is the
+ * next frame or the first; interpolating across the wrap makes a rate-matched
+ * loop seamless. The s16 scale rides on the interpolation weights: two
+ * multiplies a frame rather than two a sample. */
 static inline void gc_frame(const int16_t *pcm, int64_t span, double u,
                             float *l, float *r)
 {
@@ -57,6 +64,19 @@ static inline void gc_frame(const int16_t *pcm, int64_t span, double u,
     *r = wa * (float)pcm[i0 * 2 + 1] + wb * (float)pcm[i1 * 2 + 1];
 }
 
+/* Move the held MUTE onto the beat.
+ *
+ * The boundary comes from the X-PAD's clock, the only one on the audio path: it
+ * runs off the track's grid while the play head moves and off the track's tempo
+ * when it does not, so a mute lands on the beat on a parked deck too.
+ *
+ * Acts on a change of quarter, not on a boundary inside this call. This runs
+ * pre-stretch, the clock advances post-stretch, and the stretcher pulls its
+ * source in bursts, so this is not called once per block and a boundary may
+ * never fall inside a call. Remembering the last quarter seen and acting when it
+ * changes works whenever the next call happens.
+ *
+ * With the deck's QUANTIZE off, or with no clock, the commit is immediate. */
 void stem_mute_commit(void)
 {
     double beat;
@@ -72,8 +92,8 @@ void stem_mute_commit(void)
             __atomic_load_n(&g_stem_mute_live[i], __ATOMIC_RELAXED))
             break;
     if (i == N_STEMS) {
-        /* Nothing pending, so keep the clock's place: a request arriving later
-         * has to wait for the NEXT boundary, not be handed a stale one. */
+        /* Nothing pending, so track the clock: a later request waits for the
+         * next boundary, not a stale one. */
         stem_g_mute_quarter    = quarter;
         stem_g_mute_quarter_ok = have;
         return;
@@ -98,6 +118,25 @@ void stem_mute_commit(void)
     }
 }
 
+/* Apply the stem levels to the block the stock read() just produced.
+ *
+ * Only two parts are stored; drums is the residual:
+ *
+ *     out = d*mix + (h-d)*H + (v-d)*V
+ *
+ * so the derived part costs nothing and s16 stems reconstruct exactly: the
+ * quantisation enters twice with opposite signs and cancels. At unity
+ * (d=h=v=1) this is `mix`, and the early-out below returns the block untouched
+ * so BYPASS is bit-exact.
+ *
+ * `pos` is the pool's sample index and the stems were decoded onto that
+ * timeline, so frame k of the block is frame pos+k of each stem. Outside the
+ * stems' coverage the block is left alone; silencing it would turn a short stem
+ * into a dropout.
+ *
+ * Audio-thread rules: no allocation, no I/O, no locks, bounded loop. `len`
+ * frames are always valid because the stock read() zero-fills any tail it could
+ * not satisfy. */
 void stem_mix(void *self, const void *src, void *dst, int64_t pos,
                      int64_t len)
 {
@@ -114,9 +153,8 @@ void stem_mix(void *self, const void *src, void *dst, int64_t pos,
     int slot, have_gc = 0, have_beats = 0;
 
     (void)self; (void)src;
-    /* Before the early-outs below: a mute going ON has to be able to move the
-     * gains away from unity, and the bit-exact bypass is exactly the path that
-     * would otherwise never look. */
+    /* Before the early-outs: a mute going on must be able to move the gains
+     * away from unity, and the bit-exact bypass would otherwise skip it. */
     stem_mute_commit();
     if (!s || len <= 0 || pos < 0)
         return;
@@ -131,15 +169,14 @@ void stem_mix(void *self, const void *src, void *dst, int64_t pos,
             gc_release();
     }
 
-    /* Which route the phase takes, decided once for the block. The array needs
-     * the file's own beat to measure against, so a slot whose config line states
-     * no BPM stays on the ratio -- where it is 1.0, the file at its own speed,
-     * which is what a loop with no stated tempo has always done.
+    /* The phase route, decided once per block. The array needs the file's own
+     * beat to measure against, so a slot whose config line states no BPM stays
+     * on the ratio, which is then 1.0 (the file at its own speed).
      *
-     * `engaged` is a beat index rather than a position, so the two ends of the
-     * subtraction are in the same units however the tempo moved between them.
-     * It comes out an exact whole number: the engage point IS a beat of this
-     * grid, converted by the same expression the array was. */
+     * `engaged` is a beat index, not a position, so both ends of the
+     * subtraction are in the same units however the tempo moved. It is an exact
+     * whole number: the engage point is a beat of this grid, converted by the
+     * same expression as the array. */
     if (have_gc) {
         struct stem_grid_view gv;
 
@@ -149,16 +186,15 @@ void stem_mix(void *self, const void *src, void *dst, int64_t pos,
             have_beats  = 1;
             ph.beats    = gv.beats;
             ph.count    = gv.count;
-            /* No cursor: the engage point is a whole track away from where this
-             * block reads, so seeding the block's hint with it would only make
-             * the first frame bisect twice. */
+            /* No cursor: the engage point can be far from where this block
+             * reads, so seeding the hint with it would only make the first
+             * frame bisect twice. */
             ph.engaged  = stem_beat_at(gv.beats, gv.count, engage, NULL);
         }
     }
 
-    /* Untouched, not multiplied by one -- but only while nothing is standing in
-     * for a stem. A replacement moves audio at unity levels, so it has to
-     * survive the bypass that exists to keep unity bit-exact. */
+    /* Untouched, not multiplied by one, but only while no file replaces a stem:
+     * a replacement changes the audio even at unity levels. */
     if (d == 1.0f && kh == 0.0f && kv == 0.0f && !have_gc) {
         stem_store_release();
         return;
@@ -167,14 +203,13 @@ void stem_mix(void *self, const void *src, void *dst, int64_t pos,
     n = v.frames - pos;            /* frames of this block the stems cover */
     if (n > len) n = len;
 
-    /* The stems are stored as the server normalised them, so undoing that
-     * belongs here: folded into the coefficient it is free, whereas doing it to
-     * the samples would have meant clipping a stem that legitimately peaks above
-     * full scale -- and that clipping landed in the DERIVED drums part, which is
-     * what pushed the output past 0 dBFS.
+    /* The stems are stored as the server normalised them, and the scale is
+     * undone here in the coefficient. Undoing it on the samples would clip a
+     * stem that peaks above full scale, and that clipping lands in the derived
+     * drums part and pushes the output past 0 dBFS.
      *
-     * Unity is still exactly unity: at d == gh == gv both coefficients are zero
-     * before the scale is applied, so zero is what they stay. */
+     * Unity stays exact: at d == gh == gv both coefficients are zero before the
+     * scale is applied. */
     {
         const float sh = v.h_scale * q, sv = v.v_scale * q;
         const float ch = kh * sh, cv = kv * sv;
@@ -185,26 +220,24 @@ void stem_mix(void *self, const void *src, void *dst, int64_t pos,
             for (i = 0; i < n * 2; i++)
                 s[i] = d * s[i] + ch * (float)hp[i] + cv * (float)wp[i];
         } else {
-            /* ONE STEM COMES FROM THE FILE, the other two from the track:
+            /* One stem comes from the file, the other two from the track:
              *
              *     live       d*(M - H - V) + gh*H + gv*V   == d*M + kh*H + kv*V
              *     drums      d*F           + gh*H + gv*V
              *     harmonics  d*(M - H - V) + gh*F + gv*V
              *     vocals     d*(M - H - V) + gh*H + gv*F
              *
-             * The residual is written out longhand in the last two because the
-             * collapsed form above folds the drums level into the stem terms,
-             * and those terms are exactly what is being replaced. The file is
-             * plain s16 at whatever level the DJ made it, so it takes no part of
-             * the server's normalisation -- gc_frame applies the scale it does
-             * need while it interpolates.
+             * The residual is written out in the last two because the collapsed
+             * form folds the drums level into the stem terms being replaced.
+             * The file is plain s16 at the DJ's own level, so the server's
+             * normalisation does not apply; gc_frame applies the s16 scale while
+             * it interpolates.
              *
-             * The file is read at a fractional index, so its phase is asked for
-             * PER FRAME rather than stepped. A division a frame -- or, on the
-             * beat route, a bisection of a few thousand beats -- buys a loop
-             * that cannot drift and a wrap whose whole correctness lives in one
-             * tested function; it costs well under a percent of a core, and only
-             * while a slot is armed. */
+             * The file is read at a fractional index, so its phase is computed
+             * per frame rather than stepped: a division a frame (or a hinted
+             * search of the beat array) for a loop that cannot drift and a wrap
+             * handled in one tested function. Well under a percent of a core,
+             * and only while a slot is armed. */
             int64_t k;
 
             switch (g.part) {

@@ -29,9 +29,7 @@ void gp_dump(uintptr_t comp, int depth)
 
     if (depth > 6)
         return;
-    /* 0 IS SUCCESS -- it forwards mod_safe_read. Testing it as a boolean makes
-     * the walk return exactly when it worked, which is how the first dump came
-     * back empty. */
+    /* 0 is success: it forwards mod_safe_read. */
     if (juce_comp_bounds(comp, b) != 0)
         return;
     n = juce_comp_nchild(comp);

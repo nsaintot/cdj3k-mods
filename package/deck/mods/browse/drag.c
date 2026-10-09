@@ -2,34 +2,30 @@
 /*
  * browse/drag.c - carrying a row to a new place in the list.
  *
- * The gesture half of the reorder. See browse.h for the mode it lives inside
- * and for the offsets this reads.
+ * The gesture half of the reorder. See browse.h for the EDIT mode and the
+ * offsets this reads.
  *
- * ---- what makes the row fly ------------------------------------------------
+ * ---- moving the row ---------------------------------------------------------
  *
- * Its own bounds. juce sets a child's Graphics origin from where the child IS,
- * so moving the RowComp moves everything it draws -- the number, the title, the
- * key, the waveform strip -- with no snapshot to take and no transform to apply
- * to somebody else's paint. The translucency is then one fill over the top of
- * the stock paint, in the row's own paint slot.
+ * The row is moved by changing its wrapper's bounds. juce sets a child's
+ * Graphics origin from its position, so everything the row draws (number,
+ * title, key, waveform strip) moves with it. The translucency is a juce
+ * transparency layer around the wrapper's paint (see below).
  *
- * The finger's position arrives relative to the row, and the row is the thing
- * being moved, so every measurement is taken in the PARENT's space:
- * `current bounds y + event y` is the finger, whatever the row is doing.
+ * The finger's position arrives relative to the row, which is moving, so all
+ * measurements are in the parent's space: `current bounds y + event y`.
  *
- * ---- not chaining is the feature -------------------------------------------
+ * ---- not chaining -----------------------------------------------------------
  *
- * The stock handlers are what scroll the list and move the selection. While a
- * drag is live they are simply not called, which is the whole of "the list does
- * not scroll under the gesture" -- there is no flag to set on the viewport and
- * nothing to put back afterwards.
+ * The stock handlers scroll the list and move the selection. While a drag is
+ * live they are not called, so the list does not scroll under the gesture;
+ * nothing on the viewport needs to be set or restored.
  *
- * ---- and it fails open -----------------------------------------------------
+ * ---- failing open -----------------------------------------------------------
  *
- * Every hook returns to stock on its first line unless a drag is live, and a
- * drag only starts on a row of the list EDIT is on. RowComp is shared by every
- * touchable table in the app, so anything less than that would put this in
- * front of DJ SETTINGS' scrolling too.
+ * Every hook falls through to stock unless a drag is live, and a drag only
+ * starts on a row of the list EDIT is on. RowComp is shared by every touchable
+ * table in the app, including DJ SETTINGS.
  */
 #include "browse/browse.h"
 
@@ -73,9 +69,8 @@ static uintptr_t dg_owner(uintptr_t rc)
     return v;
 }
 
-/* The model's own row count, through the same slot the deck reads it from.
- * Needed because the insertion point may sit past the last row, and "past the
- * last row" is a different answer from "on it". */
+/* The model's row count, through the slot the deck reads it from. Used to
+ * clamp the insertion point to the last row. */
 static int dg_num_rows(uintptr_t owner)
 {
     uintptr_t model = 0, vt = 0, fn = 0;
@@ -98,7 +93,7 @@ static int dg_event_y(void *event)
     return (int)y;
 }
 
-/* The WRAPPER, which is what carries a row's position. */
+/* Move the wrapper, which carries the row's position. */
 static void dg_place(int y)
 {
     uintptr_t fn = ep122_sym(EP122_JUCE_COMP_SETBOUNDS);
@@ -111,26 +106,23 @@ static void dg_place(int y)
 
 /* ---- carrying a row past the edge of the window ---------------------------
  *
- * A list longer than the window is the ordinary case, and without this the only
- * rows a track can be dropped on are the ten already showing.
+ * Without autoscroll a track could only be dropped on the ten visible rows.
  *
- * THIS LIST DOES NOT SCROLL THE JUCE WAY. meow::TouchableViewport is not a
- * juce::Viewport -- it is a juce::Component that happens to be a
- * ComponentListener and a MultiTimer -- so juce::Viewport::setViewPosition is
- * the wrong lever and does not reach it. What carries the offset is the CONTENT
- * COMPONENT'S OWN Y, measured on an 18-row playlist scrolled to row 6:
+ * meow::TouchableViewport is not a juce::Viewport (it is a juce::Component that
+ * is also a ComponentListener and a MultiTimer), so
+ * juce::Viewport::setViewPosition does not apply. The scroll offset is the
+ * content component's own y. For an 18-row playlist scrolled to row 6:
  *
  *   Row (wrapper)     {0,240,1188,48}      row 5 * 48, so wrapper y is content
  *   ViewedComponent   {0,-240,1188,864}    18 * 48 tall, offset by five rows
  *   juce::Component   {0,0,1188,480}       the window, ten rows
  *
- * Which is also why the whole gesture measures in TRAVEL: content coordinates do
- * not move when the list scrolls, so the row number the finger is over survives
- * a scroll without any correction.
+ * The gesture measures travel in content coordinates, which do not change when
+ * the list scrolls, so the row under the finger needs no correction.
  *
- * Moving the content is what the viewport itself does, and it listens to its own
- * content -- that is what the ComponentListener base is for -- so the rows get
- * recycled onto their new positions by the deck's own code. */
+ * Moving the content is what the viewport itself does; it listens to its
+ * content (the ComponentListener base), so the deck recycles the rows onto
+ * their new positions. */
 #define DG_EDGE_PX   44     /* how near an edge starts it: about one row */
 #define DG_SCROLL_PX  9     /* per display tick, so ~7 rows a second */
 
@@ -146,8 +138,8 @@ static int dg_scroll_by(int px)
         juce_comp_bounds(dg_g_view, v) != 0 ||
         juce_comp_bounds(dg_g_clip, c) != 0)
         return 0;
-    /* Down the list means the content moves UP, so its y goes negative -- as far
-     * as the last window's worth, and not at all when it all fits. */
+    /* Scrolling down moves the content up (negative y), at most to the last
+     * window, and not at all when everything fits. */
     least = c[3] - v[3];
     if (least > 0)
         least = 0;
@@ -163,20 +155,18 @@ static int dg_scroll_by(int px)
     return want - v[1];
 }
 
-/* PUT THE CARRIED ROW'S OWN TRACK BACK ON IT.
+/* Restore the carried row's own track after a scroll.
  *
- * The list hands its pool out as `components[row % N]`, so a scroll of two rows
- * is enough to give the carried one to whatever has just come into view --
- * measured: the component carrying row 0 was re-drawn as row 12 of an 18-row
- * list. The `#` column follows the RowComp's own row number, but the title does
- * not: it lives in a child that refreshComponentForRow fills in, so the thing
- * under the finger silently became a different track.
+ * The list hands out components as `components[row % N]`, so scrolling two rows
+ * can reassign the carried component (e.g. the one carrying row 0 is redrawn as
+ * row 12 of 18). The `#` column follows the RowComp's row number,
+ * but the title is in a child filled by refreshComponentForRow, so the carried
+ * row would show a different track.
  *
- * So re-assert the row through the deck's own refresh, with the same three
- * arguments its updateVisibleArea uses. Called straight after a scroll step,
- * which is when -- and only when -- the list re-assigns: the content's move
- * notifies the viewport synchronously, so by the time the scroll returns the
- * damage is done and undoing it here lands before anything paints. */
+ * So the row is re-asserted through the deck's refresh, with the same three
+ * arguments updateVisibleArea uses. Called right after each scroll step, the
+ * only time the list reassigns: the content's move notifies the viewport
+ * synchronously, so this runs before anything paints. */
 static void dg_reclaim(void)
 {
     uintptr_t owner = 0, model = 0, vt = 0, fn = 0, child = 0, back;
@@ -203,20 +193,16 @@ static void dg_reclaim(void)
     back = ((uintptr_t (*)(void *, int, int, void *))fn)((void *)model,
                                                          dg_g_from, 0,
                                                          (void *)child);
-    /* It fills the component it is given and hands the same one back, which is
-     * the only case worth taking: a NEW component would have to be adopted and
-     * bounded the way the list does it, and the list is about to do that itself
-     * on the next scroll step anyway. */
+    /* Only the case where it fills and returns the given component is handled;
+     * a new component would need adopting, which the list does itself on the
+     * next scroll step. */
     if (back && back != child)
         MDBG("browse: the row refresh returned a different component -- the "
              "carried row keeps the one it had\n");
 }
 
-/* The whole LIST, not the row and not the row's parent. What has to be redrawn
- * is the space the row left, the row wearing the insertion mark, and the row
- * itself -- and the first version repainted the immediate parent, on the
- * assumption that every row shares one. The insertion mark never appeared once,
- * which is what that assumption looks like when it is wrong. */
+/* Repaint the whole list: the gap, the row with the insertion mark and the
+ * carried row do not share an immediate parent. */
 static void dg_repaint(void)
 {
     uintptr_t fn = ep122_sym(EP122_JUCE_COMP_REPAINT);
@@ -225,9 +211,8 @@ static void dg_repaint(void)
         ((void (*)(void *))fn)((void *)dg_g_owner);
 }
 
-/* The row's ancestry, once per drag: which component actually holds it, how it
- * is positioned, and how far up the list is. Everything above turned on getting
- * this wrong, so it is worth a line. */
+/* Log the row's ancestry once per drag: which components hold it, their bounds
+ * and child counts. */
 static void dg_chain(uintptr_t rc)
 {
     char name[96];
@@ -246,16 +231,13 @@ static void dg_chain(uintptr_t rc)
     }
 }
 
-/* Last in the parent's child array, which IS juce's z-order -- a component is
- * painted in array order, so a row moved over a sibling that comes after it is
- * simply painted under it. Dragging up looked fine and dragging down lost the
- * row entirely, which is that asymmetry exactly.
+/* Move the component to the end of its parent's child array, which is juce's
+ * z-order; otherwise a row dragged down is painted under the rows after it.
  *
- * Done by moving the pointer rather than by calling toFront: the array is what
- * toFront edits, we are on the message thread that owns it, and re-adding the
- * child instead would take it out of its parent mid-gesture -- with the mouse
- * grab on it. Nothing puts the order back afterwards, and nothing needs to: the
- * rows do not overlap when they are where the list put them. */
+ * Done by moving the pointer, as toFront does, on the message thread that owns
+ * the array; re-adding the child would detach it mid-gesture with the mouse
+ * grab on it. The order is never restored; rows in their slots do not
+ * overlap. */
 static void dg_to_front(uintptr_t rc)
 {
     uintptr_t p = juce_comp_parent(rc), arr = 0, cur = 0;
@@ -284,13 +266,12 @@ static void dg_to_front(uintptr_t rc)
 
 /* ---- the gesture --------------------------------------------------------- */
 
-/* ARE THE TWO CARRIED OBJECTS STILL THE ONES WE GRABBED?
+/* Whether the two carried objects are still the ones grabbed.
  *
- * The list owns them and can rebuild itself under a drag -- a media eject, a
- * view change, the deck recycling a RowComp. Their vtable pointer is what says
- * so, the same one-read test the EDIT plate uses on itself, and it is the guard
- * that matters: putting a row back means WRITING to it, and writing to a freed
- * component is the one way this feature could take the deck down. */
+ * The list can rebuild under a drag (media eject, view change, a recycled
+ * RowComp). Their vtable pointers are checked, as the EDIT plate checks its
+ * own. This guards every write back to the row: writing to a freed component
+ * could crash the deck. */
 static int dg_alive(void)
 {
     uintptr_t v = 0;
@@ -312,15 +293,13 @@ static void dg_end(void)
     dg_g_from = dg_g_insert = -1;
 }
 
-/* Both defined with the drag they belong to, below; a press has to reach them
- * because a fast one arrives partly as presses. */
+/* Defined below with the drag; a press needs them because a fast drag arrives
+ * partly as presses. */
 static int  dg_finger(uintptr_t rc, void *event);
 static void dg_carry_to(int finger);
 
-/* WHY a press did not become a drag. Four conditions could refuse one and all
- * four returned to stock without a word, so a press that did nothing looked
- * exactly like a hook that was never installed. Said once per distinct reason,
- * because a press repeats. */
+/* Log why a press did not start a drag, once per distinct reason, so a refused
+ * press is distinguishable from a missing hook. */
 static void dg_refuse(const char *why)
 {
     static const char *last;
@@ -331,11 +310,10 @@ static void dg_refuse(const char *why)
     MDBG("browse: a press on a row did not start a drag: %s\n", why);
 }
 
-/* Is this row inside the list EDIT is on? RowComp belongs to every touchable
- * table in the app, so without this the mode makes the browse sidebar and DJ
- * SETTINGS draggable as well -- and it is not a theoretical reach: a tap on the
- * sidebar's TRACK tab was swallowed by a drag on the tab itself. Bounded, like
- * every walk over the live tree; a row is five deep in the list that owns it. */
+/* Whether this row is inside the list EDIT is on. RowComp belongs to every
+ * touchable table in the app, so without this the browse sidebar and DJ
+ * SETTINGS would be draggable too (a tap on the sidebar's TRACK tab became a
+ * drag). Depth-bounded; a row is five deep in its list. */
 static int dg_in_edit_list(uintptr_t rc)
 {
     uintptr_t list = browse_edit_list(), c = rc;
@@ -359,18 +337,12 @@ static void dg_mousedown(void *self, void *event)
         ((void (*)(void *, void *))dg_g_stock_down)(self, event);
         return;
     }
-    /* A SECOND PRESS WITH NO RELEASE BETWEEN IS NOT A SECOND GESTURE.
+    /* A press while a row is still carried continues the same gesture. On a
+     * fast drag the deck's touch layer treats a large jump between samples as
+     * a lift and a new press; treating it as a new gesture would grab whatever
+     * row is under the finger. It is handled as movement.
      *
-     * juce's contract is one mouseDown, then drags, then exactly one mouseUp --
-     * so if a press arrives while a row is still carried, the finger never came
-     * up and this is the same gesture still going. It happens on a FAST drag:
-     * the deck's touch layer reads a big jump between samples as the finger
-     * having been lifted and put down again, and the row then re-latched onto
-     * whatever was under it, which is the "drag it fast and it goes unstable"
-     * this feature was reported with. Treated as movement, it simply works.
-     *
-     * Not chained to stock, for the same reason the drag is not: this is the
-     * middle of a gesture the list must not scroll or re-select under. */
+     * Not chained to stock, so the list does not scroll or reselect. */
     if (dg_g_row) {
         int finger = dg_alive() ? dg_finger(rc, event) : DG_NO_FINGER;
 
@@ -381,9 +353,8 @@ static void dg_mousedown(void *self, void *event)
                 dg_g_lifted = 1;
                 dg_to_front(dg_g_wrap);
             }
-            /* dg_g_press is deliberately untouched: the travel that decides
-             * where the row lands is measured from the ORIGINAL press, so a
-             * gesture that was interrupted resumes rather than restarts. */
+            /* dg_g_press is kept: travel is measured from the original
+             * press, so an interrupted gesture resumes. */
             dg_g_settle = 0;
             dg_carry_to(finger);
             return;
@@ -403,9 +374,8 @@ static void dg_mousedown(void *self, void *event)
         ((void (*)(void *, void *))dg_g_stock_down)(self, event);
         return;
     }
-    /* The wrapper, by class rather than by "the parent": if this row is ever
-     * built into something else, a drag that moved whatever happened to be
-     * above it would move the wrong thing. */
+    /* Check the wrapper's class, so a row built into something else does not
+     * move an unrelated parent. */
     wrap = juce_comp_parent(rc);
     if (!wrap || juce_comp_class(wrap) != DG_TI_WRAP ||
         juce_comp_bounds(wrap, wb) != 0) {
@@ -416,8 +386,8 @@ static void dg_mousedown(void *self, void *event)
     dg_g_owner = dg_owner(rc);
     dg_g_rows = dg_num_rows(dg_g_owner);
     if (dg_g_rows <= 1 || dg_g_from >= dg_g_rows) {
-        /* One row cannot be reordered, and a row number the model does not
-         * claim is a row this does not understand. Stock either way. */
+        /* One row cannot be reordered, and a row number beyond the model's
+         * count is not understood. Stock either way. */
         dg_refuse(dg_g_rows <= 1 ? "the model reports no rows"
                                  : "the model does not claim that row");
         dg_g_owner = 0;
@@ -427,16 +397,15 @@ static void dg_mousedown(void *self, void *event)
 
     dg_g_row = rc;
     dg_g_wrap = wrap;
-    /* The rows' own parent is the scrolled content, and its parent is the window
-     * that clips it. Both are read here rather than walked per tick: a drag that
-     * cannot find them simply does not scroll. */
+    /* The rows' parent is the scrolled content, and its parent is the clipping
+     * window. Read once here; if missing, the drag does not autoscroll. */
     dg_g_view = juce_comp_parent(wrap);
     dg_g_clip = dg_g_view ? juce_comp_parent(dg_g_view) : 0;
     dg_g_orig[0] = wb[0]; dg_g_orig[1] = wb[1];
     dg_g_orig[2] = wb[2]; dg_g_orig[3] = wb[3];
     dg_g_insert = dg_g_from;
-    /* The finger in the LIST's space. The RowComp fills the wrapper at {0,0},
-     * so its own event y needs only the wrapper's position added. */
+    /* The finger in the list's space. The RowComp fills the wrapper at {0,0},
+     * so add the wrapper's y to the event y. */
     dg_g_press = wb[1] + dg_event_y(event);
     (void)mod_safe_read(rc, &dg_g_row_vptr, sizeof(dg_g_row_vptr));
     (void)mod_safe_read(wrap, &dg_g_wrap_vptr, sizeof(dg_g_wrap_vptr));
@@ -448,10 +417,9 @@ static void dg_mousedown(void *self, void *event)
          dg_g_from, dg_g_rows, wb[0], wb[1], wb[2], wb[3], dg_g_press);
 }
 
-/* Where the finger is, in the LIST's own space, from an event delivered to any
- * row. A RowComp fills its wrapper at {0,0}, so the wrapper's y plus the event's
- * y is the answer whichever row the event came to -- which matters, because a
- * fast drag does not always keep coming to the same one. */
+/* The finger in the list's space, from an event delivered to any row (a fast
+ * drag does not always stay on one). A RowComp fills its wrapper at {0,0}, so
+ * this is the wrapper's y plus the event's y. */
 static int dg_finger(uintptr_t rc, void *event)
 {
     uintptr_t wrap = juce_comp_parent(rc);
@@ -462,42 +430,35 @@ static int dg_finger(uintptr_t rc, void *event)
     return wb[1] + dg_event_y(event);
 }
 
-/* Carry the row to a finger position. Split out of mouseDrag because a fast drag
- * arrives partly as presses, and both have to move the same row the same way. */
+/* Carry the row to a finger position. Shared by mouseDrag and mouseDown, since
+ * a fast drag arrives partly as presses. */
 static void dg_carry_to(int finger)
 {
     int y, dy, insert, h = dg_g_orig[3];
     int32_t v[4];
 
-    /* WHERE THE FINGER IS ON SCREEN, which the tick needs and cannot work out:
-     * `finger` is a content coordinate and the tick has no event to read one
-     * from. Kept here because this is the only place a fresh one arrives. */
+    /* The finger's position in the window, for the autoscroll tick, which has
+     * no event to read. `finger` is in content coordinates. */
     if (dg_g_view && juce_comp_bounds(dg_g_view, v) == 0)
         dg_g_screen = finger + v[1];
 
     dy = finger - dg_g_press;
 
-    /* HOW FAR IT HAS TRAVELLED, not where it is. A row's own y is not
-     * `index * height` -- row 1 of this list reports y=0 -- so an absolute
-     * position says nothing about which row it is over, and reading it that way
-     * put every drag a row short. Rounded to the nearest whole row, so the mark
-     * moves once the row has travelled half of one, which is where the eye
-     * expects it rather than when an edge crosses a boundary. */
+    /* Use travel, not absolute position: a row's y is not `index * height`
+     * (row 1 of this list reports y=0). Rounded to the nearest row, so the
+     * mark moves after half a row of travel. */
     insert = dg_g_from + (dy >= 0 ? (dy + h / 2) / h : -((-dy + h / 2) / h));
     if (insert < 0)
         insert = 0;
     if (insert > dg_g_rows - 1)
         insert = dg_g_rows - 1;
 
-    /* ON A SLOT, not one past the end of them. The content component is exactly
-     * as tall as the list has rows, and juce clips a child to its parent -- so a
-     * row carried past the last slot is drawn into the empty stripes below the
-     * list, where it is cut off and then disappears entirely. It also stops a
-     * flick from parking the wrapper somewhere the deck will not put it back.
+    /* Clamp to the existing slots. The content component is exactly as tall
+     * as the rows, and juce clips children to it, so a row carried past the
+     * last slot would be cut off and vanish.
      *
-     * Bounded by TRAVEL, the same quantity the insertion index is bounded by,
-     * because a row's own y is not `index * height`. The two now agree: every
-     * position the row can be carried to is one the mark can name. */
+     * Clamped by travel, like the insertion index, so every position the row
+     * can reach is one the mark can show. */
     if (dy < -dg_g_from * h)
         dy = -dg_g_from * h;
     if (dy > (dg_g_rows - 1 - dg_g_from) * h)
@@ -511,11 +472,9 @@ static void dg_carry_to(int finger)
     dg_repaint();
 }
 
-/* NOT "is this the row we grabbed". After a synthesised release-and-press the
- * gesture continues on whatever row the finger is now over, and its drags come
- * to THAT RowComp -- so keying on the carried one sent them to stock, which
- * scrolls the list out from under the drag. dg_finger reads the position from
- * whichever row the event reached, so any row of this list will do. */
+/* Accepts drags on any row of the edit list, not only the carried one: after a
+ * synthesised release-and-press the drags arrive at the RowComp under the
+ * finger, and sending them to stock would scroll the list. */
 static void dg_mousedrag(void *self, void *event)
 {
     uintptr_t rc = (uintptr_t)self;
@@ -525,25 +484,19 @@ static void dg_mousedrag(void *self, void *event)
         ((void (*)(void *, void *))dg_g_stock_drag)(self, event);
         return;
     }
-    /* THE LIST RECYCLES RowComps, AND THAT IS NOT A REASON TO STOP. It hands its
-     * dozen components round to whatever is on screen, so carrying a row far
-     * enough for the list to scroll gives ours away -- which is ordinary once the
-     * drag can scroll, and used to end the gesture at about the eleventh row.
-     *
-     * Nothing the drag needs is carried by the component: the row it started as
-     * and where it would land are both held here, and both are measured in
-     * CONTENT coordinates, which a scroll does not move. What the component does
-     * carry is what it paints, and dg_paint lends the original row number back
-     * for the length of the stock paint. dg_alive stays the real guard -- a
-     * DELETED component is the one thing that must not be written to. */
+    /* The list recycles its dozen RowComps while scrolling, which is normal
+     * during an autoscrolled drag. The drag's state (start row and insertion
+     * point, in content coordinates) is held here, not in the component, and
+     * dg_reclaim restores what the component paints. dg_alive guards against
+     * a deleted component. */
     dg_g_settle = 0;
     finger = dg_finger(rc, event);
     if (finger != DG_NO_FINGER)
         dg_carry_to(finger);
 }
 
-/* The drop itself, once the finger is agreed to be gone. Called from the tick
- * rather than from mouseUp; see dg_mouseup. */
+/* The drop, once the release has settled. Called from the tick, not mouseUp;
+ * see dg_mouseup. */
 static void dg_commit(void)
 {
     uint32_t pid;
@@ -558,55 +511,42 @@ static void dg_commit(void)
         MDBG("browse: row %d put back where it was\n", from);
         return;
     }
-    /* 1-based, because that is what the browser's `#` column shows and what
-     * DJDBSONGPLAYLIST.TRACKNO stores.
+    /* 1-based, as shown in the `#` column and stored in
+     * DJDBSONGPLAYLIST.TRACKNO.
      *
-     * ASYNC because this is the message thread, which has no djdb context by
-     * construction -- the write lands on the next library message, the same way
-     * a held tempo does. The playlist is the one the cache this list is served
-     * from was asked for. */
+     * Async because the message thread has no djdb context; the write runs on
+     * the next library message, like a held tempo. The playlist id comes from
+     * the cache this list is served from. */
     pid = mod_djdb_playlist_now();
     if (!pid) {
-        /* Refused, not guessed: writing into whichever playlist was opened last
-         * would reorder a list the DJ is not looking at. */
+        /* Refused: guessing could reorder a playlist that is not on screen. */
         MWARN("browse: #%d -> #%d NOT written -- no playlist is known for this "
              "list\n", from + 1, to + 1);
         return;
     }
     MDBG("browse: MOVE #%d -> #%d in playlist %u\n", from + 1, to + 1,
          (unsigned)pid);
-    /* dg_g_rows is what the DJ was actually looking at, and it is evidence the
-     * write holds independently of how `pid` was arrived at. See db.h. */
+    /* dg_g_rows is the row count on screen, an independent check on `pid`.
+     * See db.h. */
     if (mod_djdb_move_track_async(pid, from + 1, to + 1, dg_g_rows) != 0)
         return;
-    /* FORGET THE ROWS THE DECK CACHED FOR THIS LIST, so that when it next fills
-     * the list it reads them rather than serving its own stale copy.
-     *
-     * Then ask for it again, which is both how the list catches up and how the
-     * write gets a thread at all -- see browse_sort_refetch. */
+    /* Drop the deck's cached rows so the next fill reads the new order, then
+     * request the list again, which also gives the write its thread; see
+     * browse_sort_refetch. */
     mod_djdb_drop_list_cache(pid);
     browse_sort_refetch();
 }
 
-/* A LIFTED FINGER HAS TO STAY LIFTED. The deck's touch layer emits a RELEASE
- * AND A PRESS when the finger jumps far between two samples -- the MISO frame
- * shows one unbroken touch throughout, so the break is synthesised, not real.
- * Taken at face value it ends the drag and grabs whatever row the finger had
- * reached, which is the "drag fast and it swaps to another track" this was
- * reported with.
+/* A release only counts once it has lasted DG_SETTLE_TICKS (44 Hz ticks). On
+ * a fast move the deck's touch layer emits a release and a press although the
+ * panel reports one unbroken touch. Taken literally, the drag would end and
+ * grab whatever row the finger had reached. A press inside the window cancels
+ * the release and the drag continues. */
+/* The deck drops the touch on a fast move and re-acquires it up to
+ * 14 ticks (~320 ms) later; its release in between looks like a real lift.
  *
- * So a release only counts once it has survived a few ticks. A press inside
- * that window cancels it and the drag carries on; nothing else can, because a
- * human cannot lift and land again in 70ms. The drop is that much later than
- * the finger, which is not a delay anyone can see. 44 Hz. */
-/* MEASURED: 14 ticks, ~320ms. Not a jiggle -- the deck DROPS the touch on a
- * fast move and re-acquires it a third of a second later, and the release it
- * sends in between is indistinguishable from a finger leaving the glass.
- *
- * 20 gives margin. The cost is that a deliberate lift-and-press-again inside
- * ~450ms on the same list resumes the old drag instead of starting a new one --
- * possible, rare, and undone by simply dragging again; against a fast drag
- * silently swapping to a different track, which is what it buys. */
+ * 20 gives margin. The cost: a deliberate lift and new press within ~450 ms on
+ * the same list resumes the old drag instead of starting a new one. */
 #define DG_SETTLE_TICKS 20
 
 static void dg_mouseup(void *self, void *event)
@@ -615,11 +555,9 @@ static void dg_mouseup(void *self, void *event)
         ((void (*)(void *, void *))dg_g_stock_up)(self, event);
         return;
     }
-    /* THE ROW GOES BACK NOW, THE WRITE WAITS. Holding it in the air for the
-     * length of the settle would put a third of a second of hang into every
-     * ordinary drop just to survive the fast ones. So the release looks final
-     * and only the commit is deferred; a press inside the window lifts the SAME
-     * row again and the gesture carries on from where the finger is. */
+    /* The row returns immediately; only the commit waits for the settle, so
+     * normal drops do not hang. A press inside the window lifts the same row
+     * again and the gesture continues. */
     dg_place(dg_g_orig[1]);
     dg_repaint();
     dg_g_lifted = 0;
@@ -628,16 +566,12 @@ static void dg_mouseup(void *self, void *event)
 
 /* ---- what the drag looks like -------------------------------------------- */
 
-/* NO SELECTION WHILE THE MODE IS ON. The blue plate means "this is the track the
- * rotary and LOAD are pointing at", and in EDIT neither is what the DJ is doing:
- * it reads as "this row is the one being moved", which is a different row every
- * time and usually not the one lit.
+/* No selection plate while EDIT is on: in EDIT the blue plate would look like
+ * it marks the row being moved.
  *
- * Taken away in the PAINT rather than by deselecting the list. The deck's own
- * selection is a real thing it uses -- for LOAD, and for where the rotary
- * resumes -- so clearing it would be a change the DJ has to get back afterwards.
- * The byte goes down for the length of the stock paint and straight back up, so
- * nothing outside this function can tell. */
+ * Hidden in paint, not by deselecting: the deck uses the selection for LOAD and
+ * for where the rotary resumes. The byte is cleared only for the duration of
+ * the stock paint. */
 static void dg_paint(void *self, void *g)
 {
     uintptr_t rc = (uintptr_t)self;
@@ -660,23 +594,15 @@ static void dg_paint(void *self, void *g)
     if (rc != dg_g_row &&
         dg_row_no(rc) == dg_g_insert && dg_g_insert != dg_g_from) {
         dg_g_marked = 1;
-        /* WHICH EDGE IS THE DIRECTION, and it has to be, or the last position
-         * cannot be drawn. A drag DOWN to row k lands after k -- that is what
-         * the write does, #1 to #8 puts the row after the one that was 8th --
-         * so the mark belongs on k's bottom edge; a drag UP lands before k, so
-         * it belongs on the top. Drawn on the top always, the mark sat ABOVE the
-         * last row while the write moved the track below it, which reads as
-         * "second to last" and leaves nothing on screen that means "last".
+        /* The edge depends on direction. A drag down to row k lands after k
+         * (#1 to #8 puts the row after the 8th), so the mark is on k's bottom
+         * edge; a drag up lands before k, so it is on the top edge. This is
+         * the only way to show "last".
          *
-         * Drawn by the row rather than by the list, so it is always in step with
-         * where the rows actually are -- including while they scroll.
+         * Drawn by the row, so it stays aligned while the rows scroll.
          *
-         * THE LIST'S OWN SELECTED GREEN, which is a change from the white it used
-         * to be and the point of it: the mark says "this is the row in question"
-         * about a row that does not exist yet, and the browser already has a colour
-         * for that. White said nothing, in a list full of bright edges -- and
-         * hardcoded it was white on WHITE's inverted list, an insert marker nobody
-         * could see during the one gesture that needs one. */
+         * In the list's selected-row green, through mod_colour_stock so it
+         * stays visible under the WHITE theme. */
         mod_gfx_colour(g, mod_colour_stock(DG_MARK_COL));
         mod_gfx_fill(g, 0, dg_g_insert > dg_g_from ? b[3] - DG_LINE_H : 0,
                      b[2], DG_LINE_H);
@@ -686,22 +612,17 @@ static void dg_paint(void *self, void *g)
 
 /* ---- the carried row's translucency ---------------------------------------
  *
- * A real transparency layer, not a wash. A wash DARKENS -- it puts black over
- * the row, so the row reads dimmer and nothing behind it shows through, which
- * is what it looked like. juce composites a layer instead: the row is rendered
- * into its own buffer and blended over what is already on screen, so the rows
- * it crosses are visible underneath it.
+ * A juce transparency layer, not a dark wash: the row is rendered into its own
+ * buffer and blended over the screen, so the rows it crosses show through.
  *
- * Bracketed on the WRAPPER, whose paint runs before its children and whose
- * paintOverChildren runs after, so the layer spans the RowComp and the two
- * children the RowComp has -- the waveform strip and the artwork dot. A layer
- * opened in the row's own paint would have closed before either of them drew,
- * which is the other half of why only the lettering ever changed.
+ * Opened in the wrapper's paint (before its children) and closed in its
+ * paintOverChildren (after), so the layer covers the RowComp and its two
+ * children, the waveform strip and the artwork dot.
  *
- * The two slots are juce::LowLevelGraphicsContext's, +0x80 and +0x88, read off
- * the software renderer's vtable and confirmed by what they do: one allocates a
- * buffer and stashes the opacity, the other pops it, sets that opacity and
- * blends the buffer back. juce::Graphics' first member is the context. */
+ * The two slots are juce::LowLevelGraphicsContext's +0x80 and +0x88, from the
+ * software renderer's vtable: one allocates a buffer and stores the opacity,
+ * the other pops it and blends the buffer back at that opacity.
+ * juce::Graphics' first member is the context. */
 #define GFX_VT_LAYER_BEGIN  0x80
 #define GFX_VT_LAYER_END    0x88
 
@@ -719,8 +640,8 @@ static uintptr_t dg_ctx_slot(void *g, unsigned off, uintptr_t *ctx_out)
     return fn;
 }
 
-/* Balanced by construction: the flag is what paintOverChildren closes on, so a
- * frame where the layer could not be opened does not try to end one. */
+/* Set when a layer was opened, so paintOverChildren only closes one that
+ * exists. */
 static int dg_g_layered;
 
 static void dg_wrap_paint(void *self, void *g)
@@ -751,39 +672,25 @@ static void dg_wrap_paint_over(void *self, void *g)
     ((void (*)(void *, void *))dg_g_stock_wrap_over)(self, g);
 }
 
-/* The hole. Drawn by the component the rows sit ON, whose paint runs BEFORE its
- * children -- so this lands behind every row and shows only where the carried
- * one used to be. */
+/* The gap. Drawn by the content component, whose paint runs before its
+ * children, so it only shows where the carried row used to be. */
 static void dg_content_paint(void *self, void *g)
 {
     ((void (*)(void *, void *))dg_g_stock_content_paint)(self, g);
     if (!dg_g_lifted || (uintptr_t)self != juce_comp_parent(dg_g_wrap))
         return;
-    /* The list's own ground, so it goes through the theme as the deck value it is
-     * rather than as a role -- there is no "background" role and there should not be
-     * one, the answer is always whatever the transform does to the deck's. Left
-     * literal it was a black rectangle punched through WHITE's light list. */
+    /* A deck colour passed through the theme transform (mod_colour_stock), not
+     * a theme role, so it matches the list under WHITE too. */
     mod_gfx_colour(g, mod_colour_stock(DG_HOLE_COL));
     mod_gfx_fill(g, dg_g_orig[0], dg_g_orig[1], dg_g_orig[2], dg_g_orig[3]);
 }
 
-/* NOT A TIMEOUT. juce's contract is mouseDown, then any number of mouseDrags,
- * then exactly one mouseUp -- so a drag that has stopped sending events is a
- * FINGER HELD STILL, not a gesture that got away, and there is nothing to
- * recover from. Counting idle ticks only ever cancelled the drag of somebody
- * who paused to decide where to drop.
- *
- * What this watches instead is the thing juce does not promise: that the row
- * still exists. The list can rebuild under a drag, and the release would then
- * arrive for a component nobody is holding. */
-/* THE FINGER HELD AT AN EDGE HAS TO KEEP SCROLLING, and that is why this is on
- * the tick rather than in mouseDrag: a finger parked against the bottom of the
- * window sends no more drag events, so anything driven by them stops after one
- * row. The tick runs at 44 Hz whether the finger moves or not.
- *
- * The carried row is then re-placed from the finger's SCREEN position, which has
- * not changed -- what changed is the content under it, so the same screen point
- * is now a different row. */
+/* browse_drag_tick has no idle timeout: juce guarantees exactly one mouseUp, so
+ * a drag with no events is a finger held still. It only checks that the row
+ * still exists, since the list can rebuild under a drag. */
+/* Autoscroll runs on the tick because a finger held at an edge sends no drag
+ * events. The carried row is then re-placed from the finger's unchanged window
+ * position, which is now over different content. */
 static void dg_autoscroll(void)
 {
     int32_t c[4], v[4];
@@ -830,8 +737,8 @@ int browse_drag_install(void)
         MDBG("browse: juce primitives did not resolve -> no reorder gesture\n");
         return -1;
     }
-    /* All four or none: a mouseDown that starts a drag with no mouseUp to end
-     * it leaves a row stranded halfway down the list. */
+    /* All or none: a mouseDown hook without its mouseUp would leave a row
+     * stranded mid-list. */
     if (mod_patch_vslot("rowDown", EP122_ROWCOMP, JUCE_VT_MOUSEDOWN,
                         (void *)dg_mousedown, &dg_g_stock_down) != 0 ||
         mod_patch_vslot("rowDrag", EP122_ROWCOMP, JUCE_VT_MOUSEDRAG,

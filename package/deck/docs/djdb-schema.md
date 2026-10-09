@@ -1,27 +1,23 @@
 # djdb — the rekordbox media library, as the deck holds it
 
-Read live off a CDJ-3000 (EP122 3.19) by walking djdb's own table registry from
-inside the eject flush. Not from the `.pdb` file format, and not from statics:
-`mods/db/djdb.c` dumps this at runtime, so it is what the deck actually has.
+The schema as djdb's own table registry describes it at runtime.
+`mods/db/djdb_dump.c` dumps it.
 
-## How to get it again
+## Dumping the registry
 
 The registry is a 13-bucket hash on the djdb context (`ctx+0x08`), and the
-context is **only live inside a djdb operation** — an idle thread always sees
+context is **only live inside a djdb operation**; an idle thread always sees
 NULL. The one operation that reliably happens is the **eject flush**, so the dump
-hangs off a hook on djdb's page writer. Mount the media, eject it, read the log:
+runs from the hook on djdb's page writer (`mods/db/pager.c` calls
+`mod_djdb_note()`). It logs at debug level (`EP122_MOD_LOGLEVEL=debug`). Mount
+the media, eject it, read the log.
 
-```bash
-scripts/emuctl.py media-attach /path/to/usb.img
-scripts/emuctl.py media-eject
-```
-
-Per table: name is a packed string at `table+0x10`, column count at `table+0x04`,
+Per table: the name is a packed string at `table+0x10`, column count at `table+0x04`,
 columns at `table+0x18` at **32 bytes each**, next-in-chain at `table+0x78`.
-Per column: **name is a packed string at `col+0x00`**, a type-object pointer at
+Per column: **the name is a packed string at `col+0x00`**, a type-object pointer at
 `col+0x08` (its `+0x08` is the type id), and an on-disk field index at `col+0x18`.
 
-74 tables. The ones that matter so far:
+74 tables. The ones the mods use:
 
 ## DJDBSONGPLAYLIST — playlist membership and order
 
@@ -31,10 +27,9 @@ Per column: **name is a packed string at `col+0x00`**, a type-object pointer at
 | 1 | `CONTENTID` | 1 (int) | 1 |
 | 2 | **`TRACKNO`** | 1 (int) | 0 |
 
-**`TRACKNO` is the order key on media.** Note it is NOT called `sequenceNo` —
-that is the name in the deck's own SQLCipher library, a different back end for
-different media. Same concept, different table, different name; do not carry one
-name across to the other.
+**`TRACKNO` is the order key on media.** The deck's own SQLCipher library, a
+different back end for different media, calls the same concept `sequenceNo`; do
+not carry one name across to the other.
 
 ## DJDBPLAYLIST — the playlists themselves
 
@@ -60,29 +55,25 @@ orders the tracks inside one.
 
 types `1 19 19 19 19 1 1 1 1 5 1 1 5 19 11 11 5 1 1 1 1 19 11 5 1 1 1 19 19 1 5 1 19 1 11 11 19 19 1 19 19 19 19 19 19 19 19 19 19 19`
 
-**`BPM` is column 8, type 1 (integer), stored as BPM×100** — the target for a
-×2 / ÷2 modifier. So ×2 on a 126.0 track is `12600 -> 25200`, ÷2 is `6300`.
+**`BPM` is column 8, type 1 (integer), stored as BPM×100**, the target for a
+×2 / ÷2 modifier: ×2 on a 126.0 track is `12600 -> 25200`, ÷2 is `6300`.
 
-CONFIRMED against the media rather than assumed: scanning the tracks pages of
-`export.pdb` for plausible tempo values returns **only** 12000, 12500, 12600 and
-6800 — exactly the BPMs the browser shows for those tracks (120.0 High Priestess,
-125.0 Bells Of Eternity, 126.0 Rabbit Hole) and nothing spurious. That was
-host-side analysis of a copy to pin a constant; it is NOT how a mod reads or
-writes the library, which still goes through the deck's own objects.
+The track pages of `export.pdb` hold the same BPM×100 integers. Mods read and
+write the library only through the deck's own objects.
 
-`ANALYSISDATAPATH` is the ANLZ sidecar, which is where the beat grid lives — so
-a grid change and a BPM change are not the same edit.
+`ANALYSISDATAPATH` is the ANLZ sidecar, which holds the beat grid, so a grid
+change and a BPM change are separate edits.
 
-## Type ids seen
+## Type ids
 
 `1` integer · `2` (in DJDBBPMRANGE, likely float) · `3` · `5` · `11` · `15` ·
-`16` · `17` · `19` string. From `sub_1c66f80`, ids **3..21 take a conversion
-path** on insert and others are stored as the raw pointer, so a writer has to
-match the column's own type rather than assume an integer.
+`16` · `17` · `19` string. On insert, ids **3..21 take a conversion path** and
+others are stored as the raw pointer, so a writer must match the column's own
+type instead of assuming an integer.
 
 ## Writing
 
 Do not write the file. The deck buffers a whole session in RAM and flushes at
-eject, so the way to change any of the above is to change the **in-memory model**
-and let the deck's own flush persist it. See `mods/db/db.h` for the rule and
-`mods/db/pdbwatch.c` for the measurement behind it.
+eject, so change the **in-memory model** and let the deck's own flush persist
+it. See `mods/db/db.h` for the rule and
+`mods/db/pdbwatch.c` to log when the deck writes the library files.

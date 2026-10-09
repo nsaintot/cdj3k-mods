@@ -2,20 +2,17 @@
 /*
  * session.c - one shim connection, framed with stem_proto, driving stemd.
  *
- * The shape that matters is the upload. `http_perform` wants a pull callback
- * for the request body, and the PCM arrives as frames on the shim socket, so
- * the callback simply reads the shim socket: the POST body IS the frame stream,
- * unwrapped. Nothing is ever buffered -- the 171 MB of an eight-minute track
- * moves through a 64 KB window in http.c and a frame header's worth of state
- * here.
+ * The upload: `http_perform` takes a pull callback for the request body, and
+ * that callback reads PCM frames straight off the shim socket, so the POST body
+ * is the unwrapped frame stream. Nothing is buffered: the 171 MB of an
+ * eight-minute track moves through a 64 KB window in http.c and a frame
+ * header's worth of state here.
  *
- * That inversion is why JOB_BEGIN does the whole upload rather than just
- * starting one: by the time http_perform returns, every PCM frame has been
- * consumed and the next frame the loop reads is JOB_END.
+ * So JOB_BEGIN performs the whole upload: when http_perform returns, every PCM
+ * frame has been consumed and the next frame the loop reads is JOB_END.
  *
- * JSON is scanned, not parsed, for the same reason as in discovery.c: four
- * fields from a server whose shape we control, where an unrecognised document
- * should read as a failure anyway.
+ * JSON is scanned with json.h, not parsed; an unrecognised document reads as a
+ * failure.
  */
 #include "stemd_client.h"
 #include "json.h"
@@ -24,23 +21,21 @@
 #include <poll.h>
 #include <sys/stat.h>
 
-/* Big enough for any control frame and for a job document. PCM normally goes
- * straight into the POST body and never lands here; the exception is a drain,
- * where there is no POST to feed it to. */
+/* Big enough for any control frame and for a job document. PCM goes straight
+ * into the POST body, except when drained with no POST to feed. */
 #define CTRL_MAX 4096
 
-/* How long to wait between job polls. Separation of an eight-minute track runs
- * tens of seconds, so this is frequent enough for a smooth bar and far too
- * slow to matter as load. */
+/* Interval between job polls. Separating an eight-minute track takes tens of
+ * seconds, so this gives a smooth bar at negligible load. */
 #define POLL_INTERVAL_US (500 * 1000)
 
-/* Give up on a job that never reaches a terminal stage. Long, because a queued
- * job behind two others legitimately waits. */
+/* Give up on a job that never reaches a terminal stage. Long, because a job
+ * queued behind others can wait a while. */
 #define POLL_MAX_SECONDS 900
 
 /* The server's `dsp_mode` 1 is its copy of the deck's own 44.1 -> 96 kHz
- * converter, and covers that pair alone. Asked for at that output rate and
- * nowhere else; every other rate takes the server's default resampler. */
+ * converter and covers only that pair. Requested only at that output rate;
+ * other rates use the server's default resampler. */
 #define STEMD_DSP_MODE_MATCHED     1
 #define STEMD_DSP_MODE_MATCHED_HZ  96000u
 
@@ -59,9 +54,8 @@ static int read_all(int fd, void *buf, size_t len)
         if (n == 0)
             return -1;                 /* peer closed */
         if (errno == EINTR) {
-            /* A retry here is what used to swallow SIGTERM: the signal arrived,
-             * the read restarted, and systemd SIGKILLed five seconds later with
-             * a job possibly still open on the server. */
+            /* Do not retry on shutdown, or SIGTERM is swallowed and systemd
+             * SIGKILLs with a job possibly still open on the server. */
             if (session_should_stop())
                 return -1;
             continue;
@@ -116,9 +110,8 @@ static void report_status(int fd, const struct stem_server *srv)
     memset(&st, 0, sizeof(st));
     st.reachable = (uint32_t)srv->reachable;
     st.compatible = (uint32_t)srv->compatible;
-    /* Carried on every status so the deck can persist it. That is what lets the
-     * on-media cache work later with no server at all: a deck has to have met
-     * this server once, but only once. */
+    /* Sent on every status so the deck can persist it; the on-media cache then
+     * works with no server, once the deck has met this one. */
     snprintf(st.sep_id, sizeof(st.sep_id), "%s", srv->sep_id);
     send_frame(fd, STEM_MSG_STATUS, &st, sizeof(st));
 }
@@ -132,8 +125,8 @@ static void report_failed(int fd, int http_status)
     send_frame(fd, STEM_MSG_JOB_FAILED, &f, sizeof(f));
 }
 
-/* stemd's Stage is serialised snake_case. Mapped onto our wire enum, which the
- * UI's progress row reads directly. */
+/* stemd's Stage, serialised snake_case, mapped onto our wire enum (which the
+ * UI's progress row reads directly). */
 static int stage_of(const char *doc)
 {
     char s[32];
@@ -150,8 +143,8 @@ static int stage_of(const char *doc)
     return -1;
 }
 
-/* One PROGRESS frame. The percent is the SENDER'S OWN LEG, never a position on the
- * deck's bar -- see struct stem_progress. */
+/* One PROGRESS frame. The percent is within the sender's own leg, not a position
+ * on the deck's bar; see struct stem_progress. */
 static void send_progress(int fd, int stage, int percent)
 {
     struct stem_progress prog;
@@ -212,8 +205,8 @@ static size_t upload_pull(void *buf, size_t cap, void *user)
             u->frame_left = h.len;
             continue;
         }
-        /* A CANCEL mid-upload is the deck changing track. Distinguished from a
-         * broken stream so the caller can stay quiet about it. */
+        /* A CANCEL mid-upload is the deck changing track; flagged separately so
+         * the caller does not log it as an error. */
         u->err = (h.type == STEM_MSG_CANCEL) ? 2 : 1;
         return 0;
     }
@@ -287,10 +280,9 @@ static int stem_sink(const void *buf, size_t len, void *user)
     return 0;
 }
 
-/* A 44-byte canonical WAV header. Written in front of the raw s16 body so the
- * file is something the deck's OWN FileReadWav opens -- store.c then decodes it
- * through the same createReaderFor path as a real track, which is what keeps
- * stems on the pool's timeline without a decoder of ours. */
+/* A 44-byte canonical WAV header, written before the raw s16 body so the deck's
+ * own FileReadWav opens it. store.c decodes it through the same createReaderFor
+ * path as a real track, keeping stems on the pool's timeline. */
 static void wav_header(unsigned char *h, uint32_t rate, uint16_t ch,
                        uint16_t bits, uint32_t data_bytes)
 {
@@ -322,10 +314,9 @@ static void wav_header(unsigned char *h, uint32_t rate, uint16_t ch,
 #undef P16
 }
 
-/* The query-string spelling of what we want back. FLAC is stemd's own default
- * and what the deck asks for: lossless, so the reconstruction stays exact, and
- * roughly 40% of the raw size -- a sparse stem such as vocals over an
- * instrumental compresses to a quarter. */
+/* The query-string name of the output format. FLAC is stemd's default and what
+ * the deck requests: lossless, at roughly 40% of the raw size (a sparse stem
+ * such as vocals compresses to about a quarter). */
 static const char *out_format_name(uint32_t f)
 {
     switch (f) {
@@ -347,30 +338,22 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
     struct stem_out out;
     struct stem_ready *r;
     size_t name_len = strlen(name);
-    /* FLAC arrives as a complete file and must be written through untouched.
-     * Only the raw formats need a container put in front of them, and putting
-     * one in front of FLAC would produce a file nothing can open. */
+    /* FLAC arrives as a complete file and is written through untouched; only
+     * the raw formats get a WAV header. */
     const int raw = (format != STEM_PCM_FLAC);
     const char *ext = raw ? ".wav" : ".flac";
     char msg[CTRL_MAX];
     int status;
 
-    /* FIXED NAMES, deliberately not keyed by job.
+    /* Fixed names, one per part, not keyed by job, so the spool in /dev/shm
+     * (RAM) is bounded: each job's stems overwrite the previous ones. Per-job
+     * names would leak a pair per unadopted job.
      *
-     * The spool lives in /dev/shm, which is guest RAM on a 3 GiB ceiling. Naming
-     * each download after its job made every one a new file, so a failed job or
-     * a shim that never adopted its stems left ~170 MB behind and nothing ever
-     * collected it -- five jobs had accumulated 380 MB. One name per part makes
-     * the footprint bounded by construction rather than by everyone remembering
-     * to clean up: the next track's stems land on the previous track's.
-     *
-     * Safe because there is exactly one job in flight -- one EP122, one client,
-     * and the shim serialises jobs on its worker -- so nothing is reading these
-     * while the next pair is written.
+     * Safe because only one job is in flight (one EP122, one client, and the
+     * shim serialises jobs on its worker).
      *
      * Written under .part and renamed, so the path in STEM_READY never names a
-     * file that is still being filled. Within one job the ordering already
-     * guaranteed that; with reused names it also has to hold ACROSS jobs. */
+     * file still being filled, including across jobs. */
     snprintf(path, sizeof(path), "%s/%s%s", STEM_SPOOL_DIR, name, ext);
     snprintf(part, sizeof(part), "%s.part", path);
     snprintf(url, sizeof(url), "/v1/jobs/%s/stems/%s", job_id, name);
@@ -386,11 +369,7 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
                 part, strerror(errno));
         return -1;
     }
-    /* The WAV header exists only so the deck's own FileReadWav can open a body
-     * that is otherwise headerless samples. A FLAC stream carries its own, and
-     * the bytes go to disk exactly as they arrive -- the encode already happened
-     * on the server, so storing the stream verbatim costs no transcode in either
-     * direction. */
+    /* Raw samples need a WAV header for FileReadWav; FLAC is stored verbatim. */
     if (raw) {
         wav_header(hdr, rate, STEM_WIRE_CHANNELS, 16,
                    frames * STEM_WIRE_CHANNELS * 2u);
@@ -423,9 +402,8 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
     SINFO("%s -> %s (%llu bytes, gain %.4f)\n",
           name, path, (unsigned long long)out.written, (double)gain);
 
-    /* The shim unlinks the file once it has decoded it into its own RAM, so a
-     * pair normally lives only as long as it takes to adopt. The fixed name is
-     * the backstop for when it does not. */
+    /* The shim unlinks the file once decoded into its own RAM; the fixed name
+     * bounds the footprint when it does not. */
     if (sizeof(*r) + name_len >= sizeof(msg))
         return -1;
     r = (struct stem_ready *)msg;
@@ -441,9 +419,8 @@ static int fetch_stem(int fd, const struct stem_server *srv, const char *job_id,
                       (uint32_t)(sizeof(*r) + r->path_len));
 }
 
-/* Per-stem gain, read out of the job document's `stems` array. The array is
- * small and ordered, so the scan starts at the stem's own name rather than
- * trying to model JSON nesting. */
+/* Per-stem gain from the job document's `stems` array. The scan starts at the
+ * stem's own name instead of modelling JSON nesting. */
 static float stem_gain(const char *doc, const char *name)
 {
     char pat[64];
@@ -456,24 +433,14 @@ static float stem_gain(const char *doc, const char *name)
     return (float)json_num(p, "gain", 1.0);
 }
 
-/* Wait out one poll interval, but WATCHING THE DECK rather than merely sleeping.
+/* Wait out one poll interval while watching the shim socket, so a CANCEL is seen
+ * during a separation instead of after it (otherwise the deck's next upload can
+ * fill the socket buffer and fail).
  *
- * A separation is where a job spends nearly all of its life, and until this
- * existed it was also where the deck could not be heard: the poll slept, the
- * shim's socket went unread, and a CANCEL sat in the buffer until the job it was
- * meant to stop had finished. Measured end to end -- cancelled at 10:20:29, the
- * cancel not seen until 10:20:50, and in between the deck's NEXT upload filled
- * the socket buffer and died, leaving the row grey.
- *
- * A CANCEL and NOTHING ELSE ends a running job. The deck's separator sits in its
- * own poll loop for the whole of a separation and sends exactly one kind of frame
- * from there, so any other frame is a protocol surprise -- and the wrong answer
- * to a surprise is to throw away a separation nobody asked to stop. It is skipped
- * and logged instead, which costs whatever that frame meant and keeps the stream
- * framed.
- *
- * That the deck cannot start a second job without cancelling the first is what
- * makes skipping safe: a JOB_BEGIN can never be the frame that gets here first.
+ * Only a CANCEL ends a running job. The deck sends nothing else during a
+ * separation, so any other frame is logged and skipped, keeping the stream
+ * framed. The deck cannot start a second job without cancelling the first, so a
+ * JOB_BEGIN never arrives here first.
  *
  *    1  the deck cancelled
  *    0  the interval elapsed, or a frame arrived that does not end the job
@@ -563,11 +530,8 @@ static int await_job(int fd, const struct stem_server *srv, const char *job_id,
             return -1;
         }
 
-        /* The poll loop, not the frame read, is where a shutdown actually lands:
-         * a job spends nearly all its life asleep here. usleep returns EINTR on
-         * SIGTERM and continuing regardless is what kept systemd SIGKILLing
-         * after five seconds -- measured, after fixing the read path first and
-         * finding the process parked in nanosleep rather than read. */
+        /* A shutdown usually lands here, since a job spends most of its time in
+         * this wait; check the stop flag so SIGTERM is not ignored. */
         {
             int poked = await_poke(fd, POLL_INTERVAL_US);
 
@@ -591,16 +555,9 @@ static int await_job(int fd, const struct stem_server *srv, const char *job_id,
     }
 }
 
-/* Let go of a job on the server.
- *
- * DELETE stops it wherever it is -- queued OR mid-separation.
- *
- * It used to be a handle drop with a best-effort cancel, on the reading that a running
- * separation would finish anyway and land in stemd's cache, so a DJ who came back got a
- * 200 instead of a second run. That is no longer the trade: the server cancels for real,
- * so skipping a track frees the machine now rather than after a separation nobody is
- * waiting for. stemd still only cancels once the last holder lets go, so this never
- * takes a separation out from under another deck. */
+/* Release a job on the server. DELETE stops it whether queued or mid-separation,
+ * freeing the server at once. stemd only cancels once the last holder releases,
+ * so this never stops another deck's separation. */
 static void job_release(struct stem_server *srv, char *job_id)
 {
     struct http_request req;
@@ -626,21 +583,18 @@ void session_run(int fd)
     char job_id[96] = "";
     uint64_t pcm_expected = 0;
     uint32_t job_frames = 0;
-    /* What we asked the server to encode the stems as. Carried from JOB_BEGIN
-     * to the fetch, because it decides both the file extension and whether a
-     * WAV header goes in front of the body. */
+    /* The requested output format, carried from JOB_BEGIN to the fetch: it sets
+     * the file extension and whether a WAV header is written. */
     uint32_t job_format = STEM_PCM_FLAC;
     int hello_seen = 0;
-    /* Readiness as of the last HELLO, so the 30 s refresh can report a CHANGE
-     * instead of restating the same answer. -1 = nothing said yet, so the first
-     * HELLO always reports. */
+    /* Readiness as of the last HELLO, so only changes are logged. -1 = nothing
+     * logged yet, so the first HELLO always reports. */
     int was_ready = -1;
 
     memset(&srv, 0, sizeof(srv));
 
-    /* Discovery is deferred to HELLO, which is what carries the deck's STEM
-     * LOCATION. Probing before it arrived is what made the MANUAL address dead:
-     * the answer was always the mDNS one. */
+    /* Discovery waits for HELLO, which carries the deck's STEM SERVER LOCATION;
+     * probing earlier would ignore a MANUAL address. */
     for (;;) {
         struct stem_frame_hdr hdr;
 
@@ -661,24 +615,18 @@ void session_run(int fd)
                 goto done;
             }
             hello_seen = 1;
-            /* Assigned on BOTH branches. A HELLO is also how a settings change
-             * arrives on a connection that is already up, so leaving the old value
-             * in place made MANUAL -> AUTO a no-op: the deck showed AUTO and the
-             * sidecar kept talking to the address that had been typed. */
+            /* Assigned on both branches: a HELLO also delivers settings changes
+             * on a live connection, so MANUAL -> AUTO must clear the address. */
             h.addr[sizeof(h.addr) - 1] = '\0';
             {
                 char was[sizeof(manual)];
 
                 snprintf(was, sizeof(was), "%s", manual);
                 snprintf(manual, sizeof(manual), "%s", h.manual ? h.addr : "");
-                /* Only the FIRST hello and a genuine change of location need to
-                 * go looking. The rest are the deck's 30 s status refresh, and
-                 * answering those with a browse is what made the deck flap:
-                 * avahi's cache is not always warm at the instant we ask, and an
-                 * empty browse is indistinguishable from a server that is down.
-                 * Re-probing the address we already have answers the question
-                 * the refresh is actually asking -- is it still up -- and falls
-                 * back to a browse only when it is not. */
+                /* Full discovery only on a location change or when re-probing
+                 * the known server fails. The 30 s refresh otherwise re-probes
+                 * (see discovery_recheck), since an empty browse looks the same
+                 * as a server that is down. */
                 if (strcmp(was, manual) != 0 || discovery_recheck(&srv) != 0)
                     discovery_find(manual[0] ? manual : NULL, &srv);
             }
@@ -724,28 +672,23 @@ void session_run(int fd)
                   (unsigned long long)b.frames, b.sample_rate, b.channels,
                   (unsigned long long)pcm_expected);
 
-            /* `format` describes the body going up and is always f32le: that is
-             * what the deck's decoder already produces, so sending it is a
-             * memcpy. `output_format` describes what comes back, and is asked
-             * for explicitly rather than left to the server's default -- what
-             * arrives decides whether a WAV header is written in front of it. */
+            /* `format` is the upload, always f32le as the deck's decoder
+             * produces it. `output_format` is requested explicitly, since it
+             * decides whether a WAV header is written. */
             n = snprintf(url, sizeof(url),
                          "/v1/jobs?sample_rate=%u&channels=%u"
                          "&format=f32le&output_format=%s",
                          b.sample_rate, b.channels,
                          out_format_name(b.output_format));
-            /* Only when the deck asked for one. Omitting the parameter is what
-             * gets the server's default, and that is the behaviour a deck that
-             * could not establish its pool rate is asking for -- not 0 Hz. */
+            /* Only when the deck asked for one; 0 (pool rate unknown) omits it
+             * and gets the server's default. */
             if (b.output_sample_rate && n > 0 && (size_t)n < sizeof(url))
                 n += snprintf(url + n, sizeof(url) - (size_t)n,
                               "&output_sample_rate=%u", b.output_sample_rate);
-            /* A good resampler is not enough on this path. The deck subtracts
-             * the stems from a mix IT resampled, and that only cancels if both
-             * sides went through the same filter: two good ones disagree by
-             * about -36 dB of the derived part. `dsp_mode` is opt-in and the
-             * server's default is its own general resampler, so the match has to
-             * be asked for. A server too old to know the parameter ignores it. */
+            /* The deck subtracts the stems from a mix it resampled itself, which
+             * only cancels if both sides used the same filter (two different
+             * good resamplers leave about -36 dB of the derived part).
+             * `dsp_mode` is opt-in; older servers ignore it. */
             if (b.output_sample_rate == STEMD_DSP_MODE_MATCHED_HZ && n > 0 &&
                 (size_t)n < sizeof(url))
                 snprintf(url + n, sizeof(url) - (size_t)n, "&dsp_mode=%d",
@@ -794,8 +737,8 @@ void session_run(int fd)
         }
 
         case STEM_MSG_PCM:
-            /* Only reachable when a POST was not opened -- an unreachable
-             * server, or a failed one. Drain so the stream stays framed. */
+            /* Only reached when no POST was opened (server unreachable or
+             * failed). Drain so the stream stays framed. */
             if (skip_payload(fd, hdr.len) != 0)
                 goto done;
             break;
@@ -810,11 +753,9 @@ void session_run(int fd)
                 int r = await_job(fd, &srv, job_id, &doc);
 
                 if (r > 0) {
-                    /* Another track needs the server. Let this job go -- DELETE
-                     * interrupts a running separation, so it frees the machine
-                     * rather than finishing for nobody. Not reported as a
-                     * failure: nothing failed. The JOB_BEGIN for the track that
-                     * caused the cancel is the next frame the loop reads. */
+                    /* The deck moved on: release the job (DELETE interrupts it).
+                     * Not a failure. The new track's JOB_BEGIN is the next
+                     * frame. */
                     job_release(&srv, job_id);
                     job_id[0] = '\0';
                     break;
@@ -827,7 +768,7 @@ void session_run(int fd)
             }
 
             /* The result's own frame count and rate, not the request's: a cache
-             * hit is answered by whatever earlier job produced it. */
+             * hit returns an earlier job's output. */
             rate = (uint32_t)json_num(doc.data, "sample_rate", STEM_WIRE_RATE);
             job_frames = (uint32_t)json_num(doc.data, "frames", job_frames);
 
@@ -837,15 +778,13 @@ void session_run(int fd)
                 const int n = (int)(sizeof(k_part) / sizeof(k_part[0]));
                 int i, got = 0;
 
-                /* THE DOWNLOAD'S OWN 0..100, exactly as every other stage reports --
-                 * where it lands on the bar is the deck's to decide. A fixed figure
-                 * here is a bar that steps BACKWARDS when the server hands over,
-                 * because it is answering a different question than the stage before it.
+                /* The download reports its own 0..100 like every other stage;
+                 * the deck maps it onto the bar.
                  *
-                 * Each stem gets an equal range of the download stage and reports
-                 * bytes as they arrive (struct stem_out). The range's start is sent
-                 * before each download; 100 only once every stem is on disk, since a
-                 * failed download has already reported FAILED. */
+                 * Each stem gets an equal range and reports bytes as they arrive
+                 * (struct stem_out). The range's start is sent before each
+                 * download; 100 only once every stem is on disk (a failed
+                 * download has already reported FAILED). */
                 for (i = 0; i < n; i++) {
                     const int base = (i * 100) / n;
                     const int span = ((i + 1) * 100) / n - base;
@@ -885,13 +824,8 @@ void session_run(int fd)
     }
 
 done:
-    /* The deck's socket going away is a cancel too.
-     *
-     * Every other way out of that loop is an error path -- a short read, a failed write,
-     * a version mismatch -- and each of them used to walk away from a job the server was
-     * still working on, with nobody left to collect it: this process holds the only
-     * handle and the deck reconnects with a clean slate. Now that a DELETE genuinely
-     * interrupts, releasing here is the difference between a dropped connection freeing
-     * the machine and a separation running to completion for a listener that hung up. */
+    /* The deck's socket going away is a cancel too. Every exit from the loop is
+     * an error path (short read, failed write, version mismatch), and this
+     * process holds the only handle, so release the job to free the server. */
     job_release(&srv, job_id);
 }

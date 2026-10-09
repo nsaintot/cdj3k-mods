@@ -3,8 +3,7 @@
  * The overview.
  *
  * What the project is, what it runs on, and where to go. The four traits below
- * are labels with one line each rather than paragraphs: anything longer belongs
- * in the documentation, and this page is not the place to explain twice.
+ * are one-line labels; anything longer belongs in the documentation.
  */
 import { site } from '@/content/site'
 import AppIcon from '@/components/ui/AppIcon.vue'
@@ -181,11 +180,10 @@ const shots = [
     }
   }
 
-  /* Capped well under the file's own 1280px: at full width it reads as a
-   * billboard rather than as a picture of the thing being described. */
+  /* Capped well under the file's 1280px, so it does not dominate the page. */
   &__notice {
-    /* Centred on the hero below it, rather than on the left-aligned intro
-     * above: the two sit together as the top of the page. */
+    /* Centred on the hero below it, not the left-aligned intro above: the two
+     * form the top of the page. */
     max-width: 44rem;
     margin: var(--space-6) auto 0;
     padding: var(--space-3) var(--space-4);

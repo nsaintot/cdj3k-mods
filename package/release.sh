@@ -68,9 +68,9 @@ fi
 # Same shape build.sh enforces: the deck only matches CDJ3Kv<3 digits>.UPD.
 VDIGITS="$(printf '%s' "$VERSION" | tr -d '.')"
 INSTALL_UPD="CDJ3Kv${VDIGITS}_mods.UPD"
-# The removal image cannot also be CDJ3Kv<ver>.UPD - one stick, one name the
-# deck will pick up - so it keeps the neutral default and lives in its own
-# directory. Flash it on its own when removing.
+# The removal image cannot also be CDJ3Kv<ver>.UPD (one stick, one name the
+# deck will pick up), so it gets a fixed name and lives in its own directory.
+# Flash it on its own when removing.
 REMOVE_UPD="CDJ3Kv000_remove.UPD"
 
 OUT="$OUT_ROOT/v$VERSION"
@@ -86,11 +86,9 @@ echo "==> building release v$VERSION"
 #    ABI gate in the Docker stage, then packs.
 ./build.sh --version "$VERSION" --key "$KEY" --out "$OUT"
 
-# 2) Removal package. No binaries, so nothing to build - reuses the same key.
-#    --version matters even here: it is what names the file. Without it the
-#    removal image fell back to the default name while the install one was
-#    version-stamped, and the two stopped matching.
-./build.sh --remove --key "$KEY" --out "$OUT/uninstall"   # neutral CDJ3Kv000.UPD
+# 2) Removal package. No binaries, so nothing to build; reuses the same key.
+#    build.sh names it CDJ3Kv000_remove.UPD whatever the version.
+./build.sh --remove --key "$KEY" --out "$OUT/uninstall"   # CDJ3Kv000_remove.UPD
 
 # 3) Checksums, over exactly what ships.
 ( cd "$OUT" && \
@@ -99,7 +97,7 @@ echo "==> building release v$VERSION"
 
 # 4) Manifest. What a user (or a future bisect) needs to identify this build:
 #    the version stamped into the shim, the git description, and the shim's
-#    measured ABI - the properties that decide whether it loads on the deck.
+#    measured ABI, which decides whether it loads on the deck.
 SHIM="$OUT/out/ep122_shim.so"
 GIT_DESC="$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null || echo unknown)"
 ABI="$(docker run --rm -v "$OUT/out:/o:ro" arm64v8/alpine:3.19 sh -uc '

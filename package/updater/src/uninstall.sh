@@ -1,9 +1,9 @@
 #!/bin/bash
-# uninstall.sh - REMOVE the mods. Entry point of the removal .UPD, staged as
+# uninstall.sh - remove the mods. Entry point of the removal .UPD, staged as
 # usb_update.sh (the name the deck runs).
 #
 # Everything the mods added lives in one archive, pdj.tar.gz, on the overlay
-# partition. Deleting it is the whole removal - the rootfs was never touched.
+# partition. Deleting it is the whole removal; the rootfs is never touched.
 # Next boot comes up stock.
 #
 # The front-panel service mode does the same without a USB stick.
@@ -50,7 +50,7 @@ LANGUAGE=${2:-}
 # pdj.tar.gz never reaches it. Recovery does not mount that partition, so this
 # does.
 #
-# Guarded on our own file being present, and deletes it by exact name - the
+# Guarded on our own file being present, and deletes it by exact name: the
 # deck's own CDJ3K_*.DAT files share the directory.
 function remove_settings() {
     for dev in "$@"; do
@@ -79,7 +79,7 @@ function remove_overlay() {
     # pdj.tar.gz is the whole mods overlay. -f: already-stock is a no-op.
     rm -f "$OVERLAY_MEDIA_MOUNTPOINT"/pdj.tar.gz
 
-    # Plus our logs - going back to stock should leave nothing behind.
+    # Plus our logs, so going back to stock leaves nothing behind.
     rm -rf "$OVERLAY_MEDIA_MOUNTPOINT"/cdj3k-mods-logs
 
     umount "$OVERLAY_MEDIA_MOUNTPOINT"
@@ -87,7 +87,7 @@ function remove_overlay() {
 
 if [[ -b /dev/mmcblk0p5 ]]; then
     # Renesas model. The settings partition is not known on this variant, so the
-    # candidates are probed - one that does not hold our file is untouched.
+    # candidates are probed; one that does not hold our file is left untouched.
     remove_overlay /dev/mmcblk0p5
     remove_settings /dev/mmcblk0p4 /dev/mmcblk0p6 /dev/mmcblk0p7
     gui_image D007 "$LANGUAGE" "" >/dev/null 2>&1

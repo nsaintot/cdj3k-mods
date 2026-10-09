@@ -1,34 +1,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * browse/sort.c - the sort EDIT borrows, and gives back.
+ * browse/sort.c - the sort EDIT borrows and restores.
  *
- * See browse.h for why the mode owns the sort at all. This file is only the
- * mechanism: find the live header, read what the DJ had, force `#` ascending,
- * and put it back.
+ * See browse.h for why EDIT takes the sort. This file finds the live header,
+ * saves the DJ's sort, forces `#` ascending, and restores it.
  *
  * ---- what a juce::TableHeaderComponent holds -------------------------------
  *
- * gui::TrackListHeader IS one, with mouseDown its single override, so all of
- * this is stock juce read out of getSortColumnId (0x1b7b0d0) and
- * setSortColumnId (0x1bad710) rather than guessed at:
+ * gui::TrackListHeader is one, with mouseDown as its only override, so this
+ * layout is stock juce, as getSortColumnId and setSortColumnId use it:
  *
  *   header + 0xd8   ColumnInfo**   the columns, as pointers
  *   header + 0xe8   int            how many
- *   column + 0x00   juce::String   the name -- EMPTY on this skin, see below
+ *   column + 0x00   juce::String   the name (reads back empty although the
+ *                                  columns are named; see BS_POSITION_COL)
  *   column + 0x08   int            id
  *   column + 0x0c   int            propertyFlags
  *
- * and the three flags that matter are juce's own: sortable 0x10, sortedForwards
- * 0x20, sortedBackwards 0x40. getSortColumnId is literally "the column carrying
- * either sorted bit", which is also how the direction is read here.
+ * The relevant juce flags: sortable 0x10, sortedForwards 0x20, sortedBackwards
+ * 0x40. getSortColumnId returns the column carrying either sorted bit, which is
+ * also how the direction is read here.
  */
 #include "browse/browse.h"
 
 #define HDR_COLUMNS_OFF   0xd8
 #define HDR_NCOLUMN_OFF   0xe8
-/* gui::TrackListHeader's OWN listeners -- gui::TrackListHeaderListener, one
- * virtual, taking the column id. Read out of its mouseDown (0x14e8558), which
- * walks exactly this pair. */
+/* gui::TrackListHeader's own listeners: gui::TrackListHeaderListener, one
+ * virtual taking the column id. Its mouseDown walks this pair. */
 #define HDR_LISTENERS_OFF 0x150
 #define HDR_NLISTENER_OFF 0x160
 #define COL_ID_OFF        0x08
@@ -47,9 +45,8 @@
 #define FN_HDR_GET_SORTCOL  ep122_sym(EP122_JUCE_HDR_GET_SORTCOL)
 #define FN_HDR_SET_SORTCOL  ep122_sym(EP122_JUCE_HDR_SET_SORTCOL)
 
-/* What was borrowed, and from whom. `held` rather than "is the id non-zero":
- * a list with no sort at all reports 0, and that is a state worth restoring
- * exactly as much as any other. */
+/* What was borrowed, and from which header. A separate `held` flag because a
+ * list with no sort reports column 0, which must also be restored. */
 static uintptr_t bs_g_header;
 static uintptr_t bs_g_dirbtn;         /* the header's own ascending/descending control */
 static int       bs_g_held;
@@ -94,10 +91,9 @@ static int bs_id(uintptr_t col)
     return mod_safe_read(col + COL_ID_OFF, &v, sizeof(v)) == 0 ? (int)v : 0;
 }
 
-/* Depth-first for a VISIBLE component of that class. The browse view carries two
- * gui::TrackListWidgets, the full-width one and the one beside a hierarchy, and
- * only ever shows one -- so "the first of that class" finds the wrong header
- * half the time. Bounded like every walk over the app's live tree. */
+/* Depth-first search for a visible component of that class. The browse view
+ * has two gui::TrackListWidgets (full-width and beside a hierarchy) and shows
+ * one, so the first of the class is often the wrong one. Depth-bounded. */
 static uintptr_t bs_find_visible(uintptr_t comp, uintptr_t ti, int depth)
 {
     int n, i;
@@ -123,9 +119,8 @@ uintptr_t bs_find_visible_class(uintptr_t comp, uintptr_t vt)
     return ti ? bs_find_visible(comp, ti, 0) : 0;
 }
 
-/* The header of whichever track list is on screen. NOT cached across a take:
- * which of the two lists is showing is exactly what changes between one press
- * and the next. */
+/* The track list on screen. Not cached, since which of the two lists shows
+ * changes between presses. */
 uintptr_t browse_track_list(uintptr_t bar)
 {
     uintptr_t root = juce_comp_root(bar);
@@ -139,9 +134,8 @@ static uintptr_t bs_header(uintptr_t bar)
 
     if (!list || !BS_TI_HEADER)
         return 0;
-    /* The header is a child of the list and is visible with it, so the same
-     * walk serves -- and it cannot pick up the other list's header, because the
-     * search starts inside this one. */
+    /* The header is a visible child of the list; searching inside this list
+     * cannot find the other list's header. */
     return bs_find_visible(list, BS_TI_HEADER, 0);
 }
 
@@ -161,24 +155,20 @@ static int bs_sorted_forwards(uintptr_t header)
     return 1;
 }
 
-/* `#` IS COLUMN ID 3. Not inferred -- read out of
- * gui::TrackListHeader::TrackListHeader(gui::TrackListType) (0x14e7648), which
- * names its seven columns as it adds them:
+/* `#` is column id 3. gui::TrackListHeader::TrackListHeader(
+ * gui::TrackListType) names its seven columns as it adds them:
  *
  *   id 1 "PREVIEW"  id 2 ""  id 3 "#"  id 4 "TRACK"  id 5 ""  id 6 "BPM"  id 7 "KEY"
  *
- * with flags 1 on the first two and 0x11 -- visible|sortable -- on 3..7. So the
- * columns DO carry names; reading them live off ColumnInfo came back empty, and
- * that read was wrong rather than the columns being nameless.
+ * with flags 1 on the first two and 0x11 (visible|sortable) on 3..7.
  *
- * A list with no positions -- all tracks, an artist's tracks -- gets id 3's
- * visible bit cleared through gui::TrackListWidget's own show/hide (0x14f3020).
- * So `#` on screen is a fact about THIS list, not about the header object, which
- * is shared between them.
+ * A list with no positions (all tracks, an artist's tracks) has id 3's visible
+ * bit cleared by gui::TrackListWidget's show/hide. The header
+ * object is shared, so `#` being visible describes the current list.
  *
- * The deck also owns the sortable bit: gui::TrackListHeader::setSortEnabled
- * (0x14e7050) walks ids 3..7 and rewrites each one's flags to `visible ? 0x11 :
- * 0x10` -- which is why holding the header disabled has to be a poll. */
+ * The deck also rewrites the sortable bit: gui::TrackListHeader::setSortEnabled
+ * sets ids 3..7 to `visible ? 0x11 : 0x10`, so keeping the header
+ * disabled requires polling. */
 #define BS_POSITION_COL   3
 
 static void bs_dump_columns(uintptr_t header)
@@ -194,19 +184,18 @@ static void bs_dump_columns(uintptr_t header)
     }
 }
 
-/* Tell the header's listener a column was chosen -- which is the half that
- * actually REORDERS ANYTHING.
+/* Tell the header's listeners a column was chosen; this is what re-sorts the
+ * rows.
  *
- * setSortColumnId only moves juce's own marker: it clears the sorted bits, sets
- * one, repaints and triggers juce's async update. The deck does not re-sort a
- * juce table, it RE-ASKS THE LIBRARY -- gui::TrackListWidget maps the column id
- * to a sort kind and passes it down to
- * TrackListDisplayFormatEventFacade::sort(), which fetches the list again. So
- * without this the header said `#` while the rows stayed in the DJ's old order,
- * which is the one outcome worse than not touching the sort at all.
+ * setSortColumnId only moves juce's marker: it clears the sorted bits, sets
+ * one, repaints and triggers juce's async update. The deck re-sorts by
+ * re-querying the library: gui::TrackListWidget maps the column id to a sort
+ * kind and passes it to TrackListDisplayFormatEventFacade::sort(), which fetches
+ * the list again. Without the notify the header shows `#` while the rows keep
+ * the old order.
  *
- * Both halves in the same order the deck's own mouseDown does them: mark first,
- * then notify, because the listener reads the direction back off the header. */
+ * The deck's mouseDown marks first, then notifies, because the listener reads
+ * the direction from the header. */
 static void bs_notify(uintptr_t header, int column_id)
 {
     uintptr_t arr = 0;
@@ -232,16 +221,15 @@ static void bs_notify(uintptr_t header, int column_id)
     }
 }
 
-/* Put the list on (column, direction), whatever it is on now.
+/* Sort the list by (column, direction) from any current state.
  *
- * The deck's rule, measured: a notify naming the column it is ALREADY sorted by
- * FLIPS the direction; naming any other column sorts that one ascending. It is
- * the header's own double-tap behaviour, and it lives below the notify -- the
- * marker says nothing to it, which is why setting the marker to `forwards` and
- * then notifying came back descending.
+ * A notify naming the current sort column flips the direction (the header's
+ * double-tap behaviour); naming another column sorts it ascending. The marker
+ * does not affect this: setting it to `forwards` before notifying does not
+ * prevent the flip.
  *
- * So the number of notifies is a small piece of arithmetic rather than a call,
- * and the marker is set at the END, to whatever we actually arrived at. */
+ * So the number of notifies is computed, and the marker is set last to the
+ * resulting state. */
 static void bs_goto(uintptr_t header, int col, int forwards)
 {
     int cur = (int)((int64_t (*)(void *))FN_HDR_GET_SORTCOL)((void *)header);
@@ -281,10 +269,9 @@ static void bs_set_sortable(uintptr_t header, int on)
     }
 }
 
-/* The header's own ascending/descending control, which is a plain
- * TogglesImageButton child. Clearing the columns' sortable bit stops the deck
- * DRAWING their arrows but says nothing about this one, so it is hidden by hand
- * and shown again with the sort. */
+/* The header's ascending/descending control, a plain TogglesImageButton
+ * child. Clearing the sortable bits does not affect it, so it is hidden and
+ * shown explicitly. */
 static void bs_dir_button(uintptr_t header, int visible)
 {
     if (!bs_g_dirbtn)
@@ -307,20 +294,14 @@ static uintptr_t bs_column_by_id(uintptr_t header, int id)
     return 0;
 }
 
-/* IS THERE STILL A `#` ON SCREEN? -- the mode's own expiry.
+/* Ends the mode once `#` is no longer on screen: a list with no `#` has no
+ * position to move a row to. The header keeps its seven columns across view
+ * changes and toggles their `visible` bit, so this is one flag read.
  *
- * It asks the question that decides the answer rather than one that correlates
- * with it: a reorder moves a row to a POSITION, and a list showing no `#` has
- * none to move it to. The header keeps its seven columns across a view change
- * and moves their `visible` bit, so this reads as one flag.
+ * Do not switch to watching for a gui::TrackListWidget change: that missed the
+ * switch to the all-tracks view.
  *
- * The obvious alternative -- watch the gui::TrackListWidget change -- was built
- * first and did not fire: EDIT stayed lit over the all-tracks view with the
- * playlist's sort still clamped on. Whatever it was comparing, it was not
- * catching the switch, and this does.
- *
- * Tested on `visible` rather than on `sortable` because sortable is the bit this
- * mode itself takes away. */
+ * Tests `visible`, not `sortable`, because this mode clears sortable. */
 int browse_sort_hold(void)
 {
     uintptr_t col;
@@ -336,38 +317,33 @@ int browse_sort_hold(void)
     return 0;
 }
 
-/* THE COLUMN TO GO AWAY TO. Any sortable one that is not `#`; TRACK is id 4 and
- * the header's constructor always adds it, so there is nothing to search for.
- * The mode has cleared the sortable bits by now, and bs_notify does not consult
- * them -- it calls the listener the way the header's own mouseDown does. */
+/* The temporary column for a refetch: any one other than `#`. TRACK (id 4) is
+ * always added by the header's constructor. bs_notify ignores the cleared
+ * sortable bits, as the header's mouseDown does. */
 #define BS_ALT_COL  4
 
-/* MAKE THE DECK FETCH THE LIST AGAIN, for after a reorder.
+/* Make the deck fetch the list again after a reorder.
  *
- * A SORT KIND CHANGE IS A LIBRARY MESSAGE; a direction flip is not. Measured
- * both ways: naming the column the list is already sorted by is answered inside
- * the UI thread from the rows the widget holds, and the library never hears of
- * it -- which is why the first attempt at this refreshed nothing and, worse,
- * left the write with no thread to land on. Naming a DIFFERENT column posts a
- * real request, and that is the whole difference.
+ * A sort-kind change is a library message; a direction flip is not.
+ * Re-naming the current sort column is answered on the UI thread from the rows
+ * the widget holds, so nothing refreshes and the queued write gets no thread.
+ * Naming a different column posts a real request.
  *
- * So it goes away and comes back, and the two trips do different jobs:
+ * So it sorts away and back:
  *
- *   away   a message the queued move rides in on. Its own answer is the OLD
- *          order -- the write happens after the message it arrived with -- and
- *          the drain drops the freshly cached rows again on the way out.
- *   back   a second message, now with nothing cached, which reads the order the
- *          write left and puts the list on `#` ascending where the mode wants it.
+ *   away   a message that runs the queued move. Its own answer is the old order
+ *          (the write runs after it), and the drain drops the newly cached rows.
+ *   back   a second message, with nothing cached, which reads the new order and
+ *          leaves the list on `#` ascending.
  */
 void browse_sort_refetch(void)
 {
     if (!bs_g_held || !bs_g_header)
         return;
     bs_notify(bs_g_header, BS_ALT_COL);
-    /* The marker has to be moved with it. bs_goto works out how many notifies
-     * the trip back needs by READING the marker, and bs_notify deliberately does
-     * not touch it -- so without this the header still claims `#`, bs_goto
-     * concludes there is nowhere to go, and the list is left sorted by name. */
+    /* Move the marker too: bs_goto reads it to count notifies, and bs_notify
+     * does not set it. Otherwise bs_goto sees `#` already selected and the list
+     * stays sorted by name. */
     ((void (*)(void *, int, int))FN_HDR_SET_SORTCOL)((void *)bs_g_header,
                                                     BS_ALT_COL, 1);
     bs_goto(bs_g_header, bs_g_col, 1);
@@ -381,15 +357,12 @@ int browse_sort_has_position(uintptr_t bar)
     if (!header)
         return 0;
     if (bs_g_held) {
-        /* The header ON SCREEN has to be the one the mode borrowed from. It is
-         * not enough to ask whether SOME list still has a `#`: walking back up
-         * to the playlist chooser puts a different track list on screen -- the
-         * preview beside the hierarchy -- while the one EDIT was turned on over
-         * still exists, hidden, still carrying its column. Answering from that
-         * left the plate lit over a list it would refuse to reorder.
+        /* The header on screen must be the one the mode borrowed from. Going
+         * back up to the playlist chooser shows a different track list (the
+         * preview beside the hierarchy) while the original, now hidden, still
+         * has its `#` column.
          *
-         * Only `visible` is tested here, because `sortable` is the bit the mode
-         * itself takes away. */
+         * Only `visible` is tested, because this mode clears `sortable`. */
         if (header != bs_g_header)
             return 0;
         col = bs_column_by_id(header, bs_g_col);
@@ -423,10 +396,9 @@ int browse_sort_take(uintptr_t bar)
     bs_g_col = BS_POSITION_COL;
     bs_g_held = 1;
 
-    /* Order matters: move the sort FIRST, then take the flags away. bs_goto
-     * needs to read the header's current column and direction, and a header
-     * left un-sortable while the sort is still the DJ's would be a state
-     * neither of us could get out of. */
+    /* Move the sort before clearing the flags: bs_goto reads the header's
+     * current column and direction, and an unsortable header still on the
+     * DJ's sort could not be recovered. */
     bs_goto(header, BS_POSITION_COL, 1);
     bs_set_sortable(header, 0);
     bs_dir_button(header, 0);
@@ -436,15 +408,12 @@ int browse_sort_take(uintptr_t bar)
     return 0;
 }
 
-/* `resort` says whether the DJ's sort is still THEIRS to get back.
- *
- * It is when they pressed EDIT off, and it is not when the mode expired because
- * the list changed: one header serves every browse list, so re-imposing the
- * playlist's sort then lands on whatever list replaced it -- measured, leaving
- * the all-tracks view on TRACK descending because a notify naming a column that
- * list sorts by anyway flips it. The flags and the direction control always come
- * back; only the sort itself is conditional, and the deck has already set the
- * new list's own. */
+/* `resort` says whether to restore the DJ's sort: yes when EDIT was turned off,
+ * no when the mode expired because the list changed. One header serves every
+ * browse list, so restoring then would hit the replacement list (the
+ * all-tracks view would end on TRACK descending, because notifying its current
+ * column flips it). The flags and the direction control are always restored;
+ * the deck has already set the new list's sort. */
 void browse_sort_give_back(int resort)
 {
     uintptr_t header = bs_g_header;
@@ -463,9 +432,8 @@ void browse_sort_give_back(int resort)
              "is no longer on screen\n");
         return;
     }
-    /* A list that had no sort of its own gets none back: setSortColumnId(0)
-     * clears every column's sorted bit, which is exactly that state, and there
-     * is no column to notify about. */
+    /* A list that had no sort gets none back: setSortColumnId(0) clears every
+     * column's sorted bit, and there is no column to notify. */
     if (bs_g_was_col)
         bs_goto(header, bs_g_was_col, bs_g_was_fwd);
     else

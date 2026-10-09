@@ -27,20 +27,16 @@ uintptr_t bl_target(uintptr_t fn, unsigned insn);
 
 /* ---- the batched vtable phase --------------------------------------------
  *
- * Resolving each class on its own means three full sweeps of a 45 MB image per
- * class -- one to find its name, one to find the type_info pointing at the name,
- * one to find the vtable pointing at the type_info. At 44 classes that is over a
- * hundred sweeps before a single signature has been looked at, and this runs on
- * every EP122 start on an RK3399.
+ * Resolving each class on its own takes three full sweeps of the 45 MB image
+ * per class: one for its name, one for the type_info pointing at the name, one
+ * for the vtable pointing at the type_info. This runs on every EP122 start on
+ * an RK3399, so all classes are resolved together: one sweep finds every name,
+ * one every type_info, one every vtable.
  *
- * So all 44 are resolved together: one sweep finds every name, one finds every
- * type_info, one finds every vtable. Same answers, a fortieth of the traffic.
- *
- * Two name occurrences are kept per class rather than one. The linker packs
- * these strings against whatever precedes them and merges shared tails, so a
- * name can legitimately appear more than once and the copy that matters is not
- * always the first -- which is exactly how pcmbuf::SimpleBuffer went missing
- * the first time. The type_info test downstream is what picks between them. */
+ * Two name occurrences are kept per class. The linker merges shared string
+ * tails, so a name can appear more than once and the right copy is not always
+ * the first (pcmbuf::SimpleBuffer is one such case). The type_info test
+ * downstream picks between them. */
 
 
 struct ti_hunt { uintptr_t ti; int count; };

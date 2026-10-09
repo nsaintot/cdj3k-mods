@@ -1,17 +1,14 @@
 /*
  * docs-plugin.ts - the markdown corpus, turned into data at build time.
  *
- * The corpus is the repo's own docs/*.md -- the documentation. Nothing copies them into the app
- * source: this reads them where they live, renders them once on the build
- * machine, and exposes the result as `virtual:docs`.
+ * Reads the repo's docs/*.md where they live, renders them once at build time,
+ * and exposes the result as `virtual:docs`. Rendering here keeps a markdown
+ * parser and a syntax highlighter (roughly a megabyte of grammars) out of the
+ * client.
  *
- * Doing it here rather than in the browser is what keeps the client free of a
- * markdown parser and a syntax highlighter -- roughly a megabyte of grammars
- * for content that cannot change after the build.
- *
- * What it emits per document: rendered HTML, a heading tree for the table of
+ * Per document it emits rendered HTML, a heading tree for the table of
  * contents, and section-level records for the search index. Ordering, grouping
- * and human labels are NOT decided here -- see src/content/docs.ts.
+ * and labels are decided in src/content/docs.ts.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
@@ -20,10 +17,10 @@ import type Token from 'markdown-it/lib/token.mjs'
 import { createHighlighter, type Highlighter } from 'shiki'
 
 /*
- * Three modules rather than one, because the whole corpus rendered is roughly
- * half a megabyte and the overview page needs none of it:
+ * Three modules, because the rendered docs are roughly half a megabyte and the
+ * overview page needs none of it:
  *
- *   virtual:docs         the manifest -- titles, leads, heading trees, and a
+ *   virtual:docs         the manifest: titles, leads, heading trees, and a
  *                        loader per document. A few KB, always loaded.
  *   virtual:doc/<slug>   one document's HTML. Loaded when it is opened.
  *   virtual:docs-search  the section text. Loaded when search is first opened.
@@ -35,7 +32,7 @@ const RESOLVED_ID = '\0' + VIRTUAL_ID
 const RESOLVED_SEARCH_ID = '\0' + VIRTUAL_SEARCH_ID
 const RESOLVED_DOC_PREFIX = '\0' + VIRTUAL_DOC_PREFIX
 
-/* Loaded eagerly so an unknown language degrades to plain text rather than
+/* Loaded eagerly so an unknown language renders as plain text instead of
  * throwing mid-render. Anything not in this list renders unhighlighted. */
 const LANGUAGES = [
   'c',
@@ -83,7 +80,7 @@ export interface DocSection {
 export interface DocRecord {
   slug: string
   title: string
-  /** First paragraph, flattened -- used as the search/nav blurb. */
+  /** First paragraph, flattened; used as the search/nav blurb. */
   lead: string
   html: string
   headings: DocHeading[]
@@ -93,7 +90,7 @@ export interface DocRecord {
 
 export interface DocsPluginOptions {
   dir: string
-  /** The site's base path, e.g. `/cdj3k-mods/`. Always ends with a slash. */
+  /** The site's base path, e.g. `/` or `/cdj3k-mods/`. Always ends with a slash. */
   base: string
   /** Route the documentation is mounted at, without a trailing slash, e.g. `/docs`. */
   routePrefix: string
@@ -106,9 +103,8 @@ export interface DocsPluginOptions {
  *
  * Read so every <img> can carry width and height. Without them a lazy image
  * occupies no space until it loads, and a deep link into a section below one
- * scrolls to a position that then moves as the images above arrive -- the
- * reader lands somewhere they did not ask for. Only PNG is handled because
- * that is what the corpus holds; anything else simply gets no attributes.
+ * lands at a position that moves as the images above arrive. Only PNG is
+ * handled because that is all docs/ uses; anything else gets no attributes.
  */
 function pngSize(file: string): { width: number; height: number } | null {
   try {
@@ -163,9 +159,8 @@ function slugifyHeading(text: string, taken: Set<string>): string {
 /**
  * Flatten an inline token to its visible text, dropping markup.
  *
- * The break tokens have to become a space. The markdown is hard-wrapped, so a
- * paragraph arrives as text runs separated by softbreaks, and dropping them
- * joins the last word of one line to the first of the next.
+ * Break tokens become a space: the markdown is hard-wrapped, so dropping the
+ * softbreaks would join the last word of one line to the first of the next.
  */
 function inlineText(token: Token | undefined): string {
   if (!token) return ''
@@ -188,8 +183,8 @@ function createRenderer(
   publicDir: string,
 ) {
   const md: MarkdownIt = MarkdownIt({
-    // The corpus is trusted, but there is no reason for it to carry raw HTML,
-    // and escaping it means a stray `<name>` in prose shows up as written.
+    // The docs are trusted, but raw HTML is escaped so a stray `<name>` in
+    // prose shows up as written.
     html: false,
     linkify: true,
     typographer: false,
@@ -210,10 +205,10 @@ function createRenderer(
   /*
    * Links.
    *
-   * A `*.md` href pointing at a document we actually carry becomes a route; one
-   * pointing anywhere else (../CLAUDE.md, a source file) is unwrapped to plain
-   * text, because a dead link is worse than no link. External hrefs get the
-   * usual target/rel pair. In-document `#anchor` hrefs are left alone.
+   * A `*.md` href pointing at a document we carry becomes a route; one pointing
+   * anywhere else (../CLAUDE.md, a source file) is unwrapped to plain text so
+   * the site has no dead links. External hrefs get the usual target/rel pair.
+   * In-document `#anchor` hrefs are left alone.
    */
   const defaultLinkOpen =
     md.renderer.rules.link_open ??
@@ -237,10 +232,9 @@ function createRenderer(
       const slug = basename(path, extname(path))
       if (slugs.has(slug)) {
         const route = `${routePrefix}/${slug}${hash ? "#" + hash : ""}`
-        /* Two attributes, because they are two different strings: `href` is the
-         * real URL, so a middle-click or "copy link" gets somewhere that exists
-         * under the deployed base path, while `data-internal` is the route the
-         * click handler hands to the router, which applies the base itself. */
+        /* `href` is the real URL under the deployed base path, for middle-click
+         * and "copy link"; `data-internal` is the route the click handler hands
+         * to the router, which applies the base itself. */
         token.attrSet('href', base + route.slice(1))
         token.attrSet('data-internal', route)
         return defaultLinkOpen(tokens, i, options, env, self)
@@ -272,18 +266,18 @@ function createRenderer(
    *
    * Screenshots live in `web/public/img/` and are written in the markdown as
    * `img/whatever.png`, which is where they sit relative to the site root. The
-   * base path is applied here for the same reason it is applied to links: the
-   * markdown cannot know it, and a deployed project page is not at `/`.
+   * base path is applied here, as for links: the markdown cannot know it, and
+   * a project page is not served at `/`.
    *
-   * Loading is lazy and the intrinsic size is left to the file, so a long page
-   * of screenshots costs nothing until it is scrolled to.
+   * Loading is lazy, and a PNG's intrinsic size is stamped as width/height
+   * (see pngSize), so a long page of screenshots costs nothing until it is
+   * scrolled to.
    *
-   * A paragraph whose whole content is images becomes a GALLERY: the images are
-   * laid out side by side and each gets its alt text as a visible caption. That
-   * is how seven theme screenshots become something you can compare rather than
-   * seven full-width pictures to scroll past. Anything with prose in it renders
-   * as an ordinary inline image, because a figure inside a <p> is not valid
-   * HTML and the browser would break the paragraph around it.
+   * A paragraph containing only images becomes a gallery: the images sit side
+   * by side and each gets its alt text as a visible caption (e.g. the theme
+   * screenshots, for comparison). Anything with prose in it renders as an
+   * ordinary inline image, because a figure inside a <p> is not valid HTML and
+   * the browser would break the paragraph around it.
    */
   let inGallery = false
 
@@ -325,9 +319,9 @@ function createRenderer(
   /*
    * Alerts: a blockquote whose first line is `[!WARNING]` or `[!NOTE]`.
    *
-   * GitHub's own syntax, so the same markdown reads as an alert there and as a
-   * coloured quote here, and a doc needs no HTML to say "this one is a caution".
-   * The marker is removed from the text -- it is the label, not content.
+   * GitHub's syntax, so the same markdown renders as an alert on GitHub and as
+   * a coloured quote here, without HTML. The marker is removed from the text;
+   * it becomes the label.
    */
   const ALERT_CLASS: Record<string, string> = {
     WARNING: 'md-quote--warn',
@@ -363,21 +357,18 @@ function createRenderer(
      *
      * Short demonstrations of a gesture, looping like an animated image, with
      * `playsinline` so iOS does not take them fullscreen. The alt text becomes
-     * the caption: a reader who cannot see the clip still needs to know what it
-     * demonstrates, and there is no poster frame to describe it.
+     * the caption, so a reader who cannot see the clip knows what it shows.
      *
-     * MUTED, THOUGH THEY CARRY SOUND. Autoplay with audio is blocked outright,
-     * so the choice is a clip that starts muted or one that does not start. It
-     * starts, and `controls` is what turns the sound on -- which is also what a
-     * reader needs to pause a loop.
+     * Muted, though the clips carry sound: browsers block autoplay with audio.
+     * `controls` lets the reader turn the sound on or pause the loop.
      */
     if (/\.mp4$/i.test(src)) {
       const relative = src.replace(/^\//, '')
       const size = mp4Size(join(publicDir, relative))
       const dims = size ? ` width="${size.width}" height="${size.height}"` : ''
       const caption = md.utils.escapeHtml(inlineText(token))
-      /* `preload="auto"`: a few hundred KB each, and the point is that they are
-       * already moving when the reader arrives.
+      /* `preload="auto"`: a few hundred KB each, so they are already playing
+       * when the reader arrives.
        *
        * Autoplay is an attribute and cannot be withdrawn in CSS, so a
        * reduced-motion preference is honoured at runtime, in DocView. */
@@ -490,8 +481,8 @@ function analyse(tokens: Token[], title: string): Pick<DocRecord, 'headings' | '
 }
 
 /**
- * Drop the h1 and the paragraph that follows it -- the two things the page
- * header already shows. Anything else between them (a badge line, a blockquote)
+ * Drop the h1 and the paragraph that follows it, which the page header
+ * already shows. Anything else between them (a badge line, a blockquote)
  * is left alone; only a plain paragraph directly after the title is the lead.
  */
 function stripHeader(tokens: Token[], h1: number): Token[] {
@@ -541,10 +532,9 @@ export function docsPlugin(options: DocsPluginOptions) {
 
       const { headings, sections, lead } = analyse(tokens, title)
 
-      /* The page header renders the title and the lead paragraph itself, so
-       * both come out of the body -- otherwise every document opens by saying
-       * the same thing twice. They stay in `sections`, because a search for a
-       * word that only appears in the lead should still find the document. */
+      /* The page header renders the title and the lead paragraph, so both are
+       * removed from the body. They stay in `sections` so a search for a word
+       * that only appears in the lead still finds the document. */
       const body = stripHeader(tokens, h1)
       const html = md.renderer.render(body, md.options, env)
 
@@ -624,19 +614,15 @@ export function docsPlugin(options: DocsPluginOptions) {
        * Editing a document drops the render cache, invalidates the virtual
        * modules and reloads.
        *
-       * The invalidation is the part that is easy to leave out and hard to
-       * notice. A virtual module has no file behind it, so nothing in Vite's
-       * graph connects `virtual:docs` to the markdown it was built from and
-       * nothing marks it stale on its own. Reloading the browser then re-runs
-       * an app that re-imports a manifest Vite still has cached -- and because
-       * the per-document chunks are imported lazily and usually fetched fresh,
-       * what you get is an article showing your edit under a table of contents
-       * that does not, which reads as a rendering bug rather than a stale
-       * module.
+       * The invalidation is required: a virtual module has no file behind it,
+       * so nothing in Vite's graph connects `virtual:docs` to its markdown or
+       * marks it stale. Without it a reload re-imports the cached manifest
+       * while the lazily loaded document chunk is fresh, so the article shows
+       * the edit and the table of contents does not.
        *
        * A .png counts too: the build stamps each image's intrinsic size into
-       * the HTML, so replacing a screenshot with one of a different size has to
-       * re-render as well.
+       * the HTML, so replacing a screenshot with a different size must
+       * re-render.
        */
       const invalidate = (file: string) => {
         const isDoc = file.startsWith(dir) && file.endsWith('.md')
@@ -654,7 +640,7 @@ export function docsPlugin(options: DocsPluginOptions) {
     },
 
     buildStart() {
-      // Surface a missing corpus as a build error rather than an empty site.
+      // A missing docs/ is a build error, not an empty site.
       try {
         if (!statSync(dir).isDirectory()) throw new Error()
       } catch {

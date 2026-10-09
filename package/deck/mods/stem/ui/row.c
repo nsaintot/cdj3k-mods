@@ -7,10 +7,9 @@
  */
 #include "stem/ui/ui.h"
 
-/* What colour the plate is wearing, in one place. Three things need it and they must
- * agree: the outline juce::Label draws, the lettering, and the rings the paint override
- * adds inside them. paint cannot ask the Label what colour it was handed -- findColour
- * walks a keyed array -- so it recomputes from the same state instead. */
+/* The caption's colour, shared by the outline juce::Label draws, the lettering and
+ * the rings the paint override adds. paint recomputes it from state rather than
+ * calling findColour, which walks a keyed array. */
 static uint32_t stems_caption_colour(int i)
 {
     if (i < 0 || i >= N_STEMS) return mod_ui()->dead;
@@ -19,8 +18,7 @@ static uint32_t stems_caption_colour(int i)
                            : mod_ui()->stem[i];
 }
 
-/* Which caption a component is, or -1. Three entries, so a scan beats a back-pointer --
- * the same trade as stems_wedge_index. */
+/* Which caption a component is, or -1. */
 static int stems_caption_index(uintptr_t comp)
 {
     int i;
@@ -30,27 +28,22 @@ static int stems_caption_index(uintptr_t comp)
     return -1;
 }
 
-/* Thicken the plate's edge, which juce::Label has no setting for: its paint ends with a
- * one-pixel drawRect and that is the whole of its outline.
+/* Paint for every clickable label (they share this vtable): the quick-menu button
+ * gets the stipple and the bottom bar, the captions get a thicker edge, anything else
+ * paints as a plain Label.
  *
- * Chained rather than replaced, so the fill, the lettering and the outer ring stay
- * exactly what the class draws and this only adds rings inside them. Drawing inwards is
- * what keeps the geometry honest -- the bounds are the touch target and the wedge starts
- * at the pixel below, so an edge that grew outwards would either overlap the bars or
- * force the layout to give the plate pixels it does not otherwise need.
- *
- * Every clickable label shares this vtable, so this is also where the two kinds are
- * told apart -- the quick-menu button gets the stipple, the captions get the rings,
- * and anything else built on the clone gets plain Label. */
+ * Label::paint is chained, and the caption edge is drawn as rings inside Label's
+ * one-pixel outline: the bounds are the touch target and the wedge starts on the pixel
+ * below, so the edge cannot grow outwards. */
 void stems_label_paint(void *self, void *g)
 {
     int32_t b[4];
     int i, k, w, h;
 
     if (stems_bounds((uintptr_t)self, b) != 0) {
-        /* Bracketed: Label paints its background and its lettering from colours WE set on
-         * it (roles, already resolved through the theme), so the generic pass must not have
-         * a second go at them. One synchronous call, so the bracket cannot leak. */
+        /* Bracketed: Label paints from colours we set (roles already resolved through
+         * the theme), so the generic theme pass must not resolve them again. One
+         * synchronous call, so the bracket cannot leak. */
         mod_draw_enter();
         ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
         mod_draw_leave();
@@ -59,27 +52,22 @@ void stems_label_paint(void *self, void *g)
     w = b[2];
     h = b[3];
 
-    /* The button's surface goes down BEFORE Label::paint, never after: Label draws its
-     * background and its lettering in one call, so a stipple laid afterwards would fall
-     * across the word. Its own background colour is transparent for exactly this reason
-     * and stems_g_btn_state is what says which state it is in. */
+    /* The button's surface goes down before Label::paint, which draws background and
+     * lettering in one call; a stipple laid afterwards would cover the word. The Label's
+     * own background is transparent and stems_g_btn_state gives the state. */
     if ((uintptr_t)self == stems_g_btn_stems) {
         uint32_t lift = stems_touch_lift(stems_g_btn_stems);
 
         mod_checker_plate(g, 0, 0, w, h, stems_btn_surface(), lift);
-        /* The bar tracks whether the PANEL is up, not what the plate is doing: the plate
-         * also goes red to refuse a press, and a refusal is not a state the button is in.
-         * One colour, so it lifts directly rather than through the surface call. */
+        /* The bar shows whether the panel is up, independent of the plate's refusal red.
+         * A single colour, so it is lifted directly. */
         mod_btn_bar(g, 0, 0, w, h,
                     mod_colour_lift(stems_g_row_open ? mod_ui()->bar_on : mod_ui()->bar,
                                     lift));
     }
 
-    /* Bracketed for the same reason as the early path above, which said so and then
-     * only did it on the branch that never runs. Label paints its lettering from a
-     * colour WE set on it, already resolved through the theme once -- unbracketed the
-     * generic pass had a second go, and the STEMS button's word came out #7b809d where
-     * every deck button beside it was #262944. */
+    /* Bracketed, as above. Without it the STEMS lettering is resolved twice and comes
+     * out #7b809d instead of the deck buttons' #262944. */
     mod_draw_enter();
     ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
     mod_draw_leave();
@@ -96,47 +84,31 @@ void stems_label_paint(void *self, void *g)
     }
 }
 
-/* Paint the caption for what it is. Called wherever the state moves, so the plate and
- * the audio can never disagree.
- *
- * A plate with an edge, wearing the same amber as the bypass: it is the same idea
- * applied to one stem instead of three. A bare word over black would say what the
- * wedge below it is and nothing about being pressable. */
+/* Set the caption's text and colours from the current state. Called wherever that
+ * state changes. The outlined plate marks the caption as pressable. */
 void stems_caption_sync(int i)
 {
-    /* What the plate currently READS, so the word is only rewritten when it changes.
-     * Setting the text goes through the Label's juce::Value and repaints unconditionally,
-     * and this is also called for every bypass toggle. */
+    /* The word currently shown, so it is only rewritten on change: setting the text
+     * repaints unconditionally, and this also runs on every bypass toggle. */
     static int shown[N_STEMS] = { -1, -1, -1 };
     uint32_t col;
 
     if (i < 0 || i >= N_STEMS || !stems_g_caption[i]) return;
-    /* The word changes with the state: while it is held down the plate stops naming the
-     * stem and says what is happening to it. A pulsing coloured plate says "something is
-     * being held"; only the word says which something. */
+    /* While held, the caption reads MUTED instead of the stem name. */
     if (shown[i] != stems_g_mute[i]) {
         shown[i] = stems_g_mute[i];
         stems_text(stems_g_caption[i], stems_g_mute[i] ? "MUTED" : k_stem_name[i]);
     }
-    /* Outline and lettering only, both in the stem's own colour: it names the wedge under
-     * it, so wearing that colour is what ties the two together -- and an unfilled plate
-     * sits over the row without weighing it down the way a solid one did.
-     *
-     * The FILL is left to the blink. Resting empty and filling while held is the whole
-     * signal: a button that is filled only while a finger is on it cannot be mistaken for
-     * one that stays where it is put. */
+    /* Outline and lettering in the stem's colour, matching the wedge below. The fill
+     * is left to the mute blink: empty at rest, filled only while held. */
     col = stems_caption_colour(i);
     stems_colour(stems_g_caption[i], LBL_COL_BG, 0x00000000u);
     stems_colour(stems_g_caption[i], LBL_COL_OUTLINE, col);
     stems_colour(stems_g_caption[i], LBL_COL_TEXT, col);
 }
 
-/* HELD, not latched. The finger is the switch: down mutes, up puts the level straight
- * back where the wedge still says it is.
- *
- * That is why the mute never touches stems_g_level -- the fader position is not a thing to
- * restore afterwards, it was never moved. Only the published gain changes, and
- * stems_publish_gain reads both. */
+/* Mute is held, not latched: press mutes, release restores the level the wedge shows.
+ * stems_g_level is never touched; stems_publish_gain combines it with the mute. */
 static void stems_mute_set(int i, int on)
 {
     if (i < 0 || i >= N_STEMS || stems_g_mute[i] == !!on) return;
@@ -149,21 +121,16 @@ static void stems_mute_set(int i, int on)
          on ? "held MUTE" : "released -> level restored");
 }
 
-/* The blink, on the display tick.
- *
- * A held control has to look different from a latched one or the DJ has no way to know
- * whether letting go will change anything. A steady amber plate is what BYPASS does and
- * BYPASS stays where you put it; alternating says "this is only true while you are
- * holding it". Same period as the warn badge, so the two read as one language. */
+/* The held-mute blink, on the display tick. Blinking marks the state as momentary.
+ * Same period as the warn badge (MOD_BLINK_PERIOD). */
 #define MUTE_BLINK_PERIOD  12
 
 void stems_mute_blink(void)
 {
     static int phase, lit = -1;
-    /* WHAT THE MIX ACTUALLY DID. The press and the sound are deliberately not
-     * the same moment -- the caption answers at once and the audio waits for the
-     * quarter -- so the log above is not evidence the stem went quiet. This is.
-     * [message] reading a counter [audio] adds to; a lost update costs a line. */
+    /* Log when the mix applies a mute. The caption changes at once but the audio
+     * waits for the quarter, so the press log alone does not show the stem went
+     * quiet. [message] reads a counter [audio] adds to; a lost update costs a line. */
     static unsigned said_commits;
     unsigned commits = __atomic_load_n(&g_stem_mute_commits, __ATOMIC_RELAXED);
 
@@ -185,9 +152,8 @@ void stems_mute_blink(void)
     lit = want;
     for (i = 0; i < N_STEMS; i++) {
         if (!stems_g_mute[i]) continue;
-        /* Fill in the stem colour and put the lettering in black on it; empty again and
-         * the lettering goes back to the colour. The outline never moves, so the plate
-         * stays the same size and only its inside pulses. */
+        /* Alternate between a stem-colour fill with text_on_accent lettering and an
+         * empty plate with stem-colour lettering. The outline does not change. */
         stems_colour(stems_g_caption[i], LBL_COL_BG,
                      want ? mod_ui()->stem[i] : 0x00000000u);
         stems_colour(stems_g_caption[i], LBL_COL_TEXT,
@@ -195,19 +161,13 @@ void stems_mute_blink(void)
     }
 }
 
-/* BYPASS is a latching bypass, not a reset: the levels are KEPT, so releasing it puts
- * the mix back exactly as it was, the way an EQ bypass does. While it is on the wedges
- * are desaturated AND inert -- the look alone would be a lie, since a drag would still
- * move a value nothing is reading.
- *
- * Unity and bypassed are the same audio, so "reset to full mix" would sound identical;
- * what a bypass buys is the A/B, which a reset throws away. */
+/* BYPASS latches, like an EQ bypass: the levels are kept, so releasing it restores
+ * the mix as it was. While on, the wedges are greyed and inert. */
 static void stems_bypass_toggle(void)
 {
     int i;
 
-    /* Nothing to take out of circuit, so the latch does not move. Refusing is better than
-     * latching into a state that will not survive the next set arriving. */
+    /* No stems resident: nothing to take out of circuit, so ignore the press. */
     if (!stems_ready()) {
         MDBG("stems: no stems resident -> BYPASS ignored\n");
         return;
@@ -224,19 +184,12 @@ static void stems_bypass_toggle(void)
          stems_g_bypass_on ? "bypassed, wedges inert" : "back in circuit");
 }
 
-/* What each stage is called on the bar.
+/* The caption for each stage, indexed by enum stem_stage. A job takes tens of seconds
+ * on a cold track, so the caption follows the sidecar's stages. DONE and FAILED are
+ * terminal and the row is back to the controls before either is drawn.
  *
- * The job is long enough -- tens of seconds on a cold track -- that one word held for
- * all of it reads as a hang, so the caption names the stage the work is actually in.
- * They are the sidecar's own stages and change when it says so, never on a timer.
- *
- * Indexed by enum stem_stage. DONE and FAILED are here for completeness only: both
- * are terminal, and the row is back to the sliders before either could be drawn.
- *
- * RECONSTRUCTING and WRITING share one word. They are the server packaging what the
- * model produced, they share one segment of the bar, and stemd gives neither a figure
- * of its own -- so two names for it would be naming an internal boundary the DJ has no
- * use for and cannot see move. */
+ * RECONSTRUCTING and WRITING are both the server packaging the model's output, share
+ * one segment of the bar and report no count, so they share one word. */
 static const char *const k_stage_name[] = {
     "WAITING",          /* IDLE           */
     "UPLOADING",        /* UPLOADING      */
@@ -258,14 +211,11 @@ int stems_prog_px(int pct)
 
 /* Leg-local percent -> position on the whole bar, in percent of the bar.
  *
- * `via_server` is the run's shape and comes from the snapshot, never from the stage in
- * hand: a cache hit is one leg wearing the whole bar. See the map in ui.h.
+ * `via_server` comes from the snapshot, not the stage: a cache hit is one leg across
+ * the whole bar. See the map in ui.h.
  *
- * Every leg is anchored at BOTH ends, so a handover lands exactly on the boundary the
- * delimiter is drawn at rather than near it. Written as a switch for the same reason:
- * a stage with no case is a stage nobody weighted, and the default has to be the one
- * group that genuinely shares a figure -- the server's queue-to-model run -- not a
- * catch-all that silently absorbs whatever gets added next. */
+ * Every leg is anchored at both ends, so a handover lands exactly on its delimiter.
+ * A new stage needs its own case; the default is only for the queue-to-model group. */
 static int stems_prog_pos(int stage, int pct, int via_server)
 {
     if (!via_server)
@@ -285,9 +235,8 @@ static int stems_prog_pos(int stage, int pct, int via_server)
                pct * (PROG_BOUND_FETCH - PROG_BOUND_WRITE) / 100;
     case STEM_STAGE_LOADING:
         return PROG_BOUND_FETCH + pct * (100 - PROG_BOUND_FETCH) / 100;
-    /* Full, and said so. The row is back to the sliders by the time this could be
-     * drawn, but the arithmetic below would put a finished job at PROG_BOUND_SEPARATE
-     * -- a value that reads as a stall on any frame that does catch it. */
+    /* Normally never drawn, but the default below would put a finished job at
+     * PROG_BOUND_SEPARATE. */
     case STEM_STAGE_DONE:
         return 100;
     default:
@@ -299,16 +248,11 @@ static int stems_prog_pos(int stage, int pct, int via_server)
     }
 }
 
-/* What is already on the bar, so a tick that changes nothing costs a compare.
+/* What is already on the bar, so a tick that changes nothing costs a compare. These
+ * cache drawn values, not inputs: the fill position depends on the stage as well as
+ * the percent, so a percent-keyed guard would miss a leg change.
  *
- * EVERY ONE OF THESE IS THE DRAWN VALUE, not an input that decides it. The fill's
- * position turns on the stage as much as on the percent, so a percent-keyed guard sees
- * "unchanged" while the bar is describing a different leg -- which is a fill left at the
- * previous run's separation while the caption reads UPLOADING. Guarding on the width
- * asks the only question worth asking: would this repaint move a pixel.
- *
- * -1 is "nothing drawn yet": a real width is 0..stems_g_prog_w and a real mark state is
- * 0 or 1, so neither can be mistaken for it. */
+ * -1 means nothing drawn yet. */
 static int  g_prog_w_drawn  = -1;
 static int  g_prog_marks_up = -1;
 static char g_prog_caption[PROG_CAPTION_MAX];
@@ -322,15 +266,12 @@ void stems_progress_forget(void)
 
 /* The processing state replaces the whole row.
  *
- * Called from the display tick, i.e. tens of times a second, so everything here is
- * conditional on having actually moved: setBounds invalidates and setting a Value
- * repaints unconditionally, so an unguarded call would put the whole strip through a
- * software repaint every frame for a bar that has not changed.
+ * Called from the display tick, so every update is guarded on change: setBounds
+ * invalidates and setting a Value repaints unconditionally.
  *
- * Nothing is latched from a transition. The tick only runs while the row is open, so
- * there is no moment this can be sure it witnessed -- a run can begin, finish and be
- * replaced by another entirely behind a shut row. Everything drawn is derived from `st`
- * on this call; see stems_progress_forget for the other half of that. */
+ * Nothing is latched from a transition: the tick only runs while the row is open, and
+ * a run can begin, finish and be replaced while it is shut. Everything drawn is derived
+ * from `st` on this call; see stems_progress_forget. */
 void stems_processing_set(const struct stem_ui_state *st)
 {
     char caption[PROG_CAPTION_MAX];
@@ -358,8 +299,7 @@ void stems_processing_set(const struct stem_ui_state *st)
     if (stage < 0 || stage >= (int)(sizeof(k_stage_name) / sizeof(k_stage_name[0])))
         stage = STEM_STAGE_IDLE;
 
-    /* A cache hit is one leg across the whole bar and has nothing to hand over, so it
-     * shows no delimiters. Read from the snapshot every tick rather than latched. */
+    /* A cache hit shows no delimiters. Read from the snapshot every tick. */
     marks = st->via_server ? 1 : 0;
     if (marks != g_prog_marks_up) {
         g_prog_marks_up = marks;
@@ -367,8 +307,7 @@ void stems_processing_set(const struct stem_ui_state *st)
             stems_set_visible(stems_g_prog_mark[i], marks);
     }
 
-    /* Derived once and used by both halves, so the number the caption prints and the
-     * width the fill is given can never come from different arithmetic. */
+    /* The caption and the fill both use pos. */
     pos = stems_prog_pos(stage, pct, st->via_server);
     w   = stems_prog_px(pos);
     if (w != g_prog_w_drawn && stems_g_prog_fill && stems_g_prog_w > 0) {
@@ -377,15 +316,8 @@ void stems_processing_set(const struct stem_ui_state *st)
                                   stems_g_prog_y, w, PROG_BAR_H);
     }
 
-    /* The percentage rides in the caption rather than in a second Label: it belongs to
-     * the same sentence, and one centred string reads better on a 1224px bar than a
-     * number floating at one end of it.
-     *
-     * IT IS THE BAR'S FIGURE. The stage word says what is happening and the number says
-     * how far the job has got, both on the one scale the fill is drawn on.
-     *
-     * Compared as the finished string, not field by field, because that is exactly the
-     * question being asked -- would this repaint change a pixel. */
+    /* Stage word plus the whole-bar percentage (or queue depth), as one centred
+     * string. Compared as the finished string to skip unchanged repaints. */
     if (stage == STEM_STAGE_QUEUED && st->queue_position > 0)
         snprintf(caption, sizeof(caption), "%s  %d AHEAD", k_stage_name[stage],
                  st->queue_position);
@@ -397,36 +329,24 @@ void stems_processing_set(const struct stem_ui_state *st)
     }
 }
 
-/* Only ever reached by Labels carrying our cloned vtable, so an unrecognised `self`
- * means a Label we built but do not act on (a caption): do nothing, and in
- * particular do not chain -- stock Label::mouseDown is the empty stub. */
+/* Reached only by Labels with our cloned vtable. An unrecognised `self` is ignored;
+ * there is nothing to chain, since stock Label::mouseDown is the empty stub. */
 void stems_label_mousedown(void *self, void *event)
 {
     (void)event;
-    /* Before anything else, and for STEMS too: a sweep that started on a fader must not
-     * open or shut the panel out from under itself either. */
+    /* First, and for STEMS too: a sweep that started on a fader must not toggle the
+     * panel. */
     if (!stems_grab_take((uintptr_t)self)) return;
-    /* Both buttons paint their touch tier off stems_g_grab, so taking it has to invalidate
-     * them. The state changes below repaint too, but not on every path -- BYPASS with
-     * no set resident does nothing at all, and a button that ignores the press still has
-     * to acknowledge the finger. */
+    /* Both buttons paint their touch highlight from stems_g_grab, so repaint them here;
+     * not every path below repaints (e.g. BYPASS with no set resident). */
     if ((uintptr_t)self == stems_g_btn_stems || (uintptr_t)self == stems_g_btn_bypass)
         stems_repaint((uintptr_t)self);
     if ((uintptr_t)self == stems_g_btn_stems) {
-        /* A press is the DJ ASKING, so it is also when to go and look again.
-         *
-         * The status refresh runs every 30 s and that interval is pure latency: start
-         * the server, press STEMS, and the deck goes on saying there is nothing there
-         * for up to half a minute -- which is indistinguishable from the feature being
-         * broken, and is exactly the moment a DJ decides it is. A probe re-checks the
-         * address the sidecar already has and falls back to an mDNS browse when that
-         * does not answer, so a server that has just come up is found on this press
-         * rather than on the next tick that happens to fall due.
-         *
-         * Only when the answer we hold is NOT a usable server. Probing when one is
-         * plainly there would put the sidecar into a blocking health round trip for
-         * every open and close of the row, all set long, to confirm something already
-         * confirmed -- and the 30 s refresh is what covers a server going away. */
+        /* A press with no usable server asks the sidecar to probe now instead of
+         * waiting up to 30 s for the status refresh. The probe re-checks the known
+         * address and falls back to an mDNS browse. Skipped when a server is usable:
+         * each probe is a blocking health round trip, and the 30 s refresh covers a
+         * server going away. */
         {
             struct stem_ui_state st;
 
@@ -436,13 +356,10 @@ void stems_label_mousedown(void *self, void *event)
                 stem_job_probe_now();
             }
         }
-        /* Only OPENING is gated. A row already up must always close, whatever the
-         * server did while it was open -- trapping the DJ under a panel they can
-         * see is worse than any warning. */
+        /* Only opening is gated; an open row can always be closed. */
         if (!stems_g_row_open && !stems_available()) {
-            /* Answer the press in the frame it happened, rather than a blink period
-             * later -- and show the badge even if it is still inside its settle
-             * window, because a tap IS the DJ asking. */
+            /* Refuse in this frame, and show the badge even inside its settle
+             * window. */
             stems_g_warn_blink = MOD_BLINK_TICKS;
             stems_g_warn_up = 1;
             stems_set_visible(stems_g_warn, 1);
@@ -462,71 +379,48 @@ void stems_label_mousedown(void *self, void *event)
     }
 }
 
-/* BYPASS's resting fill. State lives in the glyph, not in the plate -- see
- * stems_bypass_paint -- so the plate has exactly two appearances: this, and this lifted
- * while a finger is on it.
+/* BYPASS's resting fill. The state is shown by the glyph (stems_bypass_paint), so the
+ * plate has two appearances: this, and this lifted while touched.
  *
- * There USED to be a hover tier between them, and it had to go: this panel is a
- * touchscreen, so there is no pointer to hover. juce raises mouseEnter when the finger
- * lands and mouseExit only when the NEXT touch lands somewhere else, which meant the
- * hover grey appeared on release and then sat there -- reporting "the pointer is over
- * this" for as long as the DJ did not touch anything else. A state that can only ever be
- * shown at the wrong moment is not a state worth having, and deleting it is a better fix
- * than clearing the flag on mouseUp: that would have papered over a tier that is
- * meaningless on this hardware either way. */
+ * No hover tier: on this touchscreen juce sends mouseExit only when the next touch
+ * lands elsewhere, so a hover state would stick after release. */
 uint32_t stems_bypass_colour(void)
 {
     return mod_ui()->surface;
 }
 
-/* Chained: juce::Label overrides mouseUp for its edit-on-click path, and dropping that
- * would be a behaviour change for a class we only meant to recolour. */
+/* Chained: juce::Label overrides mouseUp for its edit-on-click path. */
 void stems_label_mouseup(void *self, void *event)
 {
     int i;
 
-    /* Released on ANY of them, not just the one still under the finger: juce delivers
-     * mouseUp to whoever took the mouseDown, but a gesture that ends off-component or
-     * gets stolen would otherwise leave a stem silent with no way back. Clearing them
-     * all costs three comparisons and cannot strand one. */
+    /* Release every mute, not only this caption's: a gesture that ends off-component
+     * or is stolen would otherwise leave a stem silent. */
     for (i = 0; i < N_STEMS; i++)
         if (stems_g_mute[i]) stems_mute_set(i, 0);
     stems_grab_release();
-    /* After the grab is cleared, not before: the touch tier is read from stems_g_grab at paint
-     * time, so invalidating first would just redraw the lit state again. */
+    /* After the grab is cleared: paint reads the touch highlight from stems_g_grab. */
     if ((uintptr_t)self == stems_g_btn_bypass || (uintptr_t)self == stems_g_btn_stems)
         stems_repaint((uintptr_t)self);
     if (stems_g_label_mouseup)
         ((mousedown_t)stems_g_label_mouseup)(self, event);
 }
 
-/* Put every level back to full mix. MESSAGE THREAD -- it moves Components.
+/* Put every level back to full mix. Message thread: it moves Components.
  *
- * Called on a track change, and the reason is not tidiness. Levels that outlive
- * their track are a performance hazard in two ways:
+ * Called on a track change. Kept levels would carry a muted part into the next track,
+ * and would apply only once the new stems land, seconds into playback (until then
+ * stem_mix has no set and plays the full mix), so the audio would change mid-track.
  *
- *   - Kill the vocals on one track, load the next, and it starts with the vocals
- *     already gone. Nothing on screen says the missing part is a leftover.
- *   - Worse, the levels apply the moment the NEW stems land, which is seconds
- *     into playback. Until then the deck plays the untouched mix, because
- *     stem_mix has no set to acquire -- so the audio JUMPS mid-track, with no
- *     input from the DJ to explain it.
+ * BYPASS is left as is: it is not a level, and unity and bypassed sound the same.
  *
- * Unity is the honest resting state for a track nobody has touched yet.
- *
- * BYPASS is deliberately left alone: it is a bypass, not a level, and a DJ who
- * put the stems out of circuit means it to stay that way across a load. Unity
- * and bypassed sound identical anyway, so there is nothing to reconcile.
- *
- * stems_level_set publishes to the audio thread as part of the move, so there is no
- * second step here that could be forgotten. */
+ * stems_level_set publishes to the audio thread as part of the move. */
 void mod_stems_reset_levels(void)
 {
     int i, moved = 0;
 
     for (i = 0; i < N_STEMS; i++) {
-        /* Mutes go with the levels, and for the same reason: a part silenced on the last
-         * track is a part missing from this one with nothing on screen to explain it. */
+        /* Mutes are cleared too. */
         if (stems_g_mute[i]) { stems_g_mute[i] = 0; stems_caption_sync(i); moved = 1; }
         if (stems_g_level[i] != STEM_LEVEL_MAX) { stems_level_set(i, STEM_LEVEL_MAX); moved = 1; }
         stems_publish_gain(i);

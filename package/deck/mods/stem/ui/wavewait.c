@@ -1,52 +1,39 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * ui/wavewait.c - "the picture cannot follow the faders yet".
+ * ui/wavewait.c - "the waveform cannot follow the faders yet".
  *
- * A fader moves the AUDIO the moment it is touched, and the waveform some seconds
- * later: the stems landing only raises a flag, and the worker then re-decodes the
- * track to derive drums, analyses it into per-column band shares, and separately
- * waits for a stable copy of the deck's own columns -- ~2.8 s of settle before the
- * capture can even bind (STABLE_POLLS x POLL_TICKS in ../../wave.h) with the
- * analysis on top. For all of that the faders are live and the picture is frozen,
- * with nothing on screen to say so.
+ * A fader changes the audio immediately and the waveform seconds later: once the
+ * stems land, the worker re-decodes the track to derive drums, analyses it into
+ * per-column band shares, and separately waits for a stable copy of the deck's own
+ * columns (~2.8 s of settle before the capture can bind, STABLE_POLLS x POLL_TICKS
+ * in ../../wave/wave.h) with the analysis on top. This mark shows that interval.
  *
- * THE GATE IS ONE FLAG. wave_stems.c's worker does `if (!wave_g_have_analysis)
- * continue;` before anything reaches the array, and the per-style captures are
- * upstream of that -- the 3-band copy has to bind before the analysis can run at
- * all. So this reads that flag and nothing else, and no waveform source is touched
- * to expose it.
+ * The gate is one flag: wave/stems.c's worker skips everything until
+ * wave_g_have_analysis is set, and the per-style captures (the 3-band copy must bind
+ * first) are upstream of it. So this reads only that flag.
  *
- * Read from the message thread while the worker owns the write. Deliberate: a stale
- * read costs one frame of an indicator, which is the cheapest thing in the file.
+ * Read from the message thread while the worker writes it; a stale read costs one
+ * frame of the indicator.
  */
 #include "stem/ui/ui.h"
 #include "wave/wave.h"
 
 /* ---- the glyph -----------------------------------------------------------
  *
- * The deck's own sampling-rate icon, skin16/picture/browse/LIST-2, which draws a
- * sine crossing an axis -- so it reads as "waveform" rather than as a symbol that
- * has to be learned.
+ * The deck's own sampling-rate icon, skin16/picture/browse/LIST-2: a sine crossing
+ * an axis.
  *
- * EMBEDDED AS RUNS, not loaded. The source is 25x34 white with an alpha ramp, i.e.
- * an alpha mask rather than artwork, so the whole of it is 420 bytes of run-length
- * and the colour is ours to choose. Loading the file instead would need the deck's
- * skin loader or a juce::Image, and would buy a bitmap that cannot follow the theme
- * without being transformed on every blit.
+ * Embedded as runs rather than loaded. The source is 25x34 white with an alpha ramp,
+ * i.e. an alpha mask, so it fits in 420 bytes of run-length and takes the theme's
+ * colour. Loading the file would need the skin loader or a juce::Image, and the
+ * bitmap would have to be recoloured on every blit.
  *
  * Max-pooled to 18x24 rather than resampled: the strokes are one pixel wide at the
- * source size, so an averaging filter takes them below one pixel and the glyph goes
- * to grey mush. Taking the strongest sample in each cell keeps a stroke a stroke.
- * It is also cheaper than the original -- 105 runs against 160.
+ * source size and an averaging filter would blur them. 105 runs against the
+ * original's 160. The footprint matches the warn badge's (18x20).
  *
- * That footprint is the warn badge's (18x20), which is the size that reads as a mark
- * rather than as something to press.
- *
- * TRIMMED TO THE INK. The source carries four blank rows above the glyph and four
- * below; kept, they are padding that spends the cell's height without drawing anything,
- * and every measurement against the button below becomes four pixels off what it says.
- * The table holds the ink and nothing else, so WAVEWAIT_H is what is actually on
- * screen. */
+ * Trimmed to the ink: the source's four blank rows above and below are dropped, so
+ * WAVEWAIT_H is the drawn height. */
 #define WAVEWAIT_W      18
 #define WAVEWAIT_H      16
 
@@ -86,46 +73,34 @@ static const struct wavewait_run k_glyph[] = {
 
 /* ---- what it is saying ----------------------------------------------------
  *
- * Two tiers, and the MOTION carries the difference rather than the colour: breathing
- * means the picture is on its way, still means it is not coming. One thing to learn
- * instead of two, and the still state settles onto the quiet end of its own pulse so
- * the change reads as the mark going to rest.
+ * Two states, distinguished by motion: pulsing means the waveform is on its way,
+ * still (at the dim level) means it is not coming.
  *
- * Amber, through the warn role: nothing is broken, the picture is merely behind the
- * sound. Red is the deck's colour for something the DJ has to act on, and there is
- * nothing to act on here. */
+ * Amber, through the warn role: nothing is broken. Red on this deck means something
+ * the DJ has to act on. */
 enum wavewait_state { WAVEWAIT_OFF, WAVEWAIT_PULSE, WAVEWAIT_STILL };
 
-/* Scales the glyph's OWN alpha, so the antialiasing survives at both levels. */
+/* Scales the glyph's own alpha, so the antialiasing survives at both levels. */
 #define WAVEWAIT_A_DIM      90
 #define WAVEWAIT_A_BRIGHT  255
-/* Ticks per half-cycle. Three times the refusal's, deliberately: a fast flash is how
- * this UI says no, and a slow breath is how it says wait. */
+/* Ticks per half-cycle: three times the refusal blink's, so "wait" pulses slower
+ * than "no". */
 #define WAVEWAIT_PULSE     (MOD_BLINK_PERIOD * 3)
-/* When to stop promising. The capture can genuinely never bind -- the deck keys a
- * waveform reply on the browse REQUEST, so a track loaded from an earlier index in the
- * same list is never replied for at all (see wave.h) -- and a mark that breathes for
- * ever is one the DJ learns to ignore.
+/* Ticks before going still. The capture can fail to bind for good: the deck keys a
+ * waveform reply on the browse request, so a track loaded from an earlier index in
+ * the same list never gets one (see wave.h).
  *
- * Must outlast the waveform's own capture give-up, which is CAPTURE_GIVEUP_POLLS at
- * POLL_TICKS of its APPLY_MS loop, about eleven seconds. Going still before that would
- * say "not coming" about a picture that is still on its way. */
+ * Must outlast the waveform's own capture give-up, CAPTURE_GIVEUP_POLLS at
+ * POLL_TICKS of its APPLY_MS loop, about eleven seconds. */
 #define WAVEWAIT_GIVEUP    700
 
-/* How far the mark floats above BYPASS, in pixels.
+/* Clearance between the mark and BYPASS below it, in pixels, so the two do not read
+ * as one stacked control.
  *
- * It is an indicator standing over a button, and sitting at the cell's centre the two
- * read as one stacked control. Lifting it off the button is what separates them.
- *
- * Expressed as the clearance rather than as an offset from centre, because the
- * clearance is the thing being chosen.
- *
- * AT ITS CEILING, which is CAPTION_H - WAVEWAIT_H: the ink's top row is flush with the
- * top of the row, and there is no further to go without leaving the cell. What lies
- * immediately above is NOT ours -- the deck's loop indicator sits there, and it is what
- * holds ROW_RISE at 3 -- so if the mark reads as crowded against it on screen, this is
- * the number to bring down. Clamped rather than trusted, so a later change to CAPTION_H
- * cannot push the glyph out of its own cell instead. */
+ * At its maximum, CAPTION_H - WAVEWAIT_H: the ink's top row is flush with the top of
+ * the row. The deck's loop indicator sits just above (it is why ROW_RISE is 3), so
+ * lower this if the mark looks crowded against it. The paint clamps y at 0, so a
+ * change to CAPTION_H cannot push the glyph out of its cell. */
 #define WAVEWAIT_GAP        (CAPTION_H - WAVEWAIT_H)
 
 static uintptr_t g_wavewait;
@@ -134,8 +109,7 @@ static uintptr_t g_vptr;
 static int       g_state;
 static int       g_waited;      /* ticks in PULSE; also the pulse's own phase */
 
-/* Derived from the same counter the poll advances, never stored: a level cached beside
- * the counter that decides it is a level that can disagree with it. */
+/* Derived from the poll's counter on each call, never stored. */
 static uint32_t wavewait_alpha_q8(void)
 {
     if (g_state == WAVEWAIT_STILL)
@@ -143,10 +117,9 @@ static uint32_t wavewait_alpha_q8(void)
     return ((g_waited / WAVEWAIT_PULSE) & 1) ? WAVEWAIT_A_DIM : WAVEWAIT_A_BRIGHT;
 }
 
-/* The row is transparent -- COL_ROW_BG is 0x00000000 and the deck's waveform is what
- * lies behind it -- so there is no background to pre-blend against. Each run carries
- * its own alpha into juce::Colour and the renderer blends it over whatever is there,
- * which is what the source PNG would have done. */
+/* The row is transparent (COL_ROW_BG is 0x00000000), so there is no background to
+ * pre-blend against. Each run carries its own alpha into juce::Colour and the
+ * renderer blends it over what is behind. */
 static void wavewait_paint(void *self, void *g)
 {
     uint32_t rgb = mod_ui()->warn & 0x00ffffffu;
@@ -180,10 +153,8 @@ static int wavewait_vt_ready(void)
     return 1;
 }
 
-/* NOT a child of BYPASS, which is the button it sits over. A mark inside that button
- * would take its press, and this is an indicator: built on the controls container, a
- * finger on it lands on a container that does nothing. Not clickable either, so it
- * keeps stock Label::mouseDown -- the empty stub. */
+/* Built on the controls container, not as a child of BYPASS, so it cannot take
+ * BYPASS's press. Not clickable: it keeps stock Label::mouseDown, the empty stub. */
 uintptr_t stems_wavewait_build(uintptr_t parent, int x, int y, int w, int h)
 {
     if (!wavewait_vt_ready()) return 0;
@@ -203,8 +174,7 @@ void stems_wavewait_poll(void)
 
     if (!g_wavewait) return;
     /* Stems resident and in circuit, and the analysis not there yet. Under BYPASS the
-     * deck's own waveform is on screen BY DESIGN and the faders are inert, so nothing
-     * is pending; with no stems at all there is nothing for the picture to follow. */
+     * deck's own waveform is shown and the faders are inert, so nothing is pending. */
     want = stems_ready() && !stems_g_bypass_on && !wave_g_have_analysis;
     if (!want) {
         if (g_state != WAVEWAIT_OFF) {
@@ -229,8 +199,7 @@ void stems_wavewait_poll(void)
              " the faders on this track\n");
         return;
     }
-    /* One repaint per half-cycle. At the display tick an every-frame repaint of 105
-     * fills is a shimmer and a cost, for a mark that changes twice a second. */
+    /* One repaint per half-cycle, not per tick. */
     if (g_waited % WAVEWAIT_PULSE == 0)
         stems_repaint(g_wavewait);
 }

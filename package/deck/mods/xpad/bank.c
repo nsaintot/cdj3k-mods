@@ -2,19 +2,17 @@
 /*
  * xpad/bank.c - eight samples off the stick, decoded onto the pool's timeline.
  *
- * Put audio in mods/loops/ and the first eight files, sorted by name, become
- * pads A..H. Nothing else is needed and nothing else is read: a sample is a
- * sample, and the one thing GROOVE CIRCUIT's config file exists to state -- the
- * loop's own BPM -- has no meaning for a one-shot the deck plays at its own
- * length.
+ * The first eight audio files in mods/loops/, sorted by name, become pads A..H.
+ * No config file: GROOVE CIRCUIT's config states the loop's BPM, which a
+ * one-shot played at its own length does not need.
  *
- * THE FIRST BANK ONLY, like the circuit's slots: these belong to the deck rather
- * than to a track, so there is no track to break a tie with if two sticks
- * disagreed about pad 3.
+ * Read from the first media root only (stem_media_first_root), like the
+ * circuit's slots: the banks belong to the deck, not a track, so there is
+ * nothing to choose between two sticks.
  *
  * Threading. [worker] scans and decodes and is the only writer of the table;
- * [audio] reads it under the acquire/release discipline the stems use, so a
- * re-scan can never free a buffer under a sounding voice.
+ * [audio] reads it under the same acquire/release scheme as the stems, so a
+ * re-scan never frees a buffer under a sounding voice.
  */
 #include "xpad/xpad.h"
 #include "stem/stem.h"
@@ -23,9 +21,8 @@
 #include <dirent.h>
 
 #define XP_PATH_MAX     STEM_CACHE_PATH_MAX
-/* A whole d_name, so nothing is ever truncated: the name is what the DJ reads in
- * the log to check which pad got which file, and a clipped one is worse than a
- * long one. Eight of these is 2 KB against banks measured in megabytes. */
+/* A whole d_name, so the name logged for each pad is never truncated. Eight of
+ * these is 2 KB, negligible next to the sample buffers. */
 #define XP_NAME_MAX     256
 
 struct xpad_bank {
@@ -37,13 +34,13 @@ struct xpad_bank {
 static struct xpad_bank xpad_g_bank[XP_BANKS];
 static int  xpad_g_nbank;
 
-/* What the table was built for. A pool rate change or a different stick means
- * the buffers are wrong rather than stale, so both are re-scanned. */
+/* What the table was built for. A change of pool rate or stick triggers a
+ * re-scan. */
 static char xpad_g_root[XP_PATH_MAX];
 static int  xpad_g_rate;
 
-/* Readers in the mix. Same shape as the stem store's, and for the same reason:
- * the audio thread must never wait and the worker must never free early. */
+/* Readers in the mix, as in the stem store: the audio thread never waits and
+ * the worker never frees early. */
 static int  xpad_g_readers;
 static int  xpad_g_live;
 
@@ -91,9 +88,8 @@ const char *xpad_bank_name(int bank)
 
 /* ---- loading (worker) ----------------------------------------------------- */
 
-/* One decode's worth of state. stem_decode_pull hands over chunks of float and
- * this converts to s16 as they arrive, so the peak is the s16 buffer plus one
- * chunk rather than a whole float copy of the file. */
+/* One decode's state. stem_decode_pull delivers float chunks, converted to s16
+ * as they arrive, so peak memory is the s16 buffer plus one chunk. */
 struct xpad_load {
     int16_t *pcm;
     int64_t  cap;
@@ -110,9 +106,7 @@ static int xpad_sink(const float *in, int64_t frames, void *user)
     for (i = 0; i < take * 2; i++) {
         float v = in[i] * 32767.0f;
 
-        /* The DJ's own file, at whatever level they made it -- clipped rather
-         * than scaled, because quietening someone's sample to fit a headroom
-         * they will never see is a decision that belongs to them. */
+        /* Clipped, not scaled: the file's level is left as the DJ made it. */
         if (v >  32767.0f) v =  32767.0f;
         if (v < -32768.0f) v = -32768.0f;
         l->pcm[l->n * 2 + i] = (int16_t)v;
@@ -128,8 +122,8 @@ static int xpad_load_one(const char *path, const char *name, int rate,
     struct xpad_load l;
     int64_t frames;
 
-    /* What the DECODER will produce, which is not the file's own count: the
-     * deck's chain pads, and the length is what the buffer has to hold. */
+    /* The decoder's output length, not the file's frame count: the deck's
+     * chain pads, and the buffer must hold the padded length. */
     frames = stem_decode_pull(path, rate, NULL, NULL);
     if (frames <= 0) {
         MDBG("xpad: %s will not decode\n", path);
@@ -180,13 +174,12 @@ static void xpad_unload(void)
 
 /* ---- the directory --------------------------------------------------------
  *
- * Sorted by name because that is the DJ's only way to say which pad is which,
- * and an insertion sort over eight entries needs no allocation: the list is
- * bounded by the pads, so a directory of a thousand files still costs one pass
- * and eight slots. Files that sort past the eighth are simply not reached.
+ * Sorted by name, which is how the DJ assigns pads. An insertion sort into eight
+ * slots needs no allocation: any directory costs one pass and eight slots, and
+ * files sorting past the eighth are skipped.
  *
- * Case-insensitive, so a stick written on a case-preserving filesystem orders
- * the way its owner reads it rather than the way ASCII does. */
+ * Case-insensitive, so names order as the user reads them rather than by
+ * ASCII. */
 
 static int xpad_name_cmp(const char *a, const char *b)
 {
@@ -201,10 +194,9 @@ static int xpad_name_cmp(const char *a, const char *b)
     }
 }
 
-/* A name a decoder will make something of. The extension list is the decoder's,
- * not ours, so this only screens out the things a media directory always carries
- * -- dotfiles, rekordbox's own .asd analysis siblings -- and leaves the rest to
- * stem_decode_pull, which either produces frames or does not. */
+/* Whether a name is worth trying to decode. The decoder decides what it
+ * supports, so this only skips dotfiles and rekordbox's .asd analysis files;
+ * stem_decode_pull rejects the rest. */
 static int xpad_name_wanted(const char *name)
 {
     size_t n = strlen(name);
@@ -252,9 +244,8 @@ static void xpad_scan(const char *root, int rate)
 
     d = opendir(dir);
     if (!d) {
-        /* No directory is a stick with no samples, which is most sticks. Said
-         * once per scan rather than silently, because "the pads do nothing" is
-         * otherwise indistinguishable from a bug. */
+        /* No directory means no samples, the common case. Logged once per scan
+         * so silent pads can be told from a bug. */
         MDBG("xpad: no %s -> no banks\n", dir);
         snprintf(xpad_g_root, sizeof(xpad_g_root), "%s", root);
         xpad_g_rate = rate;
@@ -272,9 +263,8 @@ static void xpad_scan(const char *root, int rate)
             MDBG("xpad: %s is too long a path -> skipped\n", pick[i].name);
             continue;
         }
-        /* Packed towards pad A: a file that will not decode gives its pad to the
-         * next one rather than leaving a hole, because the DJ counts pads from
-         * the left and a gap in the middle is a pad that looks broken. */
+        /* Packed towards pad A: a file that will not decode gives its pad to
+         * the next one, so there are no gaps. */
         if (xpad_load_one(path, pick[i].name, rate, &xpad_g_bank[loaded]))
             loaded++;
     }
@@ -292,8 +282,8 @@ static void xpad_scan(const char *root, int rate)
              (double)xpad_g_bank[i].frames / rate);
 }
 
-/* Called from the worker's idle branch. Cheap when nothing has moved: one
- * integer compare and one string compare against what the table was built for. */
+/* Called from the worker's idle branch. When nothing has changed this is one
+ * integer compare and one string compare. */
 void xpad_bank_poll(void)
 {
     char root[XP_PATH_MAX];

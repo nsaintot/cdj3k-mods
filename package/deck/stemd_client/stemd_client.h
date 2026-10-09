@@ -2,7 +2,7 @@
 /*
  * stemd_client.h - shared plumbing for the stem sidecar.
  *
- * Three translation units, one concern each:
+ * Translation units:
  *
  *   main.c        the unix socket, the accept loop, signals
  *   session.c     the per-connection state machine over stem_proto frames
@@ -10,10 +10,11 @@
  *                 probing /v1/health
  *   http.c        an HTTP/1.1 client just large enough for the five calls the
  *                 stemd API needs, with streamed request and response bodies
+ *   json.c        flat-object JSON scanning (json.h)
  *
- * Nothing here is a general-purpose HTTP library and it should not become one.
- * The five calls are known, the peer is on the LAN, and the bodies are either
- * tiny JSON or a hundred megabytes of PCM that must never be buffered whole.
+ * http.c is deliberately not a general-purpose HTTP library: the calls are known,
+ * the peer is on the LAN, and the bodies are either tiny JSON or a hundred
+ * megabytes of PCM that must never be buffered whole.
  */
 #ifndef STEMD_CLIENT_H
 #define STEMD_CLIENT_H
@@ -34,35 +35,30 @@
 #include "loglevel.h"
 #include "stem_proto.h"
 
-/* Where stems are written for the shim to adopt. tmpfs, so these are RAM and
- * the shim unlinks each one as soon as it has a descriptor. */
+/* Where stems are written for the shim to adopt. tmpfs (RAM); the shim unlinks
+ * each file as soon as it has a descriptor. */
 #define STEM_SPOOL_DIR "/dev/shm"
 
-/* How the server was found, which is also what the UI's warn icon reflects. */
+/* The server found; reachable/compatible drive the UI's warn icon. */
 struct stem_server {
     char host[128];
     int  port;
     int  reachable;      /* a /v1/health round trip succeeded */
     int  compatible;     /* 44.1 kHz, 2 ch, and the stems we can play */
-    /* How this server identifies what it produces. Scopes the deck's on-media
-     * cache, so a change of model or preset leaves the old cache beside the new
-     * one rather than mixing them. See health_probe for how it is derived. */
+    /* Identifies what this server produces. Scopes the deck's on-media cache,
+     * so a change of model or preset keeps old and new cache entries apart.
+     * Derived in health_probe. */
     char sep_id[STEM_SEP_ID_LEN];
 };
 
 /* ---- logging ----
  *
- * FIVE LEVELS, SHIPPING AT ERROR, read once from STEMD_LOGLEVEL -- a name or a
- * digit, the same grammar the shim reads from EP122_MOD_LOGLEVEL. Separate
- * variables on purpose: this is its own systemd unit and turning the sidecar up
- * while the deck stays quiet is the common case when a separation misbehaves.
+ * Five levels, default ERROR, read once from STEMD_LOGLEVEL (a name or a digit,
+ * same grammar as the shim's EP122_MOD_LOGLEVEL). A separate variable so the
+ * sidecar, its own systemd unit, can be made verbose while the deck stays quiet.
  *
- * The level matters more here than it looks. The deck re-HELLOs every 30 s to
- * refresh its status line, and answering each one used to print two lines
- * whether or not anything had changed -- about 2900 lines a day on a deck with
- * no stem server on the network, which is most of them. Steady state is DEBUG;
- * what gets reported at WARN is the TRANSITION, so a server that disappears
- * mid-set is one line rather than one line every half minute. */
+ * The deck re-HELLOs every 30 s. Steady-state answers log at DEBUG; only
+ * transitions log at WARN, so a server that disappears mid-set is one line. */
 extern int g_stemd_log;
 
 #define SLOG_AT(lvl) (g_stemd_log >= (lvl))
@@ -78,8 +74,7 @@ extern int g_stemd_log;
 /* ---- main.c ---- */
 
 /* Non-zero once SIGINT/SIGTERM has been seen. Every blocking read in the
- * session loop consults this on EINTR, so a shutdown is not swallowed by a
- * retry. */
+ * session loop checks this on EINTR, so a retry does not swallow a shutdown. */
 int session_should_stop(void);
 
 /* ---- session.c ---- */
@@ -96,20 +91,16 @@ int discovery_find(const char *manual, struct stem_server *out);
 
 /* Re-probe a server already in `out`, without asking mDNS again.
  *
- * The deck re-HELLOs every 30 s to refresh the status line, and answering that
- * with a full browse was wrong twice over: it forks avahi once or twice per
- * refresh, and it puts the answer at the mercy of what happens to be in avahi's
- * cache at that instant. A quarter of them came back empty on a live deck while
- * the server never moved, and the deck showed offline each time.
- *
- * Where the server is changes far more rarely than whether it is up, so ask the
- * cheap question first and only rediscover when it says no. */
+ * Used for the deck's 30 s re-HELLO. A full browse each time forks avahi once or
+ * twice and depends on avahi's cache at that instant; about a quarter came back
+ * empty on a live deck with the server unchanged. Rediscover only when the
+ * re-probe fails. */
 int discovery_recheck(struct stem_server *out);
 
 /* ---- http.c ---- */
 
-/* A streamed request body: `pull` is called repeatedly until it returns 0.
- * That is what lets a POST carry a whole track without holding it. */
+/* A streamed request body: `pull` is called repeatedly until it returns 0, so a
+ * POST can carry a whole track without buffering it. */
 typedef size_t (*http_body_pull_fn)(void *buf, size_t cap, void *user);
 
 /* A streamed response body: `push` receives each chunk as it arrives. */

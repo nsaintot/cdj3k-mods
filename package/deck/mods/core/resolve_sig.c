@@ -48,11 +48,10 @@ uintptr_t adrp_pair(uintptr_t fn, unsigned insn)
     page = (va & ~(uintptr_t)0xFFF) + (intptr_t)imm * 4096;
     rd = w & 0x1F;
 
-    /* The ADD need not follow the ADRP -- the compiler schedules other work
-     * between them, eight apart in the Renesas POPUP_CTOR. Keep this window the
-     * same size as tools/gen-syms.py's: the generator verifies each completion
-     * against the address the spec declares, and the two have to agree or a
-     * symbol resolves on the Mac and not on the deck. */
+    /* The ADD need not follow the ADRP: the compiler can schedule other work
+     * between them (eight apart in the Renesas POPUP_CTOR). Keep this window the
+     * same size as tools/gen-syms.py's, or a symbol can resolve on the Mac and
+     * not on the deck. */
     for (k = 1; k < 16; k++) {
         uint32_t w2;
 

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * draw.cc - the shared drawing kit. draw.h carries the constants and what each
- * piece is for.
+ * draw.cc - the shared drawing kit. draw.h documents the constants and each
+ * function.
  */
 #include "juce/draw.h"
 #include "juce/juce.hh"
 
-/* Message-thread only, so a plain int is the whole mechanism. A counter rather
- * than a flag: a bracketed stock paint can call back into the kit. */
+/* Message thread only, so a plain int suffices. A counter, not a flag, because
+ * a bracketed stock paint can call back into the kit. */
 static int g_drawing;
 
-/* 1 while the theme in force puts the UI on a light ground. See
+/* 1 while the current theme puts the UI on a light ground. See
  * MOD_CHECKER_ALT_Q8. */
 static int g_light_ground;
 
@@ -25,8 +25,7 @@ void mod_gfx_colour(void *g, uint32_t argb)
     /* juce::Colour is a bare ARGB word, taken by reference. */
     uint32_t c = argb;
 
-    /* setColour reaches setFill synchronously, so the bracket opens and closes
-     * around one call and cannot be left hanging. */
+    /* setColour reaches setFill synchronously, so the bracket spans one call. */
     mod_draw_enter();
     ep_call(void(void *, void *))::at(MOD_FN_GFX_SETCOLOUR, g, &c);
     mod_draw_leave();
@@ -54,8 +53,8 @@ void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
     mod_gfx_colour(g, argb);
 
     juce::String s(text);
-    /* The trailing 1 is juce's useEllipsesIfTooBig: a word that does not fit
-     * says so rather than being squashed. */
+    /* The trailing 1 is juce's useEllipsesIfTooBig: text that does not fit is
+     * truncated with an ellipsis instead of squashed. */
     ep_call(void(void *, void *, int, int, int, int, int *, int))
         ::at(MOD_FN_GFX_DRAWTEXT, g, s, x, y, w, h, &j, 1);
 }
@@ -74,8 +73,8 @@ uint32_t mod_colour_lift(uint32_t argb, uint32_t q8)
 {
     uint32_t r = (argb >> 16) & 0xffu, g = (argb >> 8) & 0xffu, b = argb & 0xffu;
 
-    /* Each channel moves the same FRACTION of its own headroom, so the ratios
-     * between channels hold and the hue survives. */
+    /* Each channel moves the same fraction of its own headroom, which keeps
+     * the hue. */
     r += ((0xffu - r) * q8 + 128u) >> 8;
     g += ((0xffu - g) * q8 + 128u) >> 8;
     b += ((0xffu - b) * q8 + 128u) >> 8;
@@ -87,24 +86,21 @@ void mod_checker_pair(void *g, int x, int y, int w, int h,
 {
     int cy, cx;
 
-    /* w and h come from a component's bounds, which is a read of the app's
-     * memory and therefore input. Out of range, the loop below is hundreds of
-     * thousands of fills on the message thread, which hangs rather than
-     * crashes. Nothing on this panel is larger than the screen. */
+    /* w and h come from a component's bounds read out of app memory, so they
+     * are untrusted. Out of range, the loop below would issue hundreds of
+     * thousands of fills and hang the message thread. Nothing on this panel is
+     * larger than the screen. */
     if (w <= 0 || h <= 0 || w > MOD_DRAW_MAX || h > MOD_DRAW_MAX) return;
     mod_gfx_colour(g, light);
     mod_gfx_fill(g, x, y, w, h);
     mod_gfx_colour(g, dark);
-    /* EVEN rows start one cell in, so the cell at the rect's top-left is the
-     * LIGHT one. That is the deck's phase: PREVIEW at x=894 and the font-size
-     * button at x=1018 both carry light at their first cell, and 124 px apart
-     * is an ODD number of 4 px cells -- the pattern is phased to each component,
-     * not to the screen. The other way round sits a half-cell out of step with
-     * the plate beside it.
+    /* Even rows start one cell in, so the rect's top-left cell is light. That
+     * is the deck's phase: PREVIEW at x=894 and the font-size button at x=1018
+     * both start light, and 124 px is an odd number of 4 px cells, so the
+     * pattern is phased per component, not to the screen.
      *
-     * Cells at a right or bottom edge are CLIPPED rather than skipped, so a
-     * component whose size is not a multiple of the cell carries the pattern
-     * out to its border. */
+     * Cells at the right or bottom edge are clipped, not skipped, so the
+     * pattern reaches the border when the size is not a multiple of the cell. */
     for (cy = 0; cy * MOD_CHECKER_CELL < h; cy++) {
         int cyy = cy * MOD_CHECKER_CELL;
         int ch  = h - cyy < MOD_CHECKER_CELL ? h - cyy : MOD_CHECKER_CELL;
@@ -120,7 +116,7 @@ void mod_checker_pair(void *g, int x, int y, int w, int h,
 
 uint32_t mod_checker_alt(uint32_t base)
 {
-    /* DOWN from the surface on a dark ground, UP on a light one: inverting the
+    /* Down from the surface on a dark ground, up on a light one: inverting the
      * stock pair swaps which of the two is lighter. draw.h has the levels. */
     return g_light_ground ? mod_colour_lift(base, MOD_CHECKER_ALT_LIGHT_Q8)
                           : mod_colour_scale(base, MOD_CHECKER_ALT_Q8);
@@ -129,7 +125,7 @@ uint32_t mod_checker_alt(uint32_t base)
 void mod_checker_lift2(void *g, int x, int y, int w, int h,
                        uint32_t base, uint32_t alt, uint32_t q8)
 {
-    /* Lift both AFTER pairing them. draw.h has the other order. */
+    /* Lift both after pairing them; draw.h explains why. */
     mod_checker_pair(g, x, y, w, h,
                      mod_colour_lift(base, q8), mod_colour_lift(alt, q8));
 }

@@ -43,14 +43,12 @@ int ti_from_name_ref(uintptr_t at, void *user)
     struct ti_hunt *h = user;
     uintptr_t ti = at - 8;
 
-    /* Once the flavour vptrs are known, insist on one: a pointer to a name
-     * string is not by itself a type_info, and with tail-merged strings several
-     * unrelated records can point into the same bytes. Accepting them made
-     * audio_format::FileReadFlac look ambiguous and dropped it.
+    /* Once the flavour vptrs are known, require one: with tail-merged strings
+     * several unrelated records can point into the same name bytes (this made
+     * audio_format::FileReadFlac look ambiguous).
      *
-     * Before the bootstrap has run there is nothing to insist on, so the weaker
-     * structural test stands in -- it only has to be good enough to seed the
-     * walk that discovers the vptrs in the first place. */
+     * Before the bootstrap has run, the weaker structural test is used; it only
+     * has to seed the walk that discovers the vptrs. */
     if (g_ti_si ? !ti_kind(ti) : !ti_looks_real(ti))
         return 0;
     h->ti = ti;
@@ -78,7 +76,8 @@ int ti_classify(uintptr_t at, void *user)
     return s->n >= TI_SAMPLE_MAX;
 }
 
-/* Bootstrap: classify the flavour vptrs starting from one known type_info. */
+/* Bootstrap helper: 1 if `v` is non-zero and not yet in seen[], which it is
+ * added to while there is room (8). */
 int seen_vptr(uintptr_t *seen, int *n, uintptr_t v)
 {
     int i;
@@ -125,7 +124,7 @@ int rtti_base_offset(uintptr_t ti, const char *base, int depth,
         if (off & (1L << 55))
             off -= 1L << 56;
         name = peek(b + 8);
-        if (flags & 1) {                   /* virtual: see above */
+        if (flags & 1) {                   /* virtual: off is a vtable offset */
             if (at != 0)
                 continue;
             if (name && in_image(name, 1) && !strcmp((const char *)name, base)) {

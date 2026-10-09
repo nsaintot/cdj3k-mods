@@ -2,12 +2,11 @@
 /*
  * stem/loop.h - where a looped file reads, as arithmetic and nothing else.
  *
- * Split out of the mix because it is the part that can be WRONG QUIETLY. A
- * negative remainder, an off-by-one at the wrap, or an index that lands exactly
- * on the span is a bad pointer on the audio thread, and the audio thread is
- * where a mistake is a crash or a dropout rather than a wrong pixel. Here it is
- * pure arithmetic over its own arguments, so tests/test_stem_loop.c can hold it
- * to the boundary cases without a deck.
+ * Split out of the mix so it can be tested. A negative remainder, an
+ * off-by-one at the wrap, or an index landing exactly on the span is a bad
+ * pointer on the audio thread, i.e. a crash or a dropout. As pure arithmetic
+ * over its arguments, tests/test_stem_loop.c covers the boundary cases without
+ * a deck.
  *
  * Track positions are pool-rate sample indices -- the timeline the stems were
  * decoded onto, which is also the one the cue table stores. File positions are
@@ -35,56 +34,47 @@ struct stem_loop {
  * [0, span). The caller interpolates between floor(u) and its successor, so the
  * result being strictly below `span` is what keeps that successor in bounds.
  *
- * `ratio` is FILE FRAMES PER TRACK FRAME -- the loop's own tempo over the
- * track's. At 1.0 the file plays at its own speed; at 0.5 a beat of the file
- * takes two of the track's, which is what a 60 BPM loop does under a 120 BPM
- * track. The tempo fader needs no term of its own: `at` already advances with
- * it, so the loop follows.
+ * `ratio` is file frames per track frame. At 1.0 the file plays at its own
+ * speed; at 0.5 a beat of the file takes two of the track's (a 60 BPM loop
+ * under a 120 BPM track). The tempo fader needs no term of its own: `at`
+ * already advances with it.
  *
- * ONE RATIO IS ONE TEMPO. A track whose tempo moves has no single ratio, and
- * this drifts against it by however much the grid drifts -- see stem_beat_at,
- * which is the same phase measured in beats instead of frames. This stays for
- * the cases that have no grid to measure against at all.
+ * One ratio is one tempo, so on a track whose tempo moves this drifts by
+ * however much the grid drifts. stem_beat_at measures the same phase in beats;
+ * this is for tracks with no grid.
  *
- * Phase comes from `from`, not from a cursor, so the loop sits exactly where it
- * would have if it had been running since it was engaged -- engaging, releasing
- * and re-engaging all land in time, a block boundary cannot slip it, and there
- * is nothing to drift. Defined for `at` before `from` as well: the loop is a
- * line extended in both directions, not something that starts when the play head
- * reaches it. */
+ * Phase comes from `from`, not from a cursor, so the loop sits where it would
+ * have been had it run since it was engaged: engaging, releasing and
+ * re-engaging all land in time, and a block boundary cannot slip it. Also
+ * defined for `at` before `from`; the loop extends in both directions. */
 double stem_loop_phase(const struct stem_loop *l, int64_t at, double ratio);
 
 /* The same wrap on its own, for a caller that computed the file index some other
  * way. Answers in [0, span), and 0 for a span that is not a length. */
 double stem_loop_wrap(double u, int64_t span);
 
-/* The track's fractional BEAT INDEX at position `at`, over `count` ascending
+/* The track's fractional beat index at position `at`, over `count` ascending
  * beat positions on the track's own timeline.
  *
- * WHY THE LOOP WANTS THIS. A file index is beats-elapsed times the file's beat
- * length, and beats-elapsed is only (at - from) / spb while the track holds one
- * tempo. Measured off the grid instead, it is right for a track that speeds up,
- * slows down, or was gridded by hand a bar at a time -- the loop lands on beat
- * 129 when the track does, however the tempo got there.
+ * A loop's file index is beats elapsed times the file's beat length, and beats
+ * elapsed is (at - from) / spb only while the track holds one tempo. Measured
+ * off the grid it is right for a track that speeds up, slows down, or was
+ * gridded by hand a bar at a time.
  *
- * Whole numbers are beats: 4.5 is exactly halfway between beats[4] and beats[5],
- * so the fraction is measured against the interval it falls in and a tempo change
- * between two beats never moves the beats either side of it.
+ * Whole numbers are beats: 4.5 is halfway between beats[4] and beats[5], so the
+ * fraction is measured within its own interval and a tempo change between two
+ * beats never moves the beats either side of it.
  *
- * DEFINED OUTSIDE THE GRID TOO, by extending the first and last intervals: a
- * track has audio before its first analysed beat, and the loop is a line rather
- * than something that starts where the analysis did. Answers 0 for anything that
+ * Defined outside the grid too, by extending the first and last intervals: a
+ * track has audio before its first analysed beat. Answers 0 for anything that
  * is not an array of at least two beats, and drops the fraction across an
  * interval that is not positive rather than dividing by it.
  *
- * `cursor` is an optional hint, and passing NULL is the whole function. Give it
- * one per BLOCK, initialised to -1, and the interval containing `at` is found by
- * bisection once and then walked: a block spans a fraction of a beat, so every
- * frame after the first costs a compare instead of a log. That makes the beat
- * route cheaper per frame than the single-ratio one it replaces, which is a
- * division. The hint is never trusted -- it is checked, and a wrong one only
- * costs the bisection it was meant to save, so a seek, a reordered block or an
- * uninitialised cursor are all merely slower and never wrong. */
+ * `cursor` is an optional hint; NULL is fine. Give it one per block,
+ * initialised to -1: the interval is found by bisection once and then walked,
+ * so each later frame costs a compare (cheaper than the single-ratio route's
+ * division). The hint is verified, so a wrong one (a seek, a reordered block,
+ * an uninitialised cursor) only costs the bisection. */
 double stem_beat_at(const int64_t *beats, int32_t count, int64_t at,
                     int32_t *cursor);
 

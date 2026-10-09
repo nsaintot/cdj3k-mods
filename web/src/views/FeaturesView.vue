@@ -2,16 +2,15 @@
 /*
  * The feature list.
  *
- * A catalogue: everything comes from content/features.ts and every card ends in
- * a link into the documentation. Nothing here explains how to use a thing -- that is
- * written down once, in the markdown.
+ * Everything comes from content/features.ts and every card ends in a link into
+ * the documentation. Usage is described only in the markdown.
  */
 import { featureGroups, allFeatures } from '@/content/features'
 import PageIntro from '@/components/ui/PageIntro.vue'
 import FeatureGroupSection from '@/components/features/FeatureGroupSection.vue'
 
-/* Whether the partial note is shown at all, not how many. A tally of the list
- * below it is a number that has to be right forever and says nothing. */
+/* Whether the partial note is shown, not a count: a tally would need
+ * maintaining and adds nothing. */
 const hasPartial = allFeatures.some((f) => f.status === 'partial')
 </script>
 

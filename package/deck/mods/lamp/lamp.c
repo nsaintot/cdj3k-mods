@@ -2,10 +2,8 @@
 /*
  * lamp/lamp.c - which feature owns a pad, in one readable order.
  *
- * The sources are named here rather than registering themselves. There are
- * three of them and the ORDER is the whole content of this file: a registry
- * would spread it across three headers and leave no single place that says what
- * beats what.
+ * The sources are called by name rather than registering themselves, so the
+ * priority order is stated in one place.
  */
 #include "lamp/lamp.h"
 #include "xpad/xpad.h"       /* the panel's sample banks */
@@ -35,18 +33,17 @@ uint32_t lamp_now_ms(void)
     return (uint32_t)(ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000));
 }
 
-/* THE ORDER.
+/* Priority order:
  *
- *   1. the startup dance, which owns every pad for as long as it runs and then
- *      declines forever. It is over before a deck can be played and nothing it
- *      covers is a control the DJ is reaching for.
- *   2. the X-PAD, because while its panel is open the pads ARE sample banks --
- *      the band holds one panel, so the stems row that arms the circuit is shut
- *      by construction and this cannot actually collide with 3.
- *   3. the groove circuit, whose pads only mean anything while the stems row is
- *      open; gc_pad_lamp answers for that gate itself.
+ *   1. the startup dance, which owns every pad while it runs and then declines
+ *      forever. It ends before a deck can be played.
+ *   2. the X-PAD, because while its panel is open the pads are sample banks.
+ *      The band holds one panel, so the stems row that arms the circuit is
+ *      shut and this cannot collide with 3.
+ *   3. the groove circuit, whose pads apply only while the stems row is open;
+ *      gc_pad_lamp checks that itself.
  *
- * Anything none of them claims keeps the colour the app painted. */
+ * Unclaimed pads keep the colour the app painted. */
 int lamp_pad(int pad, struct lamp *out)
 {
     if (pad < 0 || pad >= LAMP_PADS)

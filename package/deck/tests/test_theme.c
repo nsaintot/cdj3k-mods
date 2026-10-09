@@ -4,9 +4,9 @@
  * (theme/roles.c) over the themes in theme/presets.c.
  */
 #include "mods/theme/theme.h"
-/* Declarations only, and the grid panel's plate colours with them. They are deck
- * values rather than roles, so nothing above covers them -- see the note on them in
- * panel_internal.h, and grid_plates_over_every_theme below. */
+/* Declarations only, plus the grid panel's plate colours. These are deck values,
+ * not roles, so the role checks do not cover them; see the note in
+ * panel_internal.h and grid_plates_over_every_theme below. */
 #include "mods/grid/panel_internal.h"
 /* ...and the browse drag's two surfaces, for the same reason. */
 #include "mods/browse/browse.h"
@@ -15,8 +15,8 @@
 
 #define N_ROLES (sizeof(struct theme_ui) / sizeof(uint32_t))
 
-/* The deck's own colours, transcribed from the panel measurements rather than
- * from roles.c: with ORIGINAL selected the mods must paint exactly these. */
+/* The deck's own colours, transcribed from panel measurements, not from
+ * roles.c: with ORIGINAL selected the mods must paint exactly these. */
 static const char *const k_role_name[] = {
     "surface", "surface2", "edge", "accent", "accent2", "mode", "bypass",
     "xpad", "xpad_on",
@@ -85,7 +85,7 @@ static void original_is_exact(void)
     select_theme(0);
     roles_named_compare("ORIGINAL after evict", mod_ui(), &k_ui_original);
 
-    /* An id off the eMMC is input, not a fact: out of range reads as ORIGINAL. */
+    /* The id comes from the eMMC and is untrusted: out of range reads as ORIGINAL. */
     select_theme(MOD_THEME_MAX + 3);
     roles_named_compare("theme id overflow", mod_ui(), &k_ui_original);
     select_theme(-1);
@@ -222,7 +222,7 @@ static void palette_identity_and_alpha(void)
 
     T_CASE("palette identity and alpha");
     CHECK_STR(k_mod_themes[1].name, "WHITE");
-    /* ORIGINAL: not even an identity pass. */
+    /* ORIGINAL (no palette) returns the input unchanged. */
     CHECK_U32(theme_palette_argb(NULL, 0xff123456u, 0), 0xff123456u);
     CHECK_U32(theme_palette_argb(NULL, 0x00abcdefu, 1), 0x00abcdefu);
     /* Alpha is the caller's throughout. */
@@ -262,13 +262,13 @@ static void palette_white_polarity(void)
 
         CHECK_U32(theme_palette_argb(white, in, 0), want);
     }
-    /* exempt_blue: the deck's accent keeps its lift as a FILL and darkens as ink. */
+    /* exempt_blue: the deck's accent keeps its lift as a fill and darkens as ink. */
     CHECK_U32(theme_palette_argb(white, 0xff007de1u, 1), 0xff1e9bffu);
     CHECK(theme_palette_argb(white, 0xff007de1u, 0) != 0xff1e9bffu);
 }
 
-/* theme.h promises a field left zero does nothing. sat_q8 is the one that has
- * to say so explicitly: 0 is the identity, 1 is greyscale. */
+/* theme.h promises a field left zero does nothing. For sat_q8 that is an
+ * explicit rule: 0 is the identity, 1 is greyscale. */
 static void palette_sat_q8_zero_is_identity(void)
 {
     static const struct theme_palette none = { .sat_q8 = 0 };
@@ -313,15 +313,12 @@ static void palette_stays_in_range(void)
 
 /* ---- the grid panel's plates ---------------------------------------------
  *
- * Every colour in the strip, through every theme. Not roles: these reach the screen
- * by mod_colour_stock, which is the setFill hook's own transform asked for by hand,
- * so roles_stay_legible says nothing about them.
+ * Every colour in the strip, through every theme. These are not roles: they reach
+ * the screen through mod_colour_stock (the setFill hook's transform, called
+ * directly), so roles_stay_legible does not cover them.
  *
- * The bug this exists for: the plates were literals behind a mod_draw_enter bracket,
- * which is a declaration that they are ALREADY themed. They were not, and the panel
- * stayed a black slab under WHITE while the deck's five sprites beside it inverted.
- * A contrast check alone would not have caught that -- black on black-grey is as
- * legible as it ever was -- so the polarity check below is the one that matters. */
+ * The polarity check is the important one: a plate left dark under a light theme
+ * still passes the contrast checks. */
 static void grid_plates_over_every_theme(void)
 {
     static const struct { const char *name; uint32_t argb; } k_grid[] = {
@@ -336,8 +333,8 @@ static void grid_plates_over_every_theme(void)
 
     T_CASE("grid plates over every theme");
 
-    /* ORIGINAL is not a transform, so a deck value has to come back the deck value.
-     * Bit-exact, not merely close: these are the reference design's own greys. */
+    /* ORIGINAL is not a transform, so a deck value must come back bit-exact:
+     * these are the reference design's own greys. */
     select_theme(0);
     for (i = 0; i < sizeof k_grid / sizeof *k_grid; i++)
         CHECK_U32(mod_colour_stock(k_grid[i].argb), k_grid[i].argb);
@@ -360,8 +357,8 @@ static void grid_plates_over_every_theme(void)
         text_off = mod_colour_stock(GP_COL_TEXT_OFF);
         cap      = mod_colour_stock(GP_COL_CAP);
 
-        /* THE PLATE FOLLOWS THE GROUND. A light theme that leaves this dark is the
-         * whole bug, and it is invisible to every other check here. */
+        /* The plate follows the ground. No other check here catches a light theme
+         * that leaves it dark. */
         for (i = 0; i < sizeof k_grid / sizeof *k_grid; i++) {
             t_checks++;
             if ((mod_colour_stock(k_grid[i].argb) >> 24) != 0xffu)
@@ -377,22 +374,22 @@ static void grid_plates_over_every_theme(void)
             T_FAILED("%s: lettering L=%d on a %s ground", k_mod_themes[t].name,
                      lightness(text), k_mod_themes[t].light ? "light" : "dark");
 
-        /* Lettering off its plate, in each of the three states. The disabled pair is
-         * deliberately close -- it is saying there is nothing to undo -- so it gets a
-         * floor of its own rather than the one the live states hold. */
+        /* Lettering against its plate, in each of the three states. The disabled
+         * pair is deliberately close (there is nothing to undo), so it has a lower
+         * floor than the live states. */
         CHECK(distance(text, fill) >= 96);
         CHECK(distance(line_on, fill_on) >= 72);
         CHECK(distance(text_off, fill_off) >= 24);
 
-        /* The border has to read against the plate it outlines, and the plate the
-         * group sits on against the buttons on it -- the second is a backdrop and is
-         * meant to be subtle, which is why its floor is where it is. */
+        /* The border must read against the plate it outlines, and the group's
+         * backdrop against the buttons on it; the backdrop is meant to be subtle,
+         * hence its low floor. */
         CHECK(distance(line, fill) >= 32);
         CHECK(distance(line_off, fill_off) >= 8);
         CHECK(distance(group, fill) >= 8);
         CHECK(distance(cap, group) >= 48);
 
-        /* Three states of one control, and a DJ has to be able to tell which. */
+        /* The three states of one control must be distinguishable. */
         CHECK(fill != fill_on);
         CHECK(fill != fill_off);
         CHECK(fill_on != fill_off);
@@ -402,16 +399,11 @@ static void grid_plates_over_every_theme(void)
 
 /* ---- the browse drag's two marks ------------------------------------------
  *
- * The gesture is read from a pair: the HOLE says where the track came from, the
- * MARKER says where it will land. Both used to be literals -- black and white --
- * which is correct against the deck's black list and wrong on every light theme,
- * where the hole was a black rectangle punched through it and the marker was white
- * on white. They are checked here rather than in a browse test because what can
- * break them is a theme, not the drag.
- *
- * Both are DECK values -- the list's ground and the list's own selected-row green --
- * so both go through mod_colour_stock and neither is a role. What is checked is that
- * the transform keeps them apart and keeps the hole on the right side of the ground. */
+ * The hole shows where the track came from, the marker where it will land. Both
+ * are deck values (the list's ground and its selected-row green), so both go
+ * through mod_colour_stock and neither is a role. They are tested here because a
+ * theme, not the drag, is what can break them: the transform must keep them apart
+ * and keep the hole light on a light theme and dark on a dark one. */
 static void browse_drag_marks_over_every_theme(void)
 {
     int t;
@@ -429,44 +421,39 @@ static void browse_drag_marks_over_every_theme(void)
         ground = mod_colour_stock(DG_HOLE_COL);
         marker = mod_colour_stock(DG_MARK_COL);
 
-        /* The hole IS the ground, so it follows it: light theme, light hole. */
+        /* The hole is the ground colour: light theme, light hole. */
         t_checks++;
         if ((lightness(ground) > 128) != (k_mod_themes[t].light != 0))
             T_FAILED("%s: the drag hole is L=%d on a %s list",
                      k_mod_themes[t].name, lightness(ground),
                      k_mod_themes[t].light ? "light" : "dark");
 
-        /* And the marker has to be seen ON it. A solid 4px bar, so the floor is
-         * lower than lettering would take -- but not zero, which is what a literal
-         * white gave on WHITE. */
+        /* The marker must be visible on the hole. It is a solid 4px bar, so its
+         * floor is lower than lettering needs. */
         CHECK(distance(marker, ground) >= 48);
     }
     select_theme(0);
 }
 
-/* MAPPING A BUFFER TWICE IS A DEFECT, and this is the test that says so out loud.
+/* Mapping a buffer twice is a defect.
  *
- * The whole image cache rests on one unstated assumption: a strip's pixels go through the
- * palette exactly once. Nothing in the types enforces it, and every bug in this area has
- * been a second pass arriving by some route nobody had drawn on the diagram -- an eviction
- * that freed the pristine copy while leaving the buffer mapped, a re-snapshot that took our
- * own output as the original, a source-themed strip mapped again on the way to the screen.
+ * The image cache assumes a strip's pixels go through the palette exactly once;
+ * nothing in the types enforces it. Routes to a second pass include an eviction that
+ * frees the pristine copy but leaves the buffer mapped, a re-snapshot that takes our
+ * own output as the original, and a source-themed strip mapped again on its way to
+ * the screen.
  *
- * They all hid the same way. A dark palette's transform is NEAR-IDEMPOTENT, so the second
- * pass changes almost nothing and five of the seven themes look perfect; a light one's is
- * destructive, and WHITE's is an exact INVOLUTION that puts the pixels straight back to
- * stock. That is the entire content of "dark themes are fine, only white goes weird", and
- * it is why these bugs survived so long: the deck's default theme cannot show them.
+ * A dark palette's transform is near-idempotent, so a second pass changes almost
+ * nothing; a light one's is destructive, and WHITE's is an exact involution that
+ * restores the stock pixels. A double map is therefore only visible on light themes.
  *
- * So this pins the property rather than any one code path. If a future palette were made
- * idempotent, a double map would stop being visible -- and the invariant would still be
- * worth keeping, but the reasoning in image_sync.c would need rewriting rather than
- * silently becoming untestable. */
+ * This test pins that property, not any one code path. If a future palette were made
+ * idempotent, a double map would no longer be visible, and the reasoning in
+ * image_sync.c would need rewriting. */
 static void mapping_twice_is_destructive(void)
 {
-    /* The detailed waveform's colour group, off EP122 3.19 -- see k_wave_stock in wave.c.
-     * Real strip pixels rather than invented ones, and entry 7 is the ground, which is 72%
-     * of what is on screen. */
+    /* The detailed waveform's stock colour group (k_wave_stock in wave.c).
+     * Entry 7 is the ground, 72% of what is on screen. */
     static const uint32_t k_stock[] = {
         0xffffffffu, 0xffffa600u, 0xff0055e1u, 0xfff0d7ffu,
         0xffd2dcfau, 0xffb4690au, 0xfff5ebd7u, 0xff000000u,
@@ -483,8 +470,8 @@ static void mapping_twice_is_destructive(void)
         if (pal == NULL) continue;                    /* ORIGINAL maps nothing */
 
         for (i = 0; i < sizeof k_stock / sizeof *k_stock; i++) {
-            /* is_fill 0: these are ink and ground in a picture, which is the question
-             * theme_map_pixel asks of every pixel it touches. */
+            /* is_fill 0: these are ink and ground in a picture, as theme_map_pixel
+             * treats every pixel. */
             uint32_t once  = theme_palette_argb(pal, k_stock[i], 0);
             uint32_t twice = theme_palette_argb(pal, once, 0);
             int c;
@@ -497,25 +484,22 @@ static void mapping_twice_is_destructive(void)
             }
         }
 
-        /* MAGNITUDE, not mere inequality -- every palette here drifts a level or two under
-         * a second pass and that is not what is being claimed. Measured across the group
-         * above: the dark themes' worst channel moves 3, 7, 8 and 32, while WHITE moves a
-         * full 255 and SANDSTONE 167. That gap IS the reason four of these bugs
-         * shipped: on the deck's own dark default a double map is not merely subtle, it is
-         * unobservable.
+        /* Checks magnitude, not inequality: every palette drifts a level or two under a
+         * second pass. Across the group above, the dark themes' worst channel moves
+         * 3, 7, 8 and 32, WHITE 255 and SANDSTONE 167. On the deck's dark default
+         * a double map is unobservable.
          *
-         * Only the light half is asserted. A dark theme drifting further would be a fact
-         * about that palette rather than a fault, but a LIGHT theme that stopped showing a
-         * double map would quietly retire the only check anybody can run by eye. */
+         * Only light themes are asserted. A dark theme drifting further is not a fault,
+         * but a light theme that stopped showing a double map would remove the only
+         * check that can be done by eye. */
         if (k_mod_themes[t].light && worst < 64)
             T_FAILED("%s is light yet a double map moves it only %d -- nothing would be "
                      "left to catch one by eye", k_mod_themes[t].name, worst);
     }
 
-    /* WHITE exactly, because it is the case the diagnosis turned on: peaks and ground are
-     * pure white and pure black, the inversion swaps them, and a second pass swaps them
-     * back to stock. Not "close to" stock -- the same bytes, which is why a doubly-mapped
-     * strip looks untouched rather than damaged. */
+    /* WHITE exactly: peaks and ground are pure white and pure black, the inversion
+     * swaps them, and a second pass restores the same bytes, so a doubly-mapped strip
+     * looks untouched. */
     {
         const struct theme_palette *white = k_mod_themes[1].palette;
         uint32_t peaks_once, ground_once;

@@ -1,13 +1,12 @@
 /*
- * Site-level facts. One place for the things that would otherwise get typed
- * into three components and then drift.
+ * Site-level facts shared by several components.
  */
 
 export const site = {
   name: 'CDJ3K-Mods',
   /** What the project is, in one sentence. Used by the home page and <meta>. */
   description:
-    'A collection of modifications for the CDJ-3000: hot cues, stems, x-pad,theming, browsing.',
+    'A collection of modifications for the CDJ-3000: hot cues, stems, X-PAD, themes, browsing.',
   /** The download, always the newest tag. */
   releases: 'https://github.com/nsaintot/cdj3k-mods/releases/latest',
   repo: 'https://github.com/nsaintot/cdj3k-mods',

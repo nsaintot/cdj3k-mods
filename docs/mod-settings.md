@@ -1,7 +1,7 @@
 # MOD SETTINGS
 
-Where everything the mods add is switched on and off. It takes over the DJ
-SETTING list rather than opening a separate screen.
+Where you switch the mods' features on and off. It replaces the DJ SETTING
+list in place instead of opening a separate screen.
 
 ## Opening it
 
@@ -13,20 +13,18 @@ SETTING list rather than opening a separate screen.
 
 ![The UTILITY screen on DJ SETTING. The version at the top right reads Ver.3.19-m, and the -m is the mods saying they are loaded.](img/mod-settings-ver-label.png)
 
-The version ends in **`-m`** whenever the mods are installed. That suffix is the
-one thing on a stock screen that tells you they loaded at all, and the label is
-drawn brighter.
+The version ends in **`-m`** and is drawn brighter whenever the mods are
+installed. This is the only sign on the stock screen that they loaded.
 
 ![MOD SETTINGS open on the same screen, GATE CUE selected and the right pane offering OFF and ON.](img/mod-settings-open.png)
 
-The version label turns **blue** while the mod settings are showing, so you can
-tell at a glance which list you are looking at. Tap it again, or leave the
-screen, to put the deck's own settings back.
+The version label turns **blue** while MOD SETTINGS is showing, so you can tell
+which list you are looking at. Tap it again, or leave the screen, to return to
+the deck's own settings.
 
 ## Settings
 
-The list is headed by a **MOD SETTINGS** row, which shows
-which build of the mods you are running.
+The first row, **MOD SETTINGS**, shows which build of the mods you are running.
 
 | Row | Options | Ships as |
 | --- | --- | --- |
@@ -41,11 +39,10 @@ which build of the mods you are running.
 
 > **Note:** All features are off by default.
 
-You can install the mods and keep everything unchanged until you decide to activate specific features.
+After installing, the deck behaves as stock until you turn features on.
 
 ![MOD SETTINGS with ENABLE STEMS selected and switched on, so STEM SERVER LOCATION has appeared beneath it.](img/mod-settings-stems.png)
 
 ## Where your settings are kept
 
-Settings are saved in the device’s internal storage
-
+Settings are saved in the deck's internal storage.

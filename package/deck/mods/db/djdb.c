@@ -2,47 +2,34 @@
 /*
  * mods/db/djdb.c - the rekordbox-media half of the provider.
  *
- * A rekordbox stick carries two databases side by side. db.c reads the SQLCipher
- * one -- exportLibrary.db, DEVICE LIBRARY PLUS -- which THIS FIRMWARE DOES NOT
- * USE, so it never borrows a handle at all, measured. What the CDJ-3000 actually
- * browses is the other: DEVICE LIBRARY, export.pdb, reached by the Dsql family
- * under DataBase/DeviceSQL through a `djdb` API addressed by table name.
+ * A rekordbox stick carries two databases. db.c reads the SQLCipher one
+ * (exportLibrary.db, DEVICE LIBRARY PLUS), which this firmware does not use; it
+ * never borrows a handle. The deck browses DEVICE LIBRARY, export.pdb,
+ * through the Dsql family under DataBase/DeviceSQL and a `djdb` API addressed
+ * by table name. Any change to the DJ's media goes through here.
  *
- * So everything that wants to change something on a DJ's media comes here. There
- * is no second route and no library on the deck to fall back to.
+ * Browsing, loading and cueing call none of the hooked entry points, and the
+ * context accessor returns NULL from an idle thread: the context exists only
+ * inside one of the deck's own operations.
  *
- * WHEN THE DECK IS ACTUALLY IN HERE. Browsing, loading and cueing fire none of
- * the hooked entry points, and the context accessor answers NULL from an idle
- * thread throughout -- the context exists only inside one of the deck's own
- * operations and is cleared between them.
+ * The library is writable; our write only lacks a context. Editing a track's
+ * rating on the deck calls the update at the bottom of this file and it
+ * returns 0 (djdbContent/idxContent, column 15, two columns), and the
+ * touched pages are marked dirty and written to the media immediately, not at
+ * eject. The tempo write is the same call with column 8. From an idle thread it
+ * fails with -10001 (no context), never -10025 (wrong state), so it is retried
+ * from inside the deck's own update.
  *
- * THE LIBRARY IS WRITABLE, AND THE ONLY THING OUR COPY OF THE WRITE LACKS IS A
- * CONTEXT. Measured: editing a track's rating on the deck calls the update at
- * the bottom of this file and it returns 0 -- djdbContent/idxContent, key 11,
- * column 15, two columns -- and the pages it touches are marked dirty and
- * written to the media there and then, not at eject. So the tempo write is that
- * same call with column 8, and what stops it from an idle thread is -10001, no
- * context, never -10025, wrong state. It is retried from inside the deck's own
- * update, where a context exists by definition.
+ * Same rule as db.h: go through the deck's objects, never the file. export.pdb
+ * is a proprietary format the deck keeps indexes and caches over, so a write
+ * behind its back is corrupted by the next flush even if the bytes are right.
  *
- * THROUGH THE DECK'S OWN OBJECTS, NEVER THE FILE. The same rule db.h states, and
- * it bites harder here: export.pdb is a proprietary format the deck holds
- * indexes and caches over, so writing it behind the deck's back is corrupted by
- * the next flush even when the bytes are right.
+ * ---- reading ----------------------------------------------------------------
  *
- * ---- reading first, and that order was the point ---------------------------
+ * The table registry is a hash table hanging off the context; it is read with
+ * mod_safe_read, which has no side effect on the library.
  *
- * Everything above the write is mod_safe_read over structures the deck already
- * has open: the table registry is a hash table hanging off the context, so
- * enumerating it is pointer-walking rather than API use, and pointer-walking
- * cannot have a side effect on a DJ's library.
- *
- * That is what made the one write safe to add. The questions a writer needs
- * answered -- which column a track's tempo is, what a value looks like, which
- * row belongs to the loaded track -- were all settled by looking, the last of
- * them against the library on a real stick, before a byte was written.
- *
- * ---- the shapes, from sub_1c66f80 and sub_1c915d0 --------------------------
+ * ---- the shapes ------------------------------------------------------------
  *
  *   ctx + 0x08     13 hash buckets, 8 bytes each -- the table registry
  *   table + 0x10   its name, as a packed djdb string
@@ -50,10 +37,10 @@
  *   table + 0x78   next in the hash chain
  *   col + 0x08     -> a type object, whose +0x08 is the type id
  *
- * A packed string is the two encodings sub_1c88520 produces: a short form with a
- * one-byte header `((len+1) << 1) | 1` and the bytes after it, and a long form
- * whose header word is `((len+4) << 8) | 0x40` with the bytes at +4. The low bit
- * tells them apart.
+ * A packed string has one of two encodings: a short form with a one-byte header
+ * `((len+1) << 1) | 1` and the bytes after it, and a long form whose header
+ * word is `((len+4) << 8) | 0x40` with the bytes at +4. The low bit tells them
+ * apart.
  *
  * Threading. [worker], once, from the idle branch. Nothing here is on a hot path.
  */
@@ -69,12 +56,11 @@
 
 
 
-/* THE STATE GATE IS NOT ON THE CONTEXT. sub_1c66f80 reads it from
- * sub_1c5dd00(ctx), not from ctx -- sub_1c97b70 is `x0 ? sub_1c5dd00(x0) : 0`,
- * not the identity, which is easy to read past. So a writer has to make that
- * second call before believing state 2; a reader does not need the gate at all,
- * because every access below is a bounded mod_safe_read and a context that is
- * not ready simply reads as empty. Left as a note rather than a wrong check. */
+/* The state gate is not on the context: the row insert reads it from an object
+ * the deck derives from the context through a separate, NULL-safe call (not the
+ * identity). A writer must make that call before trusting state 2. Readers do
+ * not need the gate: every access is a bounded mod_safe_read, and a context
+ * that is not ready reads as empty. */
 
 
 
@@ -82,8 +68,8 @@ typedef void *(*djdb_ctx_fn)(void);
 
 
 
-/* The live context, or NULL. Through the deck's accessor rather than the global
- * behind it, because the accessor is what honours the override hook. */
+/* The live context, or NULL. Uses the deck's accessor, not the global behind
+ * it, because the accessor honours the override hook. */
 void *djdb_ctx(void)
 {
     uintptr_t fn = ep122_sym(EP122_DJDB_CONTEXT);
@@ -93,17 +79,13 @@ void *djdb_ctx(void)
     return ((djdb_ctx_fn)fn)();
 }
 
-/* THE CONTEXT IS ONLY LIVE INSIDE AN OPERATION.
+/* The context is only live inside a djdb operation. With media mounted and
+ * browsed, the accessor still returns NULL from the worker thread.
+ * So the registry is read from inside the deck's own calls instead of by
+ * polling.
  *
- * Measured: with media mounted, the library browsed and its tables in use, the
- * accessor still answers NULL from the worker thread. It is not a "has media"
- * flag -- it is set for the duration of a djdb call and cleared between them, so
- * an idle thread can never see one. That is why this observes the deck's own
- * insert rather than polling: inside that call the context is by definition
- * valid, which is the only moment the registry can honestly be read.
- *
- * The stock call is made with its arguments untouched and its result returned
- * verbatim. [the deck's database thread] */
+ * The stock call gets its arguments unchanged and its result is returned as
+ * is. [the deck's database thread] */
 typedef int64_t (*djdb_insert_fn)(const char *table, int ncols, void **values);
 typedef int64_t (*djdb_any_fn)(void *, void *, void *, void *, void *, void *,
                                void *);
@@ -115,11 +97,11 @@ static uintptr_t djdb_g_tramp_txn_b;
 
 /* Once, from whichever entry point the deck reaches first. */
 
-/* Any hooked entry point is a chance to write a tempo that was refused; see
- * the note above its definition. */
+/* Any hooked entry point may retry a refused tempo write; see
+ * djdb_drain_pending. */
 static void djdb_drain_pending(const char *where);
 
-/* ...and to run a reorder the UI asked for from a thread that could not. */
+/* ...and run a reorder queued from the UI thread. */
 static void djdb_drain_move(const char *where);
 
 void mod_djdb_note(const char *where)
@@ -139,10 +121,8 @@ static int64_t djdb_wrap_insert(const char *table, int ncols, void **values)
     return r;
 }
 
-/* The remaining three are forwarded blind: their argument lists are not
- * established, so the wrapper takes the seven registers the ABI passes in and
- * hands them straight back. A wrapper that does not name its arguments cannot
- * get them wrong. */
+/* The remaining three are forwarded blind: their argument lists are unknown,
+ * so the wrapper passes the seven argument registers through unchanged. */
 
 static int64_t djdb_wrap_update(void *a, void *b, void *c, void *d, void *e,
                                 void *f, void *g)
@@ -150,9 +130,9 @@ static int64_t djdb_wrap_update(void *a, void *b, void *c, void *d, void *e,
     int64_t r;
 
     djdb_try_dump("the update path", NULL);
-    /* This IS the query entry point, so the deck's own playlist cursor comes
-     * through here with the id the reorder needs. Read on the way in, before
-     * the call, so a query that throws still leaves the id it named. */
+    /* This is the query entry point, so the deck's playlist cursor passes
+     * through here with the id the reorder needs. Read before the call, so a
+     * query that throws still records its id. */
     djdb_note_playlist((const char *)a, (int)(intptr_t)f, (void **)g);
     r = ((djdb_any_fn)djdb_g_tramp_update)(a, b, c, d, e, f, g);
     djdb_drain_pending("the update path");
@@ -175,69 +155,51 @@ static int64_t djdb_wrap_txn_b(void *a, void *b, void *c, void *d, void *e,
     return ((djdb_any_fn)djdb_g_tramp_txn_b)(a, b, c, d, e, f, g);
 }
 
-/* THE FLUSH, which is the one moment a context is certainly live, is the page
- * writer -- and that belongs to pager.c, which understands its arguments. It
- * calls mod_djdb_note() above, so the registry is still read from inside it. */
+/* The flush, where a context is certainly live, is the page writer hooked in
+ * pager.c. It calls mod_djdb_note() above, so the registry is read there too. */
 
 void mod_djdb_poll(void)
 {
-    /* Nothing to poll: see the note above. Kept so the worker's call site does
-     * not have to know why, and so a future readiness check has a home. */
+    /* Nothing to poll (see above). Kept for the worker's call site and for a
+     * future readiness check. */
 }
 
-/* ---- the one write ---------------------------------------------------------
+/* ---- the tempo write -------------------------------------------------------
  *
- * The tempo the BROWSER shows is not the beat grid. A grid lives in the track's
- * analysis file and the deck's own register writes it (see stem/grid.c); the
- * number beside the title in the list is `DJDBCONTENT.BPM` in the media library,
- * a different back end entirely. So a x2 that does not come here moves the grid
- * and the play screen and leaves the browser saying the old tempo.
+ * The tempo the browser shows is not the beat grid. The grid lives in the
+ * track's analysis file and is written by the deck's register (see
+ * stem/grid.c); the number beside the title is `DJDBCONTENT.BPM` in the media
+ * library. Without this write, a x2 changes the grid and the play screen but
+ * the browser keeps the old tempo.
  *
- * THE DECK HAS THE PRIMITIVE, it just never points it at this column.
- * `music_library::DsqlTrackUpdater` updates `djdbContent` BY COLUMN INDEX
- * through djdb's own update -- columns 15 (RATING) and 40, and 42 -- and BPM is
- * column 8 of that same table with the same integer flavour. This is that call
- * with a different column id: the deck's converter, the deck's index
- * maintenance, the deck's transaction, and the deck's own eject flush to put it
- * on the media.
+ * `music_library::DsqlTrackUpdater` updates `djdbContent` by column index
+ * through djdb's update (columns 15 (RATING), 40 and 42), and BPM is column 8 of
+ * the same table with the same integer type. This is that call with column 8,
+ * so it uses the deck's converter, index maintenance, transaction and flush.
  *
- * A VALUE IS A POINTER TO A SCALAR, width following the column's declared type
- * -- proved by the deck's own djdbSongHistory insert, which builds an int32, an
- * int16, an int32 and a byte on the stack and passes the address of each. The
- * width of type 1 is not established, so the value here is written into a zeroed
- * eight-byte buffer: whatever width the column turns out to be, the bytes it
- * reads are the right ones, little-endian.
+ * A value is a pointer to a scalar whose width follows the column's declared
+ * type, as in the deck's djdbSongHistory insert (an int32, an int16, an int32
+ * and a byte on the stack, passed by address). The width of type 1 is unknown,
+ * so the value goes in a zeroed eight-byte buffer, which reads correctly
+ * (little-endian) at any width.
  *
- * THE CONTENT ID IS trackid::TrackID's THIRD WORD. Checked read-only against the
- * library on a real stick, three tracks, before anything was ever written:
- * tempo 12000 sits in the row with id 8, 12500 with 11, 12600 with 7 -- and
- * those are exactly the third words of those tracks' TrackIDs. A wrong id here
- * writes one track's tempo onto another's row, which is why it was settled by
- * reading rather than by trying.
+ * The content id is trackid::TrackID's third word.
  *
- * Threading: [message], from the grid panel's save, at human rate.
+ * Threading: [message], from the grid panel's save.
  */
 
-/* djdbContent's own name and index, and the column BPM is. */
+/* djdbContent's name, index, and BPM column. */
 #define DJDB_CONTENT_TABLE  "djdbContent"
 #define DJDB_CONTENT_INDEX  "idxContent"
 #define DJDB_COL_BPM        8
 
 
-/* THE COLUMN CONVENTION IS ONE CONVENTION -- measured, not assumed.
- * sub_1c5c1b0(row, n) takes the COLUMN index, the same numbering colids use:
- *
- *   content key 7:      [0]=7  [8]=12600        id and BPM, and colid 8 is
- *                                               already proven by our own write
- *   songplaylist key 1: [0]=1  [1]=10  [2]=8    playlistid constant, and
- *                       [0]=1  [1]=9   [2]=7    CONTENTID != TRACKNO in these
- *                                               two rows, which is what makes
- *                                               them tell the two apart
- *
- * So the on-disk FIELD order (2/1/0 for this table) never enters a caller's
- * arithmetic. Both readings agree, from different tables. */
+/* EP122_DJDB_ROW_COL(row, n) takes the column index, the same numbering colids
+ * use (djdbContent: [0] id, [8] BPM; djdbSongPlaylist: [0] PLAYLISTID,
+ * [1] CONTENTID, [2] TRACKNO). Callers never use the on-disk field order
+ * (2/1/0 for djdbSongPlaylist). */
 
-/* Wide enough for any width the column turns out to be. */
+/* Wide enough for any column width. */
 #define DJDB_VAL_BYTES      8
 
 typedef int (*djdb_update_fn)(const char *table, const char *index,
@@ -246,74 +208,58 @@ typedef int (*djdb_update_fn)(const char *table, const char *index,
                               int ncols, const int32_t *colids,
                               void **colvals);
 
-/* WHAT THIS NEEDS, AND IT IS A CONTEXT RATHER THAN A STATE.
- *
- * The call itself is right -- content id, table, index, column and value all
- * check out against the deck's own DsqlTrackUpdater, and that updater reaches
- * this same function and is answered 0. So the library IS open for table
- * writes, and the two ways our copy has been refused are not the same refusal:
+/* The write needs a context, not a state. Content id, table, index, column and
+ * value match the deck's DsqlTrackUpdater, which reaches the same function and
+ * gets 0, so the library is open for writes. Our refusals:
  *
  *     from the panel            -10001   no context
  *     inside the eject flush     -6503   "Storage manager is not open"
  *
- * -10025, "state is not 2", has never come back. The state gate is satisfied;
- * what an idle thread has not got is a context. The accessor manufactures one
- * per call through the override hook below rather than keeping one to borrow,
- * and it answers NULL for a thread the deck did not send here.
+ * -10025 ("state is not 2") has never been returned. The accessor creates a
+ * context per call through the override hook below and returns NULL for a
+ * thread the deck did not register.
  *
- * So a tempo refused from the panel is HELD, and written from inside the deck's
- * own update, where the context and the transaction both already exist. A
- * playlist reorder is the same shape: DJDBSONGPLAYLIST.TRACKNO through the same
- * call. See [ep122_djdb_api].
+ * So a tempo refused from the panel is held and written from inside the deck's
+ * own update, where context and transaction already exist. A playlist reorder
+ * (DJDBSONGPLAYLIST.TRACKNO) uses the same call.
  *
- * Threading: [message], from the grid panel's save, at human rate; the retry is
- * [the deck's database thread].
+ * Threading: [message], from the grid panel's save; the retry runs on [the
+ * deck's database thread].
  */
 
-/* WHAT THE DECK ITSELF PASSES, when it writes a rating or a colour. The
- * refusals below are ours; this reports the deck's own, which is the only way
- * to tell "the library is never writable" apart from "it is writable and we
- * asked at the wrong moment". Table, index, key and column come straight off
- * the arguments, and the result is djdb's own return.
+/* djdb_wrap_update_row logs the deck's own updates (a rating or a colour):
+ * table, index, key, column and djdb's result. This tells "never writable"
+ * apart from "writable, but we asked at the wrong moment".
  *
- * Our own write below reaches the stock call through the trampoline, so it is
- * reported here too rather than recursing. [the deck's database thread]
+ * Our write reaches the stock call through the trampoline, so it is logged
+ * there too without recursing. [the deck's database thread]
  *
- * IT IS ALSO THE MOMENT A TEMPO CAN BE WRITTEN. The call works -- the deck's
- * own rating edit returns 0 through it -- and what our copy of it lacks is a
- * context, which the accessor manufactures per thread and does not for ours.
- * Inside here there is one by definition, so a tempo refused earlier is
- * retried from the deck's own transaction on the deck's own thread. */
+ * A context is live inside that call, so a tempo refused earlier is retried
+ * from there, in the deck's transaction on the deck's thread. */
 
 static uintptr_t djdb_g_tramp_update_row;
 
-/* One tempo waiting for a context. The last edit wins: two rescales of the
- * same track before a moment arrives should leave the newer one. */
+/* One tempo waiting for a context. The last edit wins. */
 static uint32_t djdb_g_pending_id;
 static int      djdb_g_pending_bpm;
 
 static int djdb_write_bpm(uint32_t content_id, int bpm_x100);
 
-/* Take the moment if this one has a context.
+/* djdb_drain_pending: write the held tempo if this thread has a context.
  *
- * Called from every hooked entry point rather than from the update alone,
- * because any of them can be the one the deck reaches first and the thread is
- * what matters, not which operation it is. The context check is the whole gate:
- * it is exactly what -10001 reports, so asking first costs nothing and a
- * refusal here means this was not a moment after all.
+ * Called from every hooked entry point, since any of them can be reached first
+ * and only the thread matters. The context check is the gate; it is exactly
+ * what -10001 reports.
  *
- * The pending value SURVIVES a failure -- the eject flush has a context and a
- * closed storage manager, and dropping a DJ's edit there would be the worst
- * possible time.
+ * The pending value survives a failure: the eject flush has a context but a
+ * closed storage manager.
  *
- * CONSECUTIVE failures are bounded, not total attempts. Counting every attempt
- * looks equivalent and is not: a moment now arrives within a message of the
- * edit, so each edit spends one attempt, and a total bound would silently stop
- * writing tempos after the sixty-fourth edit of a session -- long after anyone
- * would connect it to this. The count resets whenever one lands.
+ * DJDB_DRAIN_FAILS bounds consecutive failures, not total attempts; each edit
+ * spends an attempt, so a total bound would stop tempo writes after 64 edits in
+ * a session. The count resets on success.
  *
- * Re-entrant by construction: the write goes through the patched update, which
- * calls back in here. [the deck's database thread] */
+ * Re-entrant: the write goes through the patched update, which calls back in
+ * here. [the deck's database thread] */
 #define DJDB_DRAIN_FAILS  64
 
 
@@ -456,12 +402,8 @@ int mod_djdb_move_track(uint32_t pid, int32_t from_no, int32_t to_no,
              (unsigned)pid);
         return -1;
     }
-    /* IS THIS THE LIST THE DJ WAS LOOKING AT? The id is a latch off a query
-     * cursor and nothing proves it names the list on screen, so the one fact
-     * the caller can offer -- how many rows it counted -- is checked against
-     * the playlist about to be rewritten. It does not separate two playlists
-     * of the same length, and it does catch every other mismatch, which is
-     * worth having between here and a shuffled playlist. */
+    /* The id may not name the list on screen, so check the caller's row count
+     * against the playlist. Two playlists of the same length still pass. */
     if (expect_rows > 0 && pl.n != expect_rows) {
         MWARN("djdb: playlist %u holds %d entries but the list on screen showed"
              " %d -- refusing, this is not the same list\n",
@@ -478,8 +420,8 @@ int mod_djdb_move_track(uint32_t pid, int32_t from_no, int32_t to_no,
         return -1;
     }
 
-    /* Everything between the two positions shifts one place away from where the
-     * entry came from; the entry itself lands on `to_no`. */
+    /* Entries between the two positions shift one place toward the source;
+     * the moved entry lands on `to_no`. */
     for (i = 0; i < pl.n; i++) {
         int32_t n = pl.e[i].no, want = n;
 
@@ -519,13 +461,13 @@ static int64_t djdb_wrap_cache_trim(uintptr_t self, uint32_t cap)
     return ((int64_t (*)(uintptr_t, uint32_t))djdb_g_trim_tramp)(self, cap);
 }
 
-/* ---- WHICH PLAYLIST THE LIST ON SCREEN IS, off the collector's own caches ----
+/* ---- which playlist is on screen, from the collector's caches ---------------
  *
- * The UI carries a hierarchy and never a table key, and the deck does not query
- * djdb while browsing, so neither end has the id. The COLLECTOR does: every
- * cached list keeps the condition it was asked for, and a track list's condition
- * carries the hierarchy that named it. The deck reads it back the same way in
- * removePlaylistTrackListCache, whose predicate is where this shape comes from.
+ * The UI carries a hierarchy, not a table key, and the deck does not query djdb
+ * while browsing. The collector has the id: each cached list keeps the
+ * condition it was requested with, and a track list's condition carries the
+ * hierarchy that named it. The layout below comes from the predicate in
+ * removePlaylistTrackListCache, which reads it the same way.
  *
  *   ListCache          +0x10  the ListCondition it answered
  *                      +0x28  the serial the collector stamped it with
@@ -533,11 +475,10 @@ static int64_t djdb_wrap_cache_trim(uintptr_t self, uint32_t cap)
  *   TrackListCondition +0x10  u16 the source kind; 5 == a playlist
  *                      +0x18  vector<{u16 kind; u32 id; u32}> -- the hierarchy
  *
- * The playlist id is the id of the LAST step, which is what the deck's predicate
- * reads as *(u32 *)(end - 8). A condition is identified by its vptr rather than
- * by __dynamic_cast: the cast is an identity here -- TrackListCondition derives
- * from ListCondition at offset 0 -- so the pointer compare is the same test
- * without calling into the runtime. */
+ * The playlist id is the last step's id, which the deck's predicate reads as
+ * *(u32 *)(end - 8). A condition is identified by its vptr instead of
+ * __dynamic_cast; TrackListCondition derives from ListCondition at offset 0, so
+ * the compare is equivalent. */
 #define LCC_CACHES        0x28      /* vector<shared_ptr<ListCache>> begin */
 #define LCC_CACHES_END    0x30
 #define LC_CONDITION      0x10
@@ -548,8 +489,8 @@ static int64_t djdb_wrap_cache_trim(uintptr_t self, uint32_t cap)
 #define TLC_HIER_END      0x20
 #define HIER_STEP         12        /* {u16 kind; u32 id; u32}, padded */
 #define HIER_STEP_ID      4
-/* A vector this long is a pointer that is not a vector. The deck trims itself to
- * 0x14 caches at the top of every createListCache. */
+/* A longer vector means a bad pointer. The deck trims itself to 0x14 caches at
+ * the top of every createListCache. */
 #define LCC_SANE_CACHES   64
 
 /* The source kind of a cached TRACK list (0 for any other cache), its serial,
@@ -579,18 +520,16 @@ static uint16_t djdb_cache_kind(uintptr_t cache, uint32_t *serial, uint32_t *id)
     return kind;
 }
 
-/* The newest TRACK-LIST cache, preferring one SOMEONE ELSE STILL HOLDS, and the
- * playlist it was asked for -- 0 when that newest cache is another kind of
- * list (an album's, an artist's), even if a playlist's is still held beside it.
+/* The playlist of the newest track-list cache, preferring caches held outside
+ * the collector. 0 when that newest cache is another kind of list (an album's,
+ * an artist's), even if a playlist's is still held.
  *
- * Both halves are the collector's own vocabulary. The serial at +0x28 counts up
- * once per cached list, so the largest is the most recently opened. And the deck
- * purges caches whose use count is 1 -- see ListCacheCollector's own sweep --
- * because a use count of 1 means nobody but the collector is looking at it; the
- * list on screen is held by something else. Measured (3.20): walking from a
- * playlist into an album releases the playlist's cache about 130 ms after the
- * album's list is on screen, so the newest held one is the honest answer and a
- * held playlist alone is not.
+ * The serial at +0x28 increments per cached list, so the largest is the most
+ * recent. The deck's ListCacheCollector sweep purges caches with use count 1
+ * (held only by the collector), so the list on screen has a higher count.
+ * Going from a playlist into an album releases the playlist's cache about
+ * 130 ms after the album's list appears, so the newest held cache is the right
+ * answer, not any held playlist.
  *
  * `*held`: the pick is a held one. `verbose`: log every candidate. */
 static uint32_t djdb_scan_caches(int verbose, int *held)
@@ -674,10 +613,9 @@ void mod_djdb_drop_list_cache(uint32_t playlist_id)
              "dropped -- no collector seen yet\n", (unsigned)playlist_id);
         return;
     }
-    /* All three, in the order the deck drops them when a playlist's contents
-     * change: the list's rows, the list of playlists, and the PLAYLIST branch of
-     * the hierarchy. Dropping only the first leaves two other copies of the old
-     * order for the deck to serve from. */
+    /* All three, in the deck's own order when a playlist changes: the list's
+     * rows, the list of playlists, and the PLAYLIST branch of the hierarchy.
+     * Each holds a copy of the old order. */
     ((void (*)(uintptr_t, uint32_t))fn)(djdb_g_collector, playlist_id);
     fn = ep122_sym(EP122_ML_DROP_PLAYLIST_LIST);
     if (fn)
@@ -688,10 +626,9 @@ void mod_djdb_drop_list_cache(uint32_t playlist_id)
     MDBG("djdb: playlist %u's cached rows dropped\n", (unsigned)playlist_id);
 }
 
-/* The queued reorder, on a thread that has a context. Cleared whether it
- * succeeded or not: mod_djdb_move_track already refuses an entry it cannot find
- * and says so, and retrying a move the library rejected would only reorder
- * something else later. */
+/* Run the queued reorder on a thread with a context. Cleared whether or not it
+ * succeeds: mod_djdb_move_track logs its refusals, and retrying a rejected move
+ * later could reorder the wrong thing. */
 static void djdb_drain_move(const char *where)
 {
     static int inside;
@@ -710,18 +647,12 @@ static void djdb_drain_move(const char *where)
     inside = 0;
 }
 
-/* THE CONTEXT IS PER-THREAD, AND THE MESSAGE THREAD IS NOT ONE OF THEM.
- *
- * Worth stating as a measurement rather than as an assumption, because it is the
- * reason this queues at all. djdbGetContext (0x1c97b50) is a redirectable
- * getter: a byte at 0x66d6a00 chooses between a plain global at +0x08 and a
- * registered `fn(arg)` at +0x18. On the deck the byte is 1, so it takes the
- * second -- and that function (0xe5d978) reads a key off the CURRENT THREAD and
- * walks a list of {thread, handle} for it. A thread the deck never registered
- * has no handle to find, and the UI thread is one of those.
- *
- * So there is nothing to try inline and nothing to borrow: the move waits for a
- * thread that owns a handle, which is what djdb_wrap_msg_run is. */
+/* The context is per-thread, and the message thread has none, so the move is
+ * queued. djdbGetContext (EP122_DJDB_CONTEXT) is a redirectable getter: a byte
+ * at EP122_DJDB_CONTEXT_SLOT selects between a plain global at +0x08 and a
+ * registered `fn(arg)` at +0x18. On the deck the byte is 1, and that function
+ * looks up the current thread in a list of {thread, handle}. The UI thread is not
+ * registered, so the move waits for a thread that is (djdb_wrap_msg_run). */
 int mod_djdb_move_track_async(uint32_t playlist_id, int32_t from_no,
                               int32_t to_no, int32_t expect_rows)
 {
@@ -788,10 +719,9 @@ static int64_t djdb_wrap_update_row(const char *table, const char *index,
     return r;
 }
 
-/* The update, exactly as the deck makes it for a track's rating: the row picked
- * by content id through djdbContent's own index, one column stated by number,
- * the value handed over as a pointer for djdb's converter to take by the
- * column's declared type. */
+/* The update as the deck makes it for a track's rating: the row selected by
+ * content id through djdbContent's index, one column by number, and the value
+ * passed by pointer for djdb's converter to read by the column's type. */
 static int djdb_write_bpm(uint32_t content_id, int bpm_x100)
 {
     uintptr_t fn = ep122_sym(EP122_DJDB_UPDATE);
@@ -825,32 +755,30 @@ int mod_djdb_set_bpm(uint32_t content_id, int bpm_x100)
     if (r != 0) {
         djdb_g_pending_bpm = bpm_x100;
         djdb_g_pending_id  = content_id;
-        /* A fresh edit gets a fresh budget: whatever exhausted the last one was
-         * about that moment, not about this DJ's next press. */
+        /* A new edit resets the failure budget. */
         djdb_g_fails = 0;
     }
     return r == 0 ? 0 : -1;
 }
 
-/* WHERE A CONTEXT COMES FROM. The accessor is
+/* The context accessor is
  *
  *     flag = *(uint8 *)slot
  *     if (flag) { arg = *(void **)(slot + 0x10); fn = *(slot + 0x18); return fn(arg); }
  *     else        return *(void **)(slot + 0x08);
-/* THE MOMENT THAT MAKES A HELD WRITE PROMPT.
  *
  * A context is a per-thread DB handle and no djdb entry point fires during
- * browsing, so waiting for one means waiting for a rating edit or a media mount.
- * This is the library server's own thread popping a message off its queue and
- * dispatching it -- the run slot of the AsyncTask that
- * ServerThreadBase::receiveMessage posts.
+ * browsing, so without this hook a held write waits for a rating edit or a
+ * media mount. This is the run slot of the AsyncTask that
+ * ServerThreadBase::receiveMessage posts: the library server thread
+ * dispatching a queued message.
  *
- * AFTER the stock call, deliberately: by then the message has been handled, the
- * queue mutex is released and nothing is in flight, so a write from here is not
- * nested inside any library operation. Every ServerThreadBase shares this
- * vtable, so it fires on the SD, cloud and repository threads too; only a thread
- * with a DB handle has a context, so the drain selects itself and the rest costs
- * one comparison. [a library server thread] */
+ * The drain runs after the stock call, when the message is handled, the queue
+ * mutex is released and nothing is in flight, so the write is not nested in a
+ * library operation. Every ServerThreadBase shares this vtable, so it also
+ * fires on the SD, cloud and repository threads; only a thread with a DB handle
+ * has a context, and the others cost one comparison. [a library server
+ * thread] */
 static uintptr_t djdb_g_stock_msg_run;
 
 static uint64_t djdb_wrap_msg_run(uintptr_t task)
@@ -859,17 +787,15 @@ static uint64_t djdb_wrap_msg_run(uintptr_t task)
 
     if (djdb_g_pending_id)
         djdb_drain_pending("a library message");
-    /* And the reorder, for exactly the same reason. It was left on the djdb
-     * entry points alone, which never fire: the deck warms a list cache when the
-     * media is announced and browses out of it, so a whole session can pass with
-     * no query at all -- measured, and a move parked there simply never
-     * happened. A cached list fill still runs a MESSAGE, which is this. */
+    /* Same for the reorder. The djdb entry points may never fire: the deck
+     * browses from its list cache, so a whole session can pass with no query.
+     * A cached list fill still runs a message. */
     if (djdb_g_move_pid)
         djdb_drain_move("a library message");
 
-    /* Once per run, on the first message that brings a context with it: read a
-     * few playlists so the column convention can be settled against the stick.
-     * Guarded because the query is itself hooked and would otherwise re-enter. */
+    /* Once per run, on the first message with a context: read a few playlists
+     * and log their columns. Guarded because the query is itself hooked and
+     * would re-enter. */
     djdb_try_walk();
     return r;
 }
@@ -881,10 +807,9 @@ static int djdb_install(void)
         return -1;
     }
     djdb_report_slot();
-    /* ANY of them will do, so none of them is required. Each is a separate
-     * observation point on the same context, and mod_patch_fn refuses a
-     * prologue it cannot displace rather than corrupting it -- so a refusal
-     * here costs one of four ways in, not the feature. */
+    /* Any one hook is enough; none is required. Each is a separate observation
+     * point on the same context, and mod_patch_fn refuses a prologue it cannot
+     * displace, so a refusal only loses that hook. */
     static const struct {
         const char *name;
         int         sym;
@@ -916,8 +841,8 @@ static int djdb_install(void)
     }
     MDBG("djdb: watching %d of 5 entry points\n", ok);
 
-    /* Not required: without it a held tempo still lands, just at the next rating
-     * edit or media mount instead of the next library message. */
+    /* Optional: without it a held tempo lands at the next rating edit or media
+     * mount instead of the next library message. */
     (void)mod_patch_vslot("djdbMsgRun", EP122_SRV_MSG_TASK, 0x10,
                           (void *)djdb_wrap_msg_run, &djdb_g_stock_msg_run);
     return 0;

@@ -36,8 +36,7 @@ static const char *t_case = "";
         if (g_ != w_) T_FAILED("%s: got 0x%08lx, want 0x%08lx", #got, g_, w_); \
     } while (0)
 
-/* Doubles compare within a tolerance, so the exact cases can ask for 0 and the
- * rest can say how much slack the arithmetic is allowed. */
+/* Doubles compare within a tolerance; exact cases pass 0. */
 #define CHECK_NEAR(got, want, tol) do { \
         double g_ = (got), w_ = (want), d_ = g_ - w_; \
         t_checks++; \

@@ -7,21 +7,16 @@
  *   MANUAL  a host[:port] typed on the deck's keyboard, used verbatim
  *   AUTO    mDNS `_stemd._tcp`
  *
- * AUTO shells out to avahi-browse rather than implementing mDNS. The deck runs
- * avahi-daemon already and ships both avahi-browse and avahi-resolve, so a
- * responder of our own would be a second cache of the same records with its own
- * bugs -- and stemd's own history is instructive here: it dropped a pure-Rust
- * responder because the service went dark after a couple of minutes while the
- * process stayed up and logged nothing. Using the system daemon on both ends
- * avoids re-learning that.
+ * AUTO shells out to avahi-browse rather than implementing mDNS: the deck already
+ * runs avahi-daemon and ships avahi-browse and avahi-resolve. (stemd dropped its
+ * own pure-Rust responder after the service silently went dark within minutes.)
  *
- * This is also why discovery lives in the sidecar and not the shim: it forks a
- * process, which is not something to do from inside EP122.
+ * Forking is also why discovery lives in the sidecar and not in EP122.
  *
  * `-p` gives stable parseable output; `-r` resolves to address and port; `-t`
  * returns once the cache is exhausted instead of streaming forever:
  *
- *   =;eth0;IPv4;stemd;_stemd._tcp;local;LM-226.local;10.10.50.245;8420;"model=..."
+ *   =;eth0;IPv4;stemd;_stemd._tcp;local;host-1.local;192.168.1.20;8420;"model=..."
  *    0  1     2    3      4         5        6            7          8      9
  */
 #include "stemd_client.h"
@@ -46,14 +41,12 @@ static int split_fields(char *line, char *field[], int max)
 
 /* Is this resolved address a dotted quad?
  *
- * The check has to be on the ADDRESS, because avahi's protocol column is the
- * one the BROWSE ran over and says nothing about what the name resolved to. A
- * server reachable over v4 and v6 answers an IPv4 browse with its AAAA record
- * and the line still reads `IPv4`:
+ * Checked on the address, not avahi's protocol column, which is the protocol the
+ * browse ran over. A dual-stack server can answer an IPv4 browse with its AAAA
+ * record and the line still reads `IPv4`:
  *
- *   =;eth0;IPv4;stemd;_stemd._tcp;local;LM-226.local;2a02:842b:...;8420;"..."
- *
- * which is then handed to connect() as a host and fails every time. */
+ *   =;eth0;IPv4;stemd;_stemd._tcp;local;host-1.local;2001:db8:...;8420;"..."
+ */
 static int addr_is_ipv4(const char *s)
 {
     int octet;
@@ -78,8 +71,7 @@ static int parse_manual(const char *manual, struct stem_server *out)
 {
     const char *colon = strrchr(manual, ':');
 
-    /* Default to stemd's port when only a host was given, which is what a user
-     * typing an address on a deck keyboard will do. */
+    /* Default to stemd's port when only a host is given. */
     out->port = 8420;
     if (colon && colon[1]) {
         size_t hostlen = (size_t)(colon - manual);
@@ -95,9 +87,8 @@ static int parse_manual(const char *manual, struct stem_server *out)
     return out->host[0] ? 0 : -1;
 }
 
-/* A host name safe to hand to a shell. mDNS names are whatever a responder on
- * the LAN chose to publish, so this is a whitelist and not an escape: anything
- * outside a DNS label is refused rather than quoted. */
+/* A host name safe to hand to a shell. mDNS names come from any responder on the
+ * LAN, so anything outside DNS label characters is refused, not quoted. */
 static int hostname_ok(const char *s)
 {
     int n = 0;
@@ -116,10 +107,9 @@ static int hostname_ok(const char *s)
 
 /* The service's A record, asked for by name.
  *
- * Needed because avahi-browse resolves the name ITSELF and answers with one
- * address -- on a dual-stack host, usually the v6 one -- with no way to ask for
- * the other: the deck's avahi-browse has no `-4`. avahi-resolve-host-name does,
- * so the name from the browse line is re-resolved here. */
+ * avahi-browse resolves the name itself and returns one address, usually the v6
+ * one on a dual-stack host, and the deck's avahi-browse has no `-4`.
+ * avahi-resolve-host-name does, so the name from the browse line is re-resolved. */
 static int resolve_v4(const char *host, char *out, size_t cap)
 {
     char cmd[320], line[256];
@@ -133,7 +123,7 @@ static int resolve_v4(const char *host, char *out, size_t cap)
     fp = popen(cmd, "r");
     if (!fp)
         return -1;
-    /* `LM-226.local\t10.10.0.133` -- the address is the second field. */
+    /* `host-1.local\t192.168.1.20` -- the address is the second field. */
     if (fgets(line, sizeof(line), fp)) {
         char *addr = strpbrk(line, " \t");
 
@@ -172,10 +162,7 @@ static int browse_mdns(struct stem_server *out)
         if (n < 9)
             continue;
 
-        /* IPv4 only, decided on the ADDRESS. Checking avahi's protocol column
-         * instead is what let a v6 literal through to connect(): that column is
-         * the protocol the BROWSE ran over, and an IPv4 browse of a dual-stack
-         * host still answers with its AAAA record. */
+        /* IPv4 only, decided on the address (see addr_is_ipv4). */
         if (addr_is_ipv4(field[7]))
             snprintf(out->host, sizeof(out->host), "%s", field[7]);
         else if (resolve_v4(field[6], out->host, sizeof(out->host)) != 0)
@@ -196,15 +183,11 @@ static int browse_mdns(struct stem_server *out)
  *   {"version":"0.1.0","backend":"demucs","model":"htdemucs","device":"mps",
  *    "sample_rate":44100,"channels":2,"stems":["harmonics","vocals"], ...}
  *
- * Scanned rather than parsed. A JSON parser would be out of proportion for four
- * fields from a server whose shape we control, and the failure mode of scanning
- * is "not compatible" -- which is exactly what an unrecognised document should
- * report anyway. The keys are matched with their quotes and colon so a value
- * can never be mistaken for a key.
+ * Scanned with json.h, not parsed; an unrecognised document reads as not
+ * compatible.
  *
- * `derived` is deliberately NOT checked: stemd does not report it. The topology
- * we need is fully described by the rate, the channel count and the two stems
- * actually being offered. */
+ * `derived` is not checked because stemd does not report it. The rate, channel
+ * count and the two offered stems are enough. */
 #define HEALTH_MAX 2048
 
 struct health_buf {
@@ -225,24 +208,19 @@ static int health_sink(const void *buf, size_t len, void *user)
     return 0;
 }
 
-/* What the deck will use as a directory name for cached stems.
+/* The directory name the deck uses for cached stems.
  *
- * `model_id` is the answer whenever the server offers it: the pinned digest of
- * the loaded weights, and the identity stemd keys its own cache on. The API
- * documentation is explicit that a client caching stems must key on this and
- * NOT on `model` -- several artefacts share one model name (`htdemucs_mps` and
- * a `--segment` variant both report `htdemucs`), so `model` cannot tell you
- * whether stems on disk came from the weights loaded now.
+ * `model_id` when offered: the pinned digest of the loaded weights, which stemd
+ * keys its own cache on. The API docs say clients must key on it, not on `model`:
+ * several artefacts share one model name (`htdemucs_mps` and a `--segment`
+ * variant both report `htdemucs`). It also covers the preset, which picks the
+ * model (Speed -> hdemucs_mmi, Balanced -> htdemucs).
  *
- * It also subsumes the preset, because the preset is what picks the model:
- * Speed -> hdemucs_mmi, Balanced -> htdemucs, each with its own digest.
+ * The backend-model-preset composite is the fallback for servers too old to
+ * report a digest.
  *
- * The composite below is the fallback for a server too old to report a digest.
- * It is deliberately not just `model`, for the reason above.
- *
- * The deck sanitises this again before it touches a filesystem. Doing it here
- * as well is not redundancy for its own sake: it keeps the value legible in
- * logs on both sides. */
+ * The deck sanitises this again before using it as a path; sanitising here keeps
+ * the value consistent in logs on both sides. */
 static void derive_sep_id(const char *doc, char *out, size_t cap)
 {
     char backend[24], model[24], preset[24];
@@ -308,10 +286,7 @@ static int health_probe(struct stem_server *out)
          json_int(h.data, "sample_rate"), json_int(h.data, "channels"),
          out->sep_id);
     if (!out->compatible) {
-        /* Name the requirement that actually failed. Compatibility is four
-         * conditions and only two of them are numbers, so reporting the rate and
-         * channels alone prints two CORRECT values next to "cannot play" when
-         * what is missing is a stem. */
+        /* Name each of the four requirements that failed. */
         SWARN("%s:%d is up but this deck cannot play it:%s%s%s%s\n",
               out->host, out->port,
               json_int(h.data, "sample_rate") == STEM_WIRE_RATE ? "" : " rate",
@@ -328,9 +303,7 @@ int discovery_find(const char *manual, struct stem_server *out)
 
     if (manual && manual[0]) {
         if (parse_manual(manual, out) != 0) {
-            /* Edge-triggered: this runs on every refresh, and a typed address
-             * stays wrong until someone retypes it. Once per address, not once
-             * per 30 s. */
+            /* Logged once per address, not on every 30 s refresh. */
             static char complained[sizeof(out->host)];
 
             if (strncmp(complained, manual, sizeof(complained) - 1) != 0) {
@@ -340,11 +313,10 @@ int discovery_find(const char *manual, struct stem_server *out)
             return -1;
         }
     } else if (browse_mdns(out) != 0) {
-        /* An empty browse is not proof of an absent server: about a quarter of
-         * them come back empty on a live deck while the server never moved,
-         * because avahi's cache is not always warm at the instant we ask. So
-         * this is a debug detail, and what a reader is told at WARN is that
-         * readiness CHANGED -- see the HELLO handler in session.c. */
+        /* An empty browse does not prove the server is gone: about a quarter
+         * come back empty on a live deck because avahi's cache is cold. So this
+         * is DEBUG; readiness changes are logged at WARN by the HELLO handler
+         * in session.c. */
         SDBG("no _stemd._tcp on the network (avahi returned nothing)\n");
         return -1;
     }

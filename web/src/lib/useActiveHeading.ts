@@ -2,9 +2,8 @@
  * Which heading the reader is currently under, for the table of contents.
  *
  * IntersectionObserver, not a scroll handler: nothing here reads scroll
- * position, animates on it, or moves anything as the page moves. The only
- * effect is which entry in the contents list is marked current, which is
- * navigation state -- the same thing a router-link active class is.
+ * position or moves anything. The only effect is which contents entry is
+ * marked current, like a router-link active class.
  */
 import { ref, onMounted, onBeforeUnmount, watch, type Ref } from 'vue'
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * juce.cc - the JUCE operations that are more than a single call. Everything
- * else stays a macro in juce.h.
+ * juce.cc - JUCE operations that take more than a single call. Single calls
+ * are macros in juce.h.
  */
 #include "juce/juce.hh"
 
@@ -42,26 +42,22 @@ int juce_string_read(uintptr_t str, char *buf, size_t cap)
     return memchr(buf, '\0', n) ? 0 : -1;    /* must terminate inside what we read */
 }
 
-/* Build a juce::String that actually says what a UTF-8 literal says.
+/* Build a juce::String from a UTF-8 literal.
  *
  * FN_STR_CTOR is juce::String(const char*), which is CharPointer_ASCII on this
- * build: one BYTE becomes one codepoint, so "•" arrives as the three Latin-1
- * characters its UTF-8 encoding is made of. Everything above U+007F is wrong
- * through that door, and there is no String::fromUTF8 named in the spec.
+ * build: one byte becomes one codepoint, so "•" arrives as the three Latin-1
+ * characters of its UTF-8 encoding. The spec names no String::fromUTF8.
  *
- * The way round it is that a juce::String STORES UTF-8. Construct from as many
- * ASCII characters as the literal has BYTES and the buffer is the right size
- * with the right byte count; overwrite those bytes with the literal's own and
- * the same buffer now decodes as the codepoints that were meant. Nothing about
- * the allocation moves, and juce::String carries no cached length to invalidate
- * -- it walks the buffer when asked.
+ * A juce::String stores UTF-8, so this constructs it from as many ASCII
+ * characters as the literal has bytes, then overwrites those bytes with the
+ * literal's own. The allocation does not change, and juce::String caches no
+ * length.
  *
- * The buffer is checked before it is written: a String is one pointer to its
- * text, and this refuses unless what is there is the placeholder it just asked
- * for, at exactly the length it asked for. A firmware that stored strings some
- * other way therefore keeps the placeholder rather than getting a stray write.
+ * Before writing, the buffer must hold exactly the placeholder at the expected
+ * length; otherwise (e.g. a firmware that stores strings differently) the
+ * placeholder is kept and nothing is written.
  *
- * Pure ASCII takes the plain constructor and none of this. */
+ * Pure ASCII uses the plain constructor. */
 void juce_string_utf8(void *str, const char *text)
 {
     char probe[JUCE_UTF8_MAX + 1];
@@ -102,7 +98,7 @@ void juce_strarray_set(void *sa, const char *const *lines, int n)
     for (i = 0; i < n; i++) {
         juce::String s(lines[i]);
 
-        /* add() moves the string in; the empty husk still needs destroying. */
+        /* add() moves the string in; the emptied String is still destroyed. */
         ep_call(void(void *, void *))::at(FN_STRARR_ADD, sa, s.addr());
     }
 }
@@ -117,9 +113,8 @@ int juce_comp_nchild(uintptr_t comp)
 
     if (!comp || mod_safe_read(comp + JUCE_NCHILD_OFF, &n, sizeof(n)) != 0)
         return 0;
-    /* A plausible ceiling rather than a real one: this walks a live tree from a
-     * pointer we inferred, so a field that is not numUsed shows up as a count in
-     * the millions and must not become a million reads. */
+    /* Sanity cap, not a JUCE limit: the tree is walked from an inferred pointer,
+     * and a misread numUsed must not turn into millions of reads. */
     return (n < 0 || n > 256) ? 0 : (int)n;
 }
 
@@ -143,8 +138,7 @@ uintptr_t juce_comp_parent(uintptr_t comp)
     return p;
 }
 
-/* The top of the chain. Bounded: a cycle in a tree we are reading out of another
- * process's memory is a hang, not a wrong answer, so it is capped instead. */
+/* The top of the chain. Capped at 32 hops so a cycle cannot hang. */
 uintptr_t juce_comp_root(uintptr_t comp)
 {
     int hops;
@@ -191,10 +185,10 @@ uintptr_t juce_comp_class(uintptr_t comp)
     return juce_class_of(vt);
 }
 
-/* The name is a plain char* at typeinfo+8, which is also where the RTTI walker
- * in resolve.c reads it. Copied a byte at a time through mod_safe_read because
- * the length is not known ahead of the NUL and the pointer came out of another
- * process's live object. */
+/* The name is a plain char* at typeinfo+8, where the RTTI walker in
+ * core/resolve_rtti.c also reads it. Copied a byte at a time through
+ * mod_safe_read because the length is unknown and the pointer comes from a live
+ * object. */
 const char *juce_comp_class_name(uintptr_t comp, char *buf, size_t cap)
 {
     uintptr_t ti = juce_comp_class(comp), name = 0;
@@ -232,9 +226,7 @@ uintptr_t juce_comp_child_of_class(uintptr_t parent, uintptr_t ti)
     return 0;
 }
 
-/* Depth-first, and bounded for the same reason juce_comp_root() is: this walks
- * another process's live tree, so a bad pointer must cost a wrong answer rather
- * than a hang. */
+/* Depth-first, capped at depth 12 so a bad pointer cannot hang the walk. */
 static uintptr_t juce_find_class_at(uintptr_t comp, uintptr_t ti, int depth)
 {
     int n, i;
@@ -323,8 +315,8 @@ void juce_label_text(uintptr_t label, const char *text)
         ::at(FN_VALUE_SETVALUE, (void *)(label + LABEL_TEXTVALUE_OFF), v.addr());
 }
 
-/* The two words before the address point are offset-to-top and typeinfo, and a
- * clone has to carry them: juce reaches the typeinfo through them. */
+/* The two words before the address point (offset-to-top and typeinfo). A clone
+ * must carry them because juce reaches the typeinfo through them. */
 #define VT_CLONE_HEAD 2
 
 uintptr_t juce_label_vt_clone(uintptr_t *out, const struct juce_vt_override *ov, int n)
@@ -336,8 +328,8 @@ uintptr_t juce_label_vt_clone(uintptr_t *out, const struct juce_vt_override *ov,
         MDBG("juce: label vtable %#lx unreadable\n", (unsigned long)LABEL_VTABLE);
         return 0;
     }
-    /* The post-condition that says we cloned the class we meant to and that the
-     * slot numbering did not move: Label's paint is still in Label's paint slot. */
+    /* Check the right class was cloned and slot numbering has not moved:
+     * Label's paint must be in the paint slot. */
     if (out[VT_CLONE_HEAD + JUCE_VT_PAINT / sizeof(uintptr_t)] != LABEL_FN_PAINT) {
         MDBG("juce: label paint slot holds %#lx, expected %#lx -> not cloning\n",
              (unsigned long)out[VT_CLONE_HEAD + JUCE_VT_PAINT / sizeof(uintptr_t)],

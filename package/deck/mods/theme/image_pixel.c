@@ -8,11 +8,9 @@
 
 uint64_t theme_fingerprint(const struct theme_bitmapdata *bd, int32_t w, int32_t h)
 {
-    /* A PIXEL IS NOT ALWAYS A WORD, and reading it as one walks off the end. The deck's
-     * overview has been seen at a 3-byte pixel stride, so a 32-bit load at the last
-     * pixel of the last row reads one byte past the buffer. Assembled from the bytes
-     * that are actually there instead; identical to the old load for ARGB, so stamps
-     * already in a slot still match. Hoisted, since it cannot change inside a buffer. */
+    /* The overview can have a 3-byte pixel stride, where a 32-bit load at the
+     * last pixel reads one byte past the buffer, so pixels are assembled bytewise. For
+     * 4-byte pixels the result equals a 32-bit load. */
     const int wide = bd->pixel_stride >= 4;
     uint64_t fp = 1469598103934665603ull;          /* FNV-1a offset basis */
     int64_t npx = (int64_t)w * (int64_t)h;
@@ -29,14 +27,14 @@ uint64_t theme_fingerprint(const struct theme_bitmapdata *bd, int32_t w, int32_t
         if (wide) px |= (uint32_t)p[3] << 24;
         fp = (fp ^ px) * 1099511628211ull;
     }
-    /* Geometry in the hash too: a buffer reused at another size is not the same image,
-     * and that is exactly the case where writing the old byte count does real damage. */
+    /* Geometry is hashed too: a buffer reused at another size is a different image, and
+     * restoring the old byte count into it would corrupt memory. */
     fp = (fp ^ (uint64_t)(uint32_t)w) * 1099511628211ull;
     fp = (fp ^ (uint64_t)(uint32_t)h) * 1099511628211ull;
     return fp;
 }
 
-/* Sprite-sized, or a full-width banner (see THEME_BANNER_* above). */
+/* Sprite-sized, or a full-width banner (see THEME_BANNER_* in image_internal.h). */
 int theme_sprite_size(int32_t w, int32_t h)
 {
     if (w <= 0 || h <= 0) return 0;
@@ -45,6 +43,9 @@ int theme_sprite_size(int32_t w, int32_t h)
            w >= THEME_BANNER_RATIO * h;
 }
 
+/* Fetch the pixels. Only called for a vptr-checked SoftwarePixelData.
+ * initialiseBitmapData fills in data/format/strides but not width/height (the
+ * BitmapData constructor sets those), so we supply them. */
 int theme_bitmap(void *pd, int32_t w, int32_t h, struct theme_bitmapdata *bd)
 {
     uintptr_t vt = *(uintptr_t *)pd;
@@ -58,6 +59,9 @@ int theme_bitmap(void *pd, int32_t w, int32_t h, struct theme_bitmapdata *bd)
            w > 0 && h > 0;
 }
 
+/* Wide and short: the waveform and the beat-grid rulers that frame it. The rulers are
+ * ARGB, so shape is the test, not format. Artwork fails on height or aspect; sprites
+ * never get past the width test. */
 int theme_is_waveform(const void *pd, int32_t *pw, int32_t *ph, int *palpha)
 {
     int32_t fmt, w, h;
@@ -74,6 +78,13 @@ int theme_is_waveform(const void *pd, int32_t *pw, int32_t *ph, int *palpha)
     return 1;
 }
 
+/* Debug: log every buffer wide enough to reach the waveform classifier, once per shape.
+ * Width is not in the key, since a partly occluded repaint gives a narrower slice of the
+ * same buffer.
+ *
+ * Mainly checks line_stride against w*pixel_stride: the loops take a buffer's length to
+ * be line_stride*h, so a wrong reported pitch makes the restoring memcpy write memory we
+ * do not own. */
 void theme_img_probe(const void *pd, const struct theme_bitmapdata *bd,
                             int32_t w, int32_t h, int32_t fmt, const char *verdict)
 {
@@ -97,6 +108,9 @@ void theme_img_probe(const void *pd, const struct theme_bitmapdata *bd,
          (int)(w * ps), (ls && w * ps > ls) ? " OVERRUN" : "", verdict);
 }
 
+/* Debug: count the distinct colours in a strip as it arrives, before we touch it, and
+ * print the most frequent. A full pass, so callers run it once per shape. Counts instead
+ * of sampling, since a sample only gives a lower bound. */
 void theme_wave_census(const struct theme_bitmapdata *bd, int32_t w, int32_t h)
 {
     struct wave_bin { uint32_t rgb; uint32_t n; } c[WAVE_CENSUS_MAX];

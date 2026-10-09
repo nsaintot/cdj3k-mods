@@ -23,9 +23,8 @@ static int                   g_shown = KIT_MENU_MAX_ROWS;   /* rows the list can
 static char g_problem[96];                    /* empty while the row list is usable */
 static int  g_checked = -1;                   /* the g_ndef g_problem was decided against */
 
-/* WARN, not DEBUG: every message here is a row a developer declared wrongly, so the
- * row is missing or inert on the deck and the mistake is in the source rather than in
- * anything the DJ did. Not ERROR -- the rest of the menu still works. */
+/* WARN: every message here is a row declared wrongly in the source, so it is
+ * missing or inert on the deck while the rest of the menu still works. */
 #define KMSG(...) MWARN("menu: " __VA_ARGS__)
 
 /* ================================================================== */
@@ -91,9 +90,8 @@ static int registered(const struct kit_row *r)
     return 0;
 }
 
-/* Decided once per set of registrations, and all-or-nothing: a tree that is not
- * the one the features declared is worse than no rows at all, and only a
- * developer can reach either failure -- the mods are statically linked. */
+/* Decided once per set of registrations, all-or-nothing. Only a source error can
+ * fail it, since the mods are statically linked. */
 static int rows_ok(void)
 {
     int i, j;
@@ -155,10 +153,9 @@ void kit_menu_set_shown(int n)
     g_shown = n < 1 ? 1 : n > KIT_MENU_MAX_ROWS ? KIT_MENU_MAX_ROWS : n;
 }
 
-/* One level, in idx order, recursing into each revealed row. A row's children
- * therefore land directly under it and no sibling's position depends on how
- * many of them there are. Rows are only ever reached from the top level, so a
- * mis-authored parent CYCLE emits nothing rather than recursing. */
+/* One level, in idx order, recursing into each revealed row so its children land
+ * directly under it. Rows are only reached from the top level, so a parent cycle
+ * emits nothing instead of recursing forever. */
 static void emit(const struct kit_row *parent)
 {
     unsigned last = 0;
@@ -191,9 +188,8 @@ static void emit(const struct kit_row *parent)
     }
 }
 
-/* Rebuilt per call rather than cached: what is live follows feature globals
- * that anything may write, and there is no event to invalidate a cache on. It
- * is a handful of rows. */
+/* Rebuilt per call: what is live follows feature globals that anything may write,
+ * with no event to invalidate a cache on. */
 static int flatten(void)
 {
     g_nlive = 0;

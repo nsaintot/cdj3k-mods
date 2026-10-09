@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * wave_paint.c - the pristine copy, and turning gains into pixels.
+ * paint.c - the pristine copy, and turning gains into pixels.
  *
- * Part of the waveform-follows-the-faders feature. The shared contract, and the
- * reasoning behind the whole design, is in wave.h.
+ * Part of the waveform-follows-the-faders feature. Shared declarations and the
+ * design notes are in wave.h.
  */
 #include "wave/wave.h"
 
@@ -21,8 +21,8 @@ static uint32_t digest(const uint8_t *p, size_t n)
     return h;
 }
 
-/* Where `obj` currently points, or 0 if it will not resolve. Three reads, cheap
- * enough to run on every tick. */
+/* Where `obj` currently points, or 0 if it will not resolve. Three reads, run
+ * every tick. */
 int wave_resolve_obj(uintptr_t obj, struct wave_array *out)
 {
     uintptr_t content, columns;
@@ -43,20 +43,15 @@ int wave_resolve_obj(uintptr_t obj, struct wave_array *out)
     return 1;
 }
 
-/* The object a style is BOUND to, which is not always the last one replied.
+/* The object a style is bound to, which is not always the last one replied.
  *
- * The deck answers for waveforms it is not showing -- a browse preview comes
- * back through the same Reception as the deck view's own -- so the latch drifts
- * onto another track's array while the DJ scrolls a list. Measured: with Rabbit
- * Hole loaded and playing, the latch moved to High Priestess's 63307-column
- * array and this track's ratios were painted onto it.
+ * Browse previews come back through the same Reception as the deck view's
+ * waveform, so the latch moves to other tracks' arrays while a list is scrolled.
  *
- * So a style binds ONCE and stays bound: the reply that first yields a filled
- * array wins, and the binding is only given up when the copy is dropped, which
- * is a real track change (the audio source moving) or the deck refilling the
- * array under us. Nothing here can tell a preview from the deck view, so the
- * length check in wave_analyze.c is what catches a binding that went to the
- * wrong one. */
+ * So a style binds once: the first reply that yields a filled array wins, and the
+ * binding is dropped only with the copy (a real track change, or the deck
+ * refilling the array). Nothing here can tell a preview from the deck view;
+ * wave_stale's track-id check catches a binding to another track's array. */
 int wave_resolve(int style, struct wave_array *out)
 {
     struct style_state *st = &wave_g_st[style];
@@ -66,10 +61,8 @@ int wave_resolve(int style, struct wave_array *out)
 }
 
 /* Has the deck put something else in the array since we last wrote to it?
- *
- * See the note in wave.h: this is the only reliable answer, because none of the
- * pointers move between tracks. `written` is what we know the array holds; with
- * nothing written yet the pristine copy is the same claim. */
+ * Content is the only reliable test (see wave.h). `written` is what the array
+ * should hold; before any write, that is the pristine copy. */
 static int array_diverged(struct style_state *st)
 {
     const uint8_t *ref = st->written;
@@ -78,10 +71,9 @@ static int array_diverged(struct style_state *st)
     int i, differed = 0;
 
     if (!ref) {
-        /* Modified with no record of what was written -- wave_write_style could
-         * not allocate one. The array is ours and unlike the pristine copy, so
-         * comparing against pristine would report a replacement on every tick.
-         * The honest answer is that we cannot tell. */
+        /* Modified but no record of what was written (wave_write_style could not
+         * allocate one). Comparing against pristine would report a change every
+         * tick, so report none. */
         if (st->modified)
             return 0;
         ref = st->pristine;
@@ -92,7 +84,7 @@ static int array_diverged(struct style_state *st)
         size_t at = (bytes - sizeof(buf)) / (ARRAY_PROBES - 1) * (size_t)i;
 
         if (mod_safe_read(st->columns + at, buf, sizeof(buf)) != 0)
-            return 1;                    /* unreadable is not ours either */
+            return 1;                    /* unreadable: treat as changed */
         if (memcmp(buf, ref + at, sizeof(buf)) != 0 &&
             ++differed >= ARRAY_PROBE_DIFFS)
             return 1;
@@ -110,11 +102,8 @@ int wave_stale(int style)
     if (!st->pristine)
         return 0;                        /* nothing to be stale */
 
-    /* The reply this copy came from named its track, and now that a block has
-     * been read we know which track is playing. A reply taken on trust before
-     * the sourceId was known gets checked here, which is the only place it can
-     * be: the deck view's waveform and any other reply are indistinguishable
-     * until this comparison is possible. */
+    /* Check the copy's track against the playing one once the sourceId is known.
+     * A reply taken on trust before then is verified here. */
     if (stem_source_id(&lo, &hi) &&
         (st->from_tid.lo != lo || st->from_tid.hi != hi)) {
         MDBG("wave_stems: %s copy is track %llx:%llx, playing %llx:%llx\n",
@@ -132,16 +121,14 @@ int wave_stale(int style)
     return array_diverged(st);
 }
 
-/* What we last LEFT in an array, kept across the invalidate a track change
- * causes, for the case where the array could not be handed back.
+/* What we last left in an array, kept across a track-change invalidate when the
+ * array could not be restored.
  *
- * Our painted columns are not blank and nothing is writing them, so they are
- * stable -- and a capture that finds them adopts them as the pristine copy,
- * making the fader positions what "untouched" means.
+ * Our painted columns are stable and not blank, so a capture would otherwise adopt
+ * them as the pristine copy.
  *
- * Retained only when our version DIFFERED from the deck's. At unity the two are
- * identical by construction, adopting those bytes is correct, and refusing to
- * would stall the capture on every reload of the same track. */
+ * Kept only when our version differed from the deck's. At unity they are identical,
+ * adopting them is correct, and refusing would stall every reload of the track. */
 static struct {
     uint8_t  *bytes;
     uintptr_t columns;
@@ -154,8 +141,8 @@ static void forget_left(int style)
     memset(&g_left[style], 0, sizeof(g_left[style]));
 }
 
-/* Is this array still exactly what we left in it -- i.e. has the deck not yet
- * put the new track's columns here? */
+/* Is this array still exactly what we left in it (the deck has not yet written
+ * the new track's columns)? */
 static int still_our_paint(int style, const struct wave_array *a,
                            const uint8_t *probe, size_t bytes)
 {
@@ -167,18 +154,12 @@ static int still_our_paint(int style, const struct wave_array *a,
 
 /* Put the deck's own columns back before letting go of the array.
  *
- * Letting go without restoring was deliberate, on the reading that the array
- * goes away with the track. It does NOT: the deck keeps a waveform per track and
- * hands the SAME array back when the DJ returns to it, still holding whatever we
- * last wrote. So leaving a track with a fader down leaves its array as the
- * reduced picture, and the capture on the way back adopts that as pristine --
- * the reduced peak becomes the reference the next paint scales, and every visit
- * compounds it. Reset the faders and the picture stays short, because at unity
- * the paint reproduces pristine exactly and pristine is now the short one.
+ * The deck keeps a waveform per track and returns the same array when the track is
+ * loaded again, still holding what we last wrote. Unrestored, the next capture
+ * would adopt the reduced picture as pristine and each visit would compound it.
  *
- * Reading the array back first is what makes the write safe. One that was freed
- * and its memory reused will not still be byte-for-byte what we left, so the
- * restore is skipped -- and mod_safe_write cannot fault whichever way it goes. */
+ * The array is read back first: if it was freed and reused it will not match what
+ * we left, and the restore is skipped. mod_safe_write cannot fault either way. */
 static void restore_if_ours(int style, size_t bytes)
 {
     struct style_state *st = &wave_g_st[style];
@@ -208,15 +189,14 @@ void wave_invalidate(int style)
 
     restore_if_ours(style, bytes);
     forget_left(style);
-    /* Only reached when the restore could not be made -- the array had already
-     * been refilled, or it would not read back. Then the record below is what
-     * stops the capture adopting our paint. */
+    /* If the restore was not made (array already refilled, or unreadable), this
+     * record stops the capture adopting our paint. */
     if (st->written && st->pristine && bytes &&
         memcmp(st->written, st->pristine, bytes) != 0) {
         g_left[style].bytes = st->written;
         g_left[style].columns = st->columns;
         g_left[style].ncols = st->ncols;
-        st->written = NULL;              /* handed over rather than freed */
+        st->written = NULL;              /* handed over, not freed */
     }
     free(st->pristine);
     free(st->scratch);
@@ -225,21 +205,15 @@ void wave_invalidate(int style)
     memset(st, 0, sizeof(*st));
 }
 
-/* Is this array simply not filled in yet?
+/* Is this array not filled in yet?
  *
- * The stability wait cannot answer that on its own: an array the deck has not
- * touched is all zeros, and all zeros are perfectly stable. Adopting one gives a
- * blank pristine copy, and because unity gains round-trip exactly, the first
- * paint then writes that blank over the waveform the deck had meanwhile
- * finished drawing -- a flat line across the display with every fader at full,
- * and nothing to correct it afterwards, since from then on the array holds
- * exactly what we last wrote.
+ * An untouched array is all zeros, which is stable, so the stability wait alone
+ * would adopt it. The first paint would then write that blank over the waveform
+ * the deck has since drawn: a flat line, never corrected.
  *
- * Blank is unambiguous rather than a heuristic about level. A 3-band column
- * encodes silence as 0x1008 with zero heights, so even a silent track leaves
- * two non-zero bytes in every column; only an unwritten array is zero
- * throughout. The 1-in-64 floor is far below any real waveform and far above
- * the zero an unfilled one gives. */
+ * A 3-band column encodes silence as 0x1008 with zero heights, so even a silent
+ * track has two non-zero bytes per column; only an unwritten array is all zero.
+ * The 1-in-64 floor is far below any real waveform. */
 static int not_filled_yet(const uint8_t *p, size_t n)
 {
     size_t i, nonzero = 0;
@@ -251,12 +225,8 @@ static int not_filled_yet(const uint8_t *p, size_t n)
     return nonzero * 64 < n;
 }
 
-/* Why a capture is not finishing.
- *
- * Three of this function's returns are silent by design -- they are the normal
- * "not yet" -- which is fine until one of them becomes permanent, and then there
- * is nothing in the log at all: no copy, no analysis, no paint, and no reason.
- * Throttled hard because the answer only changes when something else does. */
+/* Log why a capture is not finishing, so a permanent "not yet" is visible.
+ * Heavily throttled. */
 #define STALL_TICKS 100
 
 static void capture_stalled(int style, const char *why)
@@ -272,9 +242,7 @@ static void capture_stalled(int style, const char *why)
     }
     if (ticks[style]++ % STALL_TICKS)
         return;
-    /* A reason is worth saying once. Saying it every few seconds for as long as
-     * the stall lasts -- which for a waveform nobody asked for is the whole
-     * session -- is three lines a tick that bury whatever else happened. */
+    /* A new reason at debug level once; repeats only at trace level. */
     if (first)
         MDBG("wave_stems: %s capture waiting: %s\n",
              wave_k_style_name[style], why);
@@ -285,9 +253,8 @@ static void capture_stalled(int style, const char *why)
 
 /* One poll towards a pristine copy. 1 when the copy is complete.
  *
- * Called once per worker tick while `pristine` is NULL, and it returns straight
- * away on most of them -- see POLL_TICKS in wave.h for why the waiting is done
- * this way round rather than in a loop here. */
+ * Called once per worker tick while `pristine` is NULL; returns immediately on
+ * most ticks (see POLL_TICKS in wave.h). */
 int wave_capture_step(int style)
 {
     struct style_state *st = &wave_g_st[style];
@@ -297,23 +264,19 @@ int wave_capture_step(int style)
     size_t bytes;
     uint32_t d;
     int ours;
-    /* Which object this capture binds to, and which track it is then a copy OF.
-     * Normally the latched reply's; see the fallback below for when it is not. */
+    /* The object this capture binds to and the track it is a copy of. Normally
+     * the latched reply's; see the fallback below. */
     uintptr_t bind_obj = wave_g_obj_style[style];
     struct wave_trackid bound = { 0, 0 };
     int rebound = 0;
 
-    /* Only bind to a reply about the track that is playing. Until the sourceId
-     * is known there is nothing to compare against and the latest reply is
-     * taken on trust; wave_stale rechecks it the moment there is. */
+    /* Only bind to a reply about the playing track. Until the sourceId is known
+     * the latest reply is taken on trust; wave_stale rechecks it later. */
     if (stem_source_id(&lo, &hi) && wave_latched_tid(style, &tid) &&
         (tid.lo != lo || tid.hi != hi)) {
-        /* The latch is on another track. That is not always a wait: a track
-         * loaded from an earlier index in the same list is never replied for at
-         * all, so waiting here is forever. Fall back to the object this track
-         * was replied for the last time it was, which is the one the deck is
-         * showing. Still keyed on the id, so this cannot bind to another
-         * track's array. */
+        /* The latch is on another track. A track loaded from an earlier index in
+         * the same list gets no reply, so fall back to the object last replied for
+         * this track id, which is the one the deck is showing. */
         bind_obj = wave_obj_for_tid(style, lo, hi);
         if (!bind_obj) {
             capture_stalled(style, "latched reply is about another track, and"
@@ -325,9 +288,8 @@ int wave_capture_step(int style)
         rebound = 1;
     }
 
-    /* A probe stays on the object it started on. Replies keep arriving while it
-     * settles -- three seconds is a long time in a browse list -- and following
-     * each one restarts the poll and never converges. */
+    /* A probe stays on the object it started on: replies keep arriving during the
+     * ~3 s it takes to settle, and following them would never converge. */
     if (st->probe && !wave_resolve_obj(st->probe_obj, &a)) {
         free(st->probe);
         st->probe = NULL;
@@ -370,13 +332,11 @@ int wave_capture_step(int style)
         capture_stalled(style, "array will not read back");
         return 0;
     }
-    /* Two ways an array can be stable without holding this track: never written,
-     * and written by US for the track before. Both are "wait", not "adopt". */
+    /* Stable but not this track's: never written, or still our paint for the
+     * previous track. Wait, do not adopt. */
     ours = still_our_paint(style, &a, st->probe, bytes);
     if (ours || not_filled_yet(st->probe, bytes)) {
-        /* Stable, but stably not the deck's. probe_polls goes back to zero
-         * because there is no earlier digest worth comparing the first real one
-         * against. */
+        /* Reset, since there is no valid earlier digest to compare against. */
         st->probe_stable = 0;
         st->probe_digest = 0;
         st->probe_polls = 0;
@@ -388,9 +348,7 @@ int wave_capture_step(int style)
                  st->probe_blank);
             free(st->probe);
             st->probe = NULL;
-            /* A deck that reuses an array without rewriting it would otherwise
-             * be refused forever. Waiting is what this is for; never capturing
-             * is worse than capturing late. */
+            /* If the deck reuses an array without rewriting it, stop refusing it. */
             if (ours)
                 forget_left(style);
         }
@@ -406,8 +364,7 @@ int wave_capture_step(int style)
 
     if (st->probe_stable < STABLE_POLLS) {
         capture_stalled(style, "array still changing under the probe");
-        /* An array that never settles is a real condition, not a wait: say so
-         * once and start again, which also re-resolves in case it moved. */
+        /* Never settled: log and restart, which also re-resolves the array. */
         if (st->probe_polls >= CAPTURE_GIVEUP_POLLS) {
             MDBG("wave_stems: %s array still moving after %d polls, restarting\n",
                  wave_k_style_name[style], st->probe_polls);
@@ -428,8 +385,8 @@ int wave_capture_step(int style)
     if (!st->scratch) {
         MDBG("wave_stems: out of memory for %u %s columns\n", a.count,
              wave_k_style_name[style]);
-        free(st->pristine);              /* half a copy is worse than none: it
-                                          * blocks the retry without painting */
+        free(st->pristine);              /* a half copy would block the retry
+                                          * without painting */
         st->pristine = NULL;
         return 0;
     }
@@ -438,9 +395,8 @@ int wave_capture_step(int style)
     st->columns = a.columns;
     st->from_obj = a.obj;
     st->from_content = a.content;
-    /* Which track this copy is OF. When the object came from the fallback that
-     * is the playing track by construction, and recording the latched id
-     * instead would make wave_stale condemn the copy on its very next tick. */
+    /* The track this copy is of. From the fallback it is the playing track; the
+     * latched id would make wave_stale reject the copy on the next tick. */
     if (rebound)
         st->from_tid = bound;
     else
@@ -455,18 +411,14 @@ int wave_capture_step(int style)
 
 /* ---- applying a fader position -------------------------------------------- */
 
-/* Poking the array is the expensive half of a fader move -- three arrays,
- * 655 KB, through /proc/self/mem. Most of it is unnecessary: a fader step of a
- * percent or two leaves the majority of quantised bytes exactly as they were,
- * because the fields are 5 and 3 bits wide. So only the blocks that actually
- * differ from what we last wrote are sent, which turns a large steady cost into
- * one proportional to how much the picture really changed.
- *
- * Block rather than byte granularity: the syscall is the cost, not the bytes. */
+/* Writing the arrays is the expensive half of a fader move (three arrays, 655 KB,
+ * through /proc/self/mem). A small fader step leaves most quantised bytes unchanged
+ * (the fields are 5 and 3 bits wide), so only blocks that differ from what we last
+ * wrote are sent. Block granularity because the syscall is the cost. */
 #define WRITE_BLOCK 4096
 
-/* Poke one span. Same differential block scheme, bounded to the span so the
- * two-phase wave_paint does not re-scan the whole array twice. */
+/* Write one span with the same differential block scheme, bounded to the span
+ * so the two-phase paint does not rescan the whole array. */
 void wave_write_style_range(int style, uint32_t lo, uint32_t hi)
 {
     struct style_state *st = &wave_g_st[style];
@@ -475,8 +427,8 @@ void wave_write_style_range(int style, uint32_t lo, uint32_t hi)
     if (!st->columns || !st->scratch)
         return;
     if (!st->written) {
-        /* No baseline yet, so there is nothing to diff against; scratch is a
-         * copy of pristine outside the painted span, so this is still exact. */
+        /* No baseline to diff against; scratch equals pristine outside the
+         * painted span, so a full write is still exact. */
         wave_write_style(style, st->scratch);
         return;
     }
@@ -558,8 +510,7 @@ void wave_ratios_for(const float *g, uint32_t lo, uint32_t hi)
                 unity += p;
                 moved += (double)g[st] * g[st] * p;
             }
-            /* A band with no energy keeps its column verbatim: there is nothing
-             * to attribute, and 0/0 would otherwise blank it. */
+            /* A band with no energy keeps its column (avoids 0/0). */
             wave_g_ratio[i][b] = unity > 0.0 ? (float)sqrt(moved / unity) : 1.0f;
             unity_all += unity;
             moved_all += moved;
@@ -569,7 +520,7 @@ void wave_ratios_for(const float *g, uint32_t lo, uint32_t hi)
     }
 }
 
-/* Scale one span and poke it, for every style that has been latched. */
+/* Scale one span and write it, for every latched style. */
 void wave_paint(uint32_t lo, uint32_t hi)
 {
     int k;
@@ -602,9 +553,8 @@ void wave_paint(uint32_t lo, uint32_t hi)
     }
 }
 
-/* Columns outside the last painted window, still showing the previous gains. */
-
-/* Paint what the window left behind. Called once the fader has stopped. */
+/* Paint the columns outside the last window (still at the previous gains).
+ * Called once the fader has stopped. */
 void wave_paint_tail(void)
 {
     if (!wave_g_tail_dirty || !wave_g_have_analysis)
@@ -632,9 +582,8 @@ void wave_apply(const float *g)
         return;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* The column under the needle, from the playhead the audio path already
-     * tracks. Absent it (nothing played yet) the whole track is painted in one
-     * go. */
+    /* The column under the playhead, from the audio path. Without one (nothing
+     * played yet) the whole track is painted at once. */
     {
         int64_t pos = stem_source_pos();
         int rate = stem_pool_rate();
@@ -655,11 +604,11 @@ void wave_apply(const float *g)
         wave_ratios_for(g, w0, w1);
         wave_paint(w0, w1);
     }
-    clock_gettime(CLOCK_MONOTONIC, &t1);    /* what the DJ is looking at is done */
+    clock_gettime(CLOCK_MONOTONIC, &t1);    /* visible window done */
 
     memcpy(wave_g_applied, g, sizeof(wave_g_applied));
     if (!centre) {
-        /* No playhead yet, so there is no window to be right about. */
+        /* No playhead yet, so no window. */
         wave_ratios_for(g, 0, n);
         wave_paint(0, n);
         wave_g_tail_dirty = 0;

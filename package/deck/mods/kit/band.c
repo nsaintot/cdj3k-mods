@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * kit/band.c - the strip under the waveform, borrowed.
+ * kit/band.c - borrowing the strip under the waveform.
  *
- * The contract is in band.h. Every offset and rule here was RE'd against
- * EP122-3.19; the app is stripped, so each one is a measurement and is recorded
- * next to what it means.
+ * The contract is in band.h. Each offset is documented where it is used.
  */
 #include "kit/band.h"
 #include "juce/juce.h"
@@ -13,42 +11,38 @@
 /* ---- the anchor: gui::WaveformViewTitleWidget ----------------------------
  *
  * The bar carrying the artwork, the track labels and the three quick-menu
- * buttons. It inherits juce::Component VIRTUALLY, so its own vtable group is
- * awkward to hook -- but it owns a plain Component child, `TouchAria`, whose
- * parent pointer IS the bar. A client hooks TouchAria's paint and hands us the
- * `this` it was called on. */
+ * buttons. It inherits juce::Component virtually, so its vtable group is awkward
+ * to hook, but its plain Component child `TouchAria` has the bar as parent. A
+ * client hooks TouchAria's paint and passes us its `this`. */
 #define BAR_W               0x500   /* 1280x90 -- checked before we attach */
 #define BAR_H               0x5a
 
-/* ---- the three stock quick-menu buttons (class ctor sub_1650cd8) ----
+/* ---- the three stock quick-menu buttons ----
  *
  * They share one listener, kept in the array at button+0x1f8 and reached through
- * its vtable. Hooking the button's own mouseDown is simpler than implementing a
- * listener and tells us the one thing arbitration wants: a stock quick menu was
- * picked. */
+ * its vtable. Hooking the button's mouseDown is simpler than implementing a
+ * listener and tells arbitration that a stock quick menu was picked. */
 #define BTN_LISTENERS_OFF   0x1f8   /* Array<IListener*>: data ptr, then cap/count */
 
-/* ---- the mode register, which is what actually lays the waveform out ----
+/* ---- the mode register, which lays the waveform out ----
  *
- * The shared listener IS `gui::WaveformView`, and its press handler does nothing
- * but map the button's EasyID to a mode and call setQuickMenuMode(owner, mode).
- * That call stores the mode at owner+0x3b8 and posts a state-machine event; the
- * layout, INCLUDING the waveform's internal redraw scale, follows from it. That
- * scale is why setting bounds by hand was never going to work: the app's open
- * state and ours had byte-identical component bounds and still drew differently.
+ * The shared listener is `gui::WaveformView`. Its press handler maps the button's
+ * EasyID to a mode and calls setQuickMenuMode(owner, mode), which stores the mode
+ * at owner+0x3b8 and posts a state-machine event; the layout, including the
+ * waveform's internal redraw scale, follows from it. Setting bounds by hand does
+ * not reproduce that scale: identical component bounds still draw differently.
  *
- * sub_14a40e0 itself branches only on `mode == 0` (post the close event) and
- * `mode == 4` (take the panel from owner+0x378 instead of owner+0xe8); every
- * other value is stored and opens the band. So a mode past the app's own four
- * gets the layout with no stock panel attached to it. */
+ * setQuickMenuMode branches only on `mode == 0` (post the close event) and
+ * `mode == 4` (take the panel from owner+0x378 instead of owner+0xe8); any other
+ * value is stored and opens the band. So a mode past the app's own four gets the
+ * layout with no stock panel attached. */
 #define FN_QM_SETMODE       ep122_sym(EP122_SET_QUICKMENU_MODE)
 #define QM_OWNER_OFF        0xd00    /* owner pointer, read off the listener */
 #define QM_MODE_OFF         0x3b8    /* the mode it stores */
 #define QM_MODE_NONE        0
-/* The app's grid mode, kept as a last resort for a firmware that rejects an
- * unused value somewhere downstream. It IS a real panel, so a client landing
- * here leaves the deck silently in GRID with its own panel under ours -- which
- * is why it is a fallback and why the watch below cannot use it. */
+/* The app's grid mode, a last resort for a firmware that rejects an unused value
+ * downstream. It is a real panel, so a client using it leaves the deck in GRID
+ * with that panel under ours; the watch below cannot use it. */
 #define QM_MODE_STRIP       4
 
 /* The footer's clearance above the panel band, used to derive how far the app
@@ -67,25 +61,23 @@ static int       band_g_qm_ok;      /* setQuickMenuMode resolved at install */
 static uintptr_t band_g_qm_owner;
 static uintptr_t band_g_orig_btn_mousedown;
 
-/* Who has it, and by which route. `claimed` is the mode we actually got, which
- * is only meaningful while `used_qm` is set -- see band_poll for why the
- * fallback mode cannot be watched. */
+/* Who has it, and by which route. `claimed` is the mode we got, meaningful only
+ * while `used_qm` is set; see kit_band_poll for why the fallback mode cannot be
+ * watched. */
 static const struct kit_band *band_g_holder;
 static int       band_g_used_qm;
 static int32_t   band_g_claimed = -1;
-static int       band_g_shrunk;     /* WE applied a by-hand shrink and owe a restore */
+static int       band_g_shrunk;     /* we applied a by-hand shrink and owe a restore */
 
-/* Components belonging to clients, excluded by identity from the scans that
- * identify the app's own panels and buttons by shape. A client's strip has the
- * panel rect by construction and its button has the stock button's size, so
- * both would otherwise match. */
+/* Client components, excluded by identity from the shape-based scans for the
+ * app's panels and buttons, which they would otherwise match. */
 #define BAND_MAX_OWN 16
 static uintptr_t band_g_own[BAND_MAX_OWN];
 static int       band_g_nown;
 
-/* Both layouts of a component that moves when the band opens, worked out once.
- * Applying is then a straight write of one or the other, which keeps open and
- * close exactly symmetric. Only components that actually move are recorded. */
+/* Both layouts of each component that moves when the band opens, computed once.
+ * Applying is a straight write of one or the other, so open and close are
+ * symmetric. */
 #define BAND_MAX_SNAP 32
 struct band_snap { uintptr_t comp; int32_t closed[4], open[4]; };
 static struct band_snap band_g_snap[BAND_MAX_SNAP];
@@ -119,10 +111,9 @@ const int32_t *kit_band_rect(void) { return band_g_rect; }
 
 /* ---- finding the tree ---------------------------------------------------- */
 
-/* Find the waveform view and the rect its quick-menu panels share. The panels
- * are the giveaway: siblings with byte-identical bounds spanning the view's full
- * width. Discovering the slot this way means no rect is hardcoded -- a different
- * skin or panel count still resolves to whatever the app itself uses. */
+/* Find the waveform view and the rect its quick-menu panels share: three or more
+ * siblings with identical bounds spanning the view's full width. No rect is
+ * hardcoded, so a different skin or panel count still resolves. */
 static int band_find_panel_slot(uintptr_t host, uintptr_t *view_out, int32_t rect[4])
 {
     int nh = juce_comp_nchild(host), i, j, k;
@@ -161,26 +152,23 @@ static int band_find_panel_slot(uintptr_t host, uintptr_t *view_out, int32_t rec
 
 /* ---- the track title, cut back to leave a second button slot -------------
  *
- * Found by shape rather than by index: the bar has thirteen children and the
- * order is the app's business. x, y and height are all three fixed and only the
- * width moves, so keying on those and requiring a width WIDER than the target
- * makes the search exact and the write idempotent.
+ * Found by shape, not index (the bar has thirteen children in app-defined order).
+ * x, y and height are fixed and only the width changes, so matching on those plus
+ * a width wider than the target is exact and idempotent.
  *
- * The component is remembered, because this runs on the display tick: the app
- * re-sets the title's bounds whenever a track loads, so one squeeze at attach
- * would come back on the next load. Cached, the tick costs one bounds read. */
+ * The component is cached because this runs on the display tick: the app resets
+ * the title's bounds whenever a track loads. Cached, the tick costs one bounds
+ * read. */
 static uintptr_t band_g_title;
 static int32_t   band_g_title_w0;   /* the width the app built it with */
 
-/* ---- the slots, packed over the clients that are switched on --------------
+/* ---- the slots, packed over the enabled clients ---------------------------
  *
- * A client behind a gate that is OFF has no button, so it must not hold a slot:
- * X-PAD alone belongs where STEMS would be, not one stride further left with a
- * hole beside it, and with both off the track title gets its full width back.
+ * A disabled client has no button and holds no slot: X-PAD alone sits where STEMS
+ * would be, and with both off the track title gets its full width back.
  *
- * Packed rightward from the app's own gap at x=774, in each client's STATED
- * order -- see kit_band::order. Never in link order: a row of buttons that
- * rearranges itself when a file moves in the build is not a layout. */
+ * Packed rightward from the app's gap at x=774 in kit_band::order, not link
+ * order. */
 static int band_slots_used(void)
 {
     const struct kit_band *c;
@@ -198,15 +186,15 @@ int32_t kit_band_slot_x(const struct kit_band *c)
 
     if (!c) return KIT_BAND_SLOT_X(0);
     if (c->shown && !*c->shown) return KIT_BAND_SLOT_X(0);
-    /* How many SHOWN clients sit nearer the app's own buttons than this one. */
+    /* How many shown clients sit nearer the app's own buttons than this one. */
     for (p = __start_ep122_band; p < __stop_ep122_band; p++)
         if (p != c && (!p->shown || *p->shown) && p->order < c->order)
             n++;
     return KIT_BAND_SLOT_X(n);
 }
 
-/* What the title may run to: 10px clear of the LEFTMOST slot in use, or the
- * width the app gave it when no client has a button at all. */
+/* The title width: 10px clear of the leftmost slot in use, or the app's original
+ * width when no client has a button. */
 static int32_t band_title_w(void)
 {
     int n = band_slots_used();
@@ -240,9 +228,8 @@ static void band_title_squeeze(void)
         if (!band_g_title) return;
     }
 
-    /* BOTH DIRECTIONS. The app re-sets these bounds on every track load, so this
-     * runs on the tick; and a gate switching off gives width BACK, which a
-     * one-way squeeze could never do. */
+    /* Works in both directions: the app resets these bounds on every track load,
+     * and disabling a client gives width back. */
     want = band_title_w();
     if (juce_comp_bounds(band_g_title, b) != 0 || b[2] == want) return;
     ((void (*)(void *, int, int, int, int))FN_SET_BOUNDS)
@@ -293,15 +280,14 @@ int kit_band_attach(uintptr_t touch_aria)
     return 0;
 }
 
-/* The mode owner, reached the same way the app's own handler reaches it: any
- * stock quick-menu button -> its listener array -> the shared WaveformView ->
- * +0xd00. Walked rather than waited for, so the very first tap already has it.
- * Validated by reading the mode back.
+/* The mode owner, reached the way the app's handler reaches it: any stock
+ * quick-menu button -> its listener array -> the shared WaveformView -> +0xd00.
+ * Walked eagerly so the first tap already has it, and validated by reading the
+ * mode back.
  *
- * The valid range has to include a client's mode: if a previous session left the
- * band borrowed, rejecting it here would make the owner undiscoverable and so
- * make the stuck band impossible to hand back -- the one state that most needs
- * to be recoverable. */
+ * The valid range includes client modes: if a previous session left the band
+ * borrowed, rejecting them would make the owner undiscoverable and the band
+ * impossible to hand back. */
 static int band_mode_plausible(int32_t mode)
 {
     const struct kit_band *c;
@@ -361,9 +347,9 @@ static void band_record(uintptr_t c, const int32_t b[4], int dh, int dy)
     s->open[2]   = b[2];      s->open[3]   = b[3] + dh;
 }
 
-/* Shrinking the waveform's own frame is not enough -- every child has to follow,
- * or the drawing keeps its old size and is merely cut off at the new edge. Three
- * shapes, told apart by how each sits in the closed frame:
+/* Shrinking the waveform's frame is not enough: every child has to follow, or the
+ * drawing keeps its old size and is clipped. Three shapes, told apart by how each
+ * sits in the closed frame:
  *
  *   playhead        {348,0,5,237}    y == 0 and full height   -> shorten
  *   render layers   {0,8,1280,221}   inset equally top/bottom -> shorten (this is
@@ -386,8 +372,7 @@ static void band_snapshot_waveform(uintptr_t wf, int32_t closed_h)
     }
 }
 
-/* Is this child one of the app's own quick-menu panels? They are the siblings
- * wearing the shared rect. */
+/* Whether this child is one of the app's quick-menu panels (has the shared rect). */
 static int band_is_panel(const int32_t b[4])
 {
     return b[0] == band_g_rect[0] && b[1] == band_g_rect[1] &&
@@ -396,8 +381,8 @@ static int band_is_panel(const int32_t b[4])
 
 /* Snapshot the closed layout of everything in the view that is not a panel, and
  * work out how far the app slides it when a panel opens. Only valid while no
- * panel is showing -- taken from a shrunk layout the snapshot would restore to
- * the wrong place. */
+ * panel is showing; a snapshot of a shrunk layout would restore to the wrong
+ * place. */
 void kit_band_snapshot(void)
 {
     int n, i, bottom = 0;
@@ -408,8 +393,8 @@ void kit_band_snapshot(void)
     n = juce_comp_nchild(band_g_view);
     band_g_nsnap  = 0;
     band_g_tall_h = 0;
-    /* Two passes: `delta` needs the content bottom and the tallest child, and
-     * both have to be known before any entry's open bounds can be worked out. */
+    /* Two passes: `delta` needs the content bottom and the tallest child before
+     * any entry's open bounds can be computed. */
     for (i = 0; i < n; i++) {
         uintptr_t c = juce_comp_child(band_g_view, i);
         int32_t b[4];
@@ -442,8 +427,8 @@ void kit_band_snapshot(void)
          band_g_nsnap, bottom, band_g_delta);
 }
 
-/* Reproduce what the app does when one of its own panels opens. Both layouts
- * were worked out up front, so this is just a write of one or the other. */
+/* Reproduce what the app does when one of its own panels opens, by writing one
+ * of the two precomputed layouts. */
 static void band_layout(int shrink)
 {
     int i;
@@ -477,17 +462,16 @@ int kit_band_stock_up(void)
 
 /* ---- holding it ---------------------------------------------------------- */
 
-/* Ask the app to open (or close) the band exactly as its own buttons do.
+/* Ask the app to open (or close) the band as its own buttons do.
  *
  *   1  the mode took
- *   0  the owner could not be reached, which says nothing about whether the app
- *      would have allowed it -- the caller may still fall back
- *  -1  THE APP REFUSED IT. It wrote the register back itself, which is an answer
- *      and not a failure: with no track loaded there is no waveform to shrink
- *      and no panel rect to draw into, so it refuses its own GRID mode too.
+ *   0  the owner could not be reached; the caller may fall back
+ *  -1  the app refused and wrote the register back. With no track loaded there
+ *      is no waveform to shrink and no panel rect, so it refuses its own GRID
+ *      mode too.
  *
- * Telling those two apart is what lets a caller obey the refusal and still keep
- * the by-hand fallback for a deck where the setter never resolved. */
+ * Distinguishing 0 from -1 lets a caller obey a refusal and still fall back by
+ * hand where the setter never resolved. */
 static int band_qm_mode(int32_t mode)
 {
     uintptr_t owner = band_qm_owner();
@@ -502,14 +486,13 @@ static int band_qm_mode(int32_t mode)
     return 1;
 }
 
-/* A client's mode is a value the app itself never writes, so the mode register
- * -- not our own bookkeeping -- is the authoritative record that WE shrank the
- * band. Reading it back means a desynced flag can never strand the band shrunk
- * with no panel in it: whoever notices hands it back.
+/* The app never writes a client's mode, so the mode register is the
+ * authoritative record that we shrank the band. Reading it back means a desynced
+ * flag cannot leave the band shrunk with no panel in it.
  *
- * Deliberately narrow: the QM_MODE_STRIP fallback is the app's own GRID mode, so
- * seeing that tells us nothing about who opened it and clearing it blindly would
- * shut a stock panel. That case stays on band_g_used_qm. */
+ * The QM_MODE_STRIP fallback is the app's own GRID mode, so seeing it says
+ * nothing about who opened it, and clearing it would close a stock panel. That
+ * case is tracked by band_g_used_qm instead. */
 static int band_qm_release(void)
 {
     int32_t mode = -1;
@@ -523,9 +506,9 @@ static int band_qm_release(void)
     return 1;
 }
 
-/* The holder loses it. Tells the client and forgets it, WITHOUT touching the
- * mode: every caller either is about to write the mode itself or has just seen
- * somebody else write it. */
+/* The holder loses the band. Tells the client and forgets it without touching
+ * the mode: every caller is about to write it or has just seen someone else
+ * write it. */
 static void band_drop_holder(void)
 {
     const struct kit_band *h = band_g_holder;
@@ -541,14 +524,13 @@ int kit_band_holds(const struct kit_band *c)
 
 /* Take the band for a client's strip.
  *
- * Preferred path: borrow the app's own quick-menu mode, so the waveform is laid
- * out and rescaled by the code that owns it. The by-hand layout is only a
- * fallback for when the owner cannot be reached or the mode is refused.
+ * Preferred path: borrow the app's quick-menu mode so the app lays out and
+ * rescales the waveform. The by-hand layout is the fallback when the owner
+ * cannot be reached.
  *
- * The mode is CLAIMED even when a stock panel already has the band open. Riding
- * on it instead leaves that panel's own controls showing, because setting the
- * mode is the only thing that puts them away. Pressing one quick-menu button
- * closes the last, and ours are not an exception to that. */
+ * The mode is claimed even when a stock panel already has the band open:
+ * setting the mode is the only way to hide that panel's controls, matching how
+ * any quick-menu button closes the previous one. */
 int kit_band_take(const struct kit_band *c)
 {
     int mine, strip;
@@ -562,11 +544,9 @@ int kit_band_take(const struct kit_band *c)
     strip = band_qm_mode(QM_MODE_STRIP);
     if (strip > 0) { band_g_used_qm = 1; band_g_claimed = QM_MODE_STRIP; return 1; }
 
-    /* THE APP SAID NO, so we do not open. Its rule is the right one: no track
-     * means no waveform, and the by-hand shrink would put a strip where the
-     * layout does not exist -- measured, the row drawing across the rekordbox
-     * logo on an unloaded deck, wedges grey, the poll flapping it open and shut.
-     * Nothing was taken, so there is nothing to give back. */
+    /* The app refused (no track loaded), so do not open. A by-hand shrink here
+     * draws the row across the rekordbox logo with grey wedges and the poll
+     * toggling it open and shut. Nothing was taken, so nothing to give back. */
     if (mine < 0 || strip < 0) {
         band_g_holder = 0;
         band_g_claimed = -1;
@@ -577,7 +557,7 @@ int kit_band_take(const struct kit_band *c)
     return 0;
 }
 
-/* And give it back, by whichever route it was taken. */
+/* Give it back, by whichever route it was taken. */
 void kit_band_give(const struct kit_band *c)
 {
     if (band_g_holder != c) return;
@@ -587,25 +567,20 @@ void kit_band_give(const struct kit_band *c)
     else if (band_g_shrunk) band_layout(0);
 }
 
-/* Has somebody else taken the band?
+/* Detect another owner taking the band.
  *
- * The mode register is the app's own record of which panel owns it, and EVERY
- * route in writes there -- including the ones that never press a title-bar
- * button. GRID ADJUST is that case and it is why this exists: it opens on a
- * one-second rotary hold, so no button hook runs, the client's flag stayed set,
- * and two panels drew into the same strip on top of each other.
+ * The mode register is the app's record of which panel owns the band, and every
+ * route writes it, including ones that never press a title-bar button. GRID
+ * ADJUST opens on a one-second rotary hold, so no button hook runs; without this
+ * watch two panels would draw into the same strip. Watching the register also
+ * covers routes not yet identified.
  *
- * Watching the register rather than hooking the route is the point. Grid adjust
- * is the one we know about; this closes the row for anything that opens the band
- * without asking, including whatever has not been found yet.
+ * The band is not handed back here: whoever wrote that mode owns it now, and
+ * releasing would close their panel.
  *
- * The band is NOT handed back here. Whoever wrote that mode owns it now, and
- * releasing would shut the panel that just opened.
- *
- * The STRIP fallback is deliberately not watched: that mode IS the app's grid
- * mode, so the register reads the same whether we still hold it or grid adjust
- * has taken it, and a watch that cannot tell those apart would close the row on
- * the tick after it opened. */
+ * The STRIP fallback is not watched: it is the app's grid mode, so the register
+ * reads the same whether we hold it or grid adjust took it, and the watch would
+ * close the row on the tick after it opened. */
 void kit_band_poll(void)
 {
     int32_t mode = -1;
@@ -617,24 +592,22 @@ void kit_band_poll(void)
         if (!band_g_used_qm || band_g_claimed != band_g_holder->mode) return;
         if (band_mode_read(&mode) != 0 || mode == band_g_holder->mode) return;
         MDBG("band: %s lost the band (mode %d)\n", band_g_holder->name, mode);
-        band_g_used_qm = 0;      /* theirs now: neither ours to hold nor to return */
+        band_g_used_qm = 0;      /* theirs now: not ours to hold or return */
         band_g_claimed = -1;
         band_drop_holder();
         return;
     }
 
-    /* Nobody of ours holds it, so a mode of ours left in the register is a band
-     * shrunk around a panel that is not there -- the visible bug being an empty
-     * strip under the waveform. Every close path reaches this even if it reached
-     * nothing else. */
+    /* No client holds it, so a client mode left in the register means an empty
+     * strip under the waveform. Every close path reaches this. */
     band_qm_release();
 }
 
 /* ---- the stock buttons --------------------------------------------------- */
 
-/* Any stock quick menu taking over closes ours -- only one panel is ever up. The
- * class is generic, so the press is only ours to act on when it came from a
- * button parented to the same title bar we attached to. */
+/* A stock quick menu taking over closes ours; only one panel is up at a time.
+ * The button class is generic, so only presses from buttons parented to our
+ * title bar are acted on. */
 static void band_btn_mousedown(void *self, void *event)
 {
     int took_over = 0;
@@ -647,21 +620,17 @@ static void band_btn_mousedown(void *self, void *event)
         MDBG("band: stock quick menu at x=%d took over from %s\n",
              b[0], band_g_holder->name);
         took_over = 1;
-        /* Only a by-hand shrink needs undoing here, and it has to happen BEFORE
-         * chaining or the two would compound. The borrowed mode is settled after
-         * the chain. */
+        /* Only a by-hand shrink is undone here, before chaining, or the two
+         * shrinks would compound. The borrowed mode is settled after the chain. */
         if (band_g_shrunk) band_layout(0);
         band_drop_holder();
     }
     if (band_g_orig_btn_mousedown)
         ((void (*)(void *, void *))band_g_orig_btn_mousedown)(self, event);
-    /* Settled after chaining, not before. Opening a stock panel overwrites our
-     * mode, so the common case costs one read and there is no flicker from
-     * handing the band back and forth. But a press that CLOSES the stock
-     * button's own panel sets the mode to none-of-ours without ever passing
-     * through here again, and a press on a button whose panel is already up may
-     * not move the mode at all. Either way the band would be left shrunk around
-     * a mode nobody owns. Releasing afterwards covers both. */
+    /* Settled after chaining. Opening a stock panel overwrites our mode, so the
+     * common case costs one read with no flicker. A press that closes the stock
+     * button's own panel, or one on a button whose panel is already up, may leave
+     * our mode in place; releasing afterwards covers both. */
     if (took_over) band_qm_release();
 }
 
@@ -677,9 +646,9 @@ int kit_band_install(void)
     return 0;
 }
 
-/* Ahead of every client, because a client's install may want to know whether the
- * band can be borrowed at all. Refusing is not fatal to them: kit_band_take then
- * falls back to a by-hand shrink. */
+/* Installed before every client, whose install may check whether the band can be
+ * borrowed. A failure is not fatal to them: kit_band_take falls back to a by-hand
+ * shrink. */
 KIT_MOD(k_mod_band,
         .name = "band", .prio = 5, .install = kit_band_install,
         .what = "the waveform band, shared by the panels that borrow it");

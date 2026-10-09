@@ -2,9 +2,9 @@
 /*
  * On this page.
  *
- * Which entry is current comes from useActiveHeading, which uses an
- * IntersectionObserver -- nothing here reads or reacts to scroll offset, and
- * nothing moves as the page moves. The only state is which link is marked.
+ * The current entry comes from useActiveHeading (an IntersectionObserver);
+ * nothing here reads scroll offset or moves with the page. The only state is
+ * which link is marked.
  */
 import { computed, toRef, type Ref } from 'vue'
 import type { DocHeading } from '@/types/docs'

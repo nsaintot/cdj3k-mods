@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * roles.c - the UI roles: what the mod's own controls are painted with.
+ * roles.c - the UI roles: the colours the mods' own controls are painted with.
  *
- * See struct theme_ui in theme.h for what a role is and why the generic pixel transform
- * cannot stand in for one.
+ * See struct theme_ui in juce/draw.h for what a role is.
  *
- * ORIGINAL reproduces the deck's own colours exactly: with it selected nothing the
- * mods draw differs from stock. Anything that moves on screen under ORIGINAL is a bug.
+ * ORIGINAL reproduces the deck's own colours exactly, so nothing the mods draw differs
+ * from stock. Anything that changes on screen under ORIGINAL is a bug.
  */
 #include "theme/theme.h"
 #include "juce/draw.h"
@@ -17,51 +16,41 @@
 /* ORIGINAL                                                           */
 /* ================================================================== */
 
-/* The deck's measured values. What each role has to satisfy -- which is what a NEW
- * theme has to answer:
+/* The deck's own values. Constraints each role must satisfy, in any theme:
  *
- *   bypass   Orange, not the accent. On this deck blue means "on, selected, working",
- *            so lighting the bypass blue announced the stems were on at the exact moment
- *            they were switched out. Orange is the deck's own word for an override --
- *            MASTER PLAYER, the +-10 range, the master BPM all wear it -- and a latched
- *            bypass belongs in that family. Sampled off the +-10 badge, not invented.
+ *   bypass   Orange, not the accent: on this deck blue means "on, selected, working".
+ *            Orange is the deck's override colour (MASTER PLAYER, the +-10 range, the
+ *            master BPM). The +-10 badge's colour.
  *
- *   stem[]   Three hues that must stay apart from EACH OTHER, because the colour is the
- *            only thing naming which stem a wedge, a caption or an icon bar belongs to.
- *            This is the role a generic transform cannot derive: any duotone pulls all
- *            three toward one ramp and the naming collapses.
+ *   stem[]   Three hues distinct from each other: colour is the only thing naming which
+ *            stem a wedge, caption or icon bar belongs to. A duotone would pull all three
+ *            toward one ramp, so these cannot be derived generically.
  *
  *   text_on_accent   Near-black, for lettering on a lit plate. Amber is a light fill and
- *            white on it is the one combination on this deck that does not hold at arm's
- *            length. A theme with a dark accent should raise this.
+ *            white on it does not read at arm's length. A theme with a dark accent should
+ *            raise this.
  *
- *   text_lit   White, for lettering on the ACCENT: the deck's selected DJ SETTING row is
- *            white on its blue. Not text_on_accent, whose fills (amber, yellow, a stem)
- *            are the bright ones -- opposite polarity on this deck, see draw.h.
+ *   text_lit   White, for lettering on the accent: the deck's selected DJ SETTING row is
+ *            white on blue. Differs from text_on_accent, whose fills (amber, yellow, a
+ *            stem) are bright: opposite polarity on this deck, see draw.h.
  *
- *   dead vs text_off   Two different absences. text_off is "switched off", dead is
- *            "nothing here yet", and dead is the darker of the two so the two states do
- *            not read alike.
+ *   dead vs text_off   text_off is "switched off", dead is "nothing here yet"; dead is
+ *            darker so the two do not read alike.
  *
- *   warn / refuse   Amber says nothing is broken, there is just nothing to work with.
- *            Red is reserved for the answer to a press the deck is refusing, and it
- *            lasts only as long as the flash. Keep them distinct or the badge starts
- *            reading as an error.
+ *   warn / refuse   Amber: nothing is broken, there is nothing to work with. Red: the
+ *            deck is refusing a press, shown only for the flash. Keep them distinct or
+ *            the badge reads as an error.
  */
 const struct theme_ui k_ui_original = {
     .surface        = 0xff323232u,   /* button off / wedge off, one value twice          */
-    .surface2       = 0xff232323u,   /* the deck's own second checker grey, measured      */
+    .surface2       = 0xff232323u,   /* the deck's own second checker grey               */
     .edge           = 0xff5a5a5au,
-    /* The deck's own lit quick-menu plate, measured off the panel -- the pair the
-     * comment two hundred lines down already names and this did not match. Ours came
-     * out #0082e2/#005b9e against the deck's #007de1/#0064a5 on the button beside it,
-     * which is a thing that moves under ORIGINAL, and nothing may. */
+    /* The deck's lit quick-menu plate (THEME_DECK_SELECT and THEME_DECK_SELECT2). */
     .accent         = 0xff007de1u,
     .accent2        = 0xff0064a5u,
-    /* The source badge's HUE at a lit plate's brightness -- its own value (#87780a)
-     * is a badge's, sat behind white lettering, and it carries near-black at only
-     * 3.9:1. Scaled rather than lifted, so the channel ratios and therefore the hue
-     * are exactly the badge's; the ink then reads at 11:1. */
+    /* The source badge's hue at a lit plate's brightness. The badge itself (#87780a)
+     * carries near-black at only 3.9:1; scaled (same channel ratios, so the same hue)
+     * the ink reads at 11:1. */
     .mode           = 0xffe8ce11u,
     .bypass         = 0xffdc631eu,
     .xpad           = 0xffff0c21u,   /* the RMX-1000's own red, unthemed by design */
@@ -71,8 +60,8 @@ const struct theme_ui k_ui_original = {
                         0xff34c04au  /* VOCALS    green   */ },
     .text           = 0xffffffffu,
     .text_deck      = 0xffffffffu,   /* the deck's own lettering */
-    .text_dim       = 0xffafafafu,   /* the skin grey, off the Ver label */
-    .text_value     = 0xff7d7d7du,   /* a DJ SETTING row's value, measured off the list */
+    .text_dim       = 0xffafafafu,   /* the skin grey of the Ver label */
+    .text_value     = 0xff7d7d7du,   /* a DJ SETTING row's value */
     .text_off       = 0xff6e6e6eu,
     .text_on_accent = 0xff1a1a1au,
     .text_lit       = 0xffffffffu,   /* the deck's own lettering on its selected row */
@@ -83,30 +72,22 @@ const struct theme_ui k_ui_original = {
     .mark           = 0xff0a0a0au,
     .warn           = 0xffe8a317u,
     .refuse         = 0xffd93025u,
-    .bar            = 0xff7d7d7du,   /* MOD_COL_BTN_BAR    -- measured off stock */
-    .bar_on         = 0xffafafafu,   /* MOD_COL_BTN_BAR_ON -- measured off stock */
+    .bar            = 0xff7d7d7du,   /* MOD_COL_BTN_BAR    -- stock */
+    .bar_on         = 0xffafafafu,   /* MOD_COL_BTN_BAR_ON -- stock */
 };
 
 /* ================================================================== */
 /* Derivation                                                         */
 /* ================================================================== */
 
-/* One theme's worth of derived roles, and which theme they belong to. Rebuilt when the
- * selection moves and not otherwise, so a paint costs a compare.
- *
- * -1 rather than 0 for "nothing cached": 0 is a real theme id (ORIGINAL), and seeding
- * the cache as if that had already been derived would hand out a zeroed struct for the
- * one theme that must be exact. */
+/* Derived roles for one theme, and that theme's id. Rebuilt only when the selection
+ * changes, so a paint costs a compare. -1 means nothing cached (0 is ORIGINAL). */
 static struct theme_ui g_derived;
 static int             g_derived_id = -1;
 
-/* NOT the fill path, despite these being fills.
- *
- * `exempt_blue` spares blues from the darkening stage, for the deck's SELECTION ROWS:
- * surfaces with a label on top, where darkening costs the label its contrast. Roles are
- * the other thing -- a stem colour, an accent bar, a fader's lit steps are INK on the
- * panel, and on a light ground ink has to darken or it stops being visible. Taking the
- * fill carve-out leaves a light theme's fader bars lighter than their ground. */
+/* Roles do not take the fill path's exempt_blue carve-out. That carve-out protects
+ * selection rows carrying a label; roles (stem colours, accent bars, a fader's lit steps)
+ * are ink on the panel and must darken on a light ground or they become invisible. */
 #define ROLE_IS_FILL 0
 
 const struct theme_ui *mod_ui_stock(void)
@@ -123,18 +104,15 @@ static void derive(struct theme_ui *out, const struct theme_palette *pal)
     unsigned i, n = sizeof(k_ui_original) / sizeof(uint32_t);
     uint32_t w, k;
 
-    /* Walked as a flat array of ARGB words on purpose. Every member is one, and naming
-     * each one here would be a list to forget to extend -- a role added to
-     * the struct and not to this loop would silently come out black. */
+    /* Walked as a flat array of ARGB words (every member is one), so a role added to the
+     * struct is covered automatically. */
     for (i = 0; i < n; i++)
         dst[i] = theme_palette_argb(pal, src[i], ROLE_IS_FILL);
 
-    /* The one role a palette cannot carry through: text_lit follows the ACCENT's
-     * polarity, and WHITE turns the deck's white lettering black while its blue plate,
-     * carved out, stays a blue -- black on blue, measured on the GATE CUE plate. The
-     * deck's own +-10 badge under the same palette darkens its fill and turns its
-     * lettering white, which is the rule: of the deck's white and black through this
-     * palette, the one further from the accent goes on it. */
+    /* text_lit follows the accent's polarity, which the palette does not carry: WHITE
+     * turns white lettering black but leaves the blue plate blue (black on blue on the
+     * GATE CUE plate). Rule, as the deck's +-10 badge does it: of white and black through
+     * this palette, use the one further from the accent. */
     w = theme_palette_argb(pal, 0xffffffffu, ROLE_IS_FILL);
     k = theme_palette_argb(pal, 0xff000000u, ROLE_IS_FILL);
     out->text_lit = lum_gap(out->accent, w) >= lum_gap(out->accent, k) ? w : k;
@@ -144,15 +122,10 @@ static void derive(struct theme_ui *out, const struct theme_palette *pal)
 /* Seed -> roles                                                      */
 /* ================================================================== */
 
-/* Every rule here is a shade of one of the seven, and each says what it is FOR rather
- * than what it looks like -- which is what lets the same rules serve a near-black
- * ground and a near-white one.
- *
- * `toward` moves a colour toward the ink on a dark theme and toward the ground on a
- * light one, i.e. always toward "more contrast against the panel". That single flip is
- * what .light buys: without it every derivation would need writing twice. */
-/* Perceptual-ish luminance, 0..255. Integer on purpose: this runs once per theme
- * change and has no business pulling a float pipeline into the shim. */
+/* Every rule here is a shade of one of the seven seed colours, expressed by purpose
+ * (contrast against the panel or not) so the same rules serve dark and light grounds. */
+/* Approximate perceptual luminance, 0..255. Integer: runs once per theme change and
+ * keeps floating point out of the shim. */
 static uint32_t lum8(uint32_t c)
 {
     return (54u * ((c >> 16) & 0xffu) +
@@ -167,14 +140,12 @@ static uint32_t lum_gap(uint32_t a, uint32_t b)
     return la > lb ? la - lb : lb - la;
 }
 
-/* Turn a colour around the wheel, keeping its value and its chroma exactly.
+/* Rotate a colour around the hue wheel, keeping its value and chroma exactly. Grey is
+ * returned unchanged.
  *
- * THE ALARM FAMILY IS TWO HUES, NOT TWO WEIGHTS. On this deck refuse is #d93025 at 4
- * degrees and warn is #e8a317 at 40 -- a red and an amber, and a DJ tells them apart by
- * colour. Deriving warn as the alarm pulled toward the lettering reproduces the weight
- * and not the hue, so on a seeded theme the two came back as one colour at two
- * brightnesses: dE 14 to 23 against the deck's 59, which is a warning that reads as a
- * refusal in the dark. Grey has no hue to turn and is returned as it came. */
+ * The alarm family differs by hue, not weight: refuse is #d93025 (4 degrees) and warn is
+ * #e8a317 (40). Deriving warn only by pulling the alarm toward the lettering gives the
+ * same hue at two brightnesses (dE 14 to 23, against the deck's 59). */
 static uint32_t hue_rotate(uint32_t c, int deg)
 {
     int r = (int)((c >> 16) & 0xffu), g = (int)((c >> 8) & 0xffu), b = (int)(c & 0xffu);
@@ -219,108 +190,63 @@ static uint32_t toward(uint32_t c, uint32_t target, uint32_t q8)
 void theme_ui_expand(struct theme_ui *out, const struct theme_palette *pal,
                      const struct theme_seed *sd, int light)
 {
-    /* The two directions a derived role can move, named by what they are FOR, not by
-     * which is brighter:
+    /* The two directions a derived role can move, by purpose, not brightness:
      *
-     *   up    stand out from the background -- a border, a scale tick, a button's bar.
-     *   down  recede into it -- dimmed, switched-off or disabled lettering.
+     *   up    stand out from the background: a border, a scale tick, a button's bar.
+     *   down  recede into it: dimmed, switched-off or disabled lettering.
      *
-     * Neither depends on polarity: "away from the background" is the ink on a dark
-     * theme and equally on a light one. Reading up/down as brighter/darker instead
-     * makes a light theme derive its borders toward the paper (invisible) and its
-     * text_dim/text_off toward the ink, collapsing three text states into one. */
+     * Both are polarity-independent (away from the background is toward the ink on any
+     * theme). Treating them as brighter/darker breaks light themes. */
     uint32_t up   = sd->ink;
     uint32_t down = sd->ground;
     int i;
 
-    /* DERIVED, exactly like the accent below and for the same reason. An UNLIT control
-     * is no more a thing a theme gets to invent than a lit one: our X-PAD and STEMS
-     * buttons sit in the deck's own band, between BEAT LOOP and KEY SHIFT, and if our
-     * plate does not agree with theirs the button reads as belonging to a different
-     * program. Authored, it did not agree -- CYBERPUNK put two olive buttons next to
-     * three grey ones, and every role hanging off the plate went with them: the checker's
-     * second half landed 50 levels away instead of 15, and the label on it fell to 2.5
-     * contrast against the deck's 12.8.
-     *
-     * The pair is the point. surface2 is the deck's OTHER checker grey through the same
-     * palette, so taking both down one path is what makes our stipple the deck's stipple
-     * -- same two greys, same distance, correct side, in every theme at once. Deriving
-     * one and authoring the other is what let them come apart.
-     *
-     * A seed's `plate` is still what the rest of the plate family is measured from
-     * BELOW; what it no longer does is decide the colour of a button standing next to
-     * the deck's own. */
+    /* Derived like the accent below: our X-PAD and STEMS buttons sit in the deck's band
+     * between BEAT LOOP and KEY SHIFT and must match the deck's plates. surface2 is the
+     * deck's other checker grey through the same palette, so both checker halves match
+     * the deck's stipple in every theme. */
     out->surface        = pal ? theme_palette_argb(pal, k_ui_original.surface, ROLE_IS_FILL)
                               : k_ui_original.surface;
     out->surface2       = pal ? theme_palette_argb(pal, k_ui_original.surface2, ROLE_IS_FILL)
                               : k_ui_original.surface2;
     out->edge           = toward(out->surface, up, 64);  /* just enough to read as a border */
-    /* DERIVED, not authored -- see struct theme_seed. ORIGINAL's accent IS the colour the
-     * deck lights its own quick-menu buttons with (measured off the panel: a checker on
-     * #007de1 with white lettering), so putting it through this theme's palette is what
-     * makes our lit button and the three beside it agree in every theme at once. With no
-     * palette there is nothing to put it through and the source value is already right. */
-    /* ...and through the same path as everything else, which is worth stating because the
-     * fill path looks like the right answer and is not. Its carve-out spares blues from
-     * the darkening, on the grounds that a lit surface carries a label; but the deck's own
-     * quick-menu plate is SPRITE pixels, not a fill, so the deck's lit button IS darkened
-     * and taking the carve-out left ours bright cyan next to the deck's slate blue --
-     * measured (29,179,255) against (18,107,152) on CREAM. Matching the deck means taking
-     * the path the deck takes. */
+    /* Derived, not authored (see struct theme_seed). ORIGINAL's accent is the deck's lit
+     * quick-menu colour (a checker on #007de1 with white lettering), so mapping it through
+     * this palette keeps our lit button matching the deck's.
+     *
+     * ROLE_IS_FILL, not the fill path: the deck's plate is sprite pixels, which get no
+     * blue carve-out, so the fill path would leave ours brighter. */
     out->accent         = pal ? theme_palette_argb(pal, k_ui_original.accent, ROLE_IS_FILL)
                               : k_ui_original.accent;
     out->accent2        = pal ? theme_palette_argb(pal, k_ui_original.accent2, ROLE_IS_FILL)
                               : k_ui_original.accent2;
-    /* The third weight of the alarm family, after warn and refuse -- calmed down far
-     * enough to be a SURFACE rather than a signal, which is what a mode plate is. It
-     * has to stay out of the accent's family, because "a mode is engaged" and "this is
-     * switched on" are the two things a DJ must not have to tell apart by shade. */
+    /* The alarm family toned down to a surface, for mode plates. Kept out of the accent's
+     * family so "a mode is engaged" and "switched on" differ by hue, not shade. */
     out->mode           = toward(sd->alarm, out->surface, 64);
     out->bypass         = sd->alarm;
-    /* Follows the alarm at full, like the refusal: under a palette the pad has no
-     * claim to a hue of its own, and the loudest chromatic thing a theme has is
-     * the right weight for the loudest mark on the strip. */
+    /* The alarm at full, like refuse: the loudest mark on the strip. */
     out->xpad           = sd->alarm;
-    /* The palette's own green rather than a derivation of one: green is not a
-     * role a duotone can invent, and the stems are where every palette in this
-     * file already has to author one. */
+    /* The seed's VOCALS green: a duotone cannot derive a green. */
     out->xpad_on        = sd->stem[2];
     for (i = 0; i < 3; i++)
         out->stem[i]    = sd->stem[i];
     out->text           = sd->ink;
-    /* Derived, like the plate and the accent: a word ON one of the deck's own surfaces
-     * is the deck's, whatever ink the theme prefers for its own panels. */
+    /* Derived like the plate and accent: lettering on the deck's own surfaces. */
     out->text_deck      = pal ? theme_palette_argb(pal, k_ui_original.text_deck, ROLE_IS_FILL)
                               : k_ui_original.text_deck;
     out->text_dim       = toward(sd->ink, down, 80);
-    /* DERIVED, like the plate: this one is not ours to invent, it is a colour in the
-     * deck's own list. Pulling the seed's ink toward the ground by a fixed fraction
-     * would reproduce it on a dark theme and not on a light one -- the deck goes 35%
-     * of the way on ORIGINAL and 51% on SANDSTONE, because its grey is a COLOUR that
-     * gets mapped and not a proportion that gets re-derived. */
+    /* Derived: it is a colour in the deck's own list. A fixed ink-to-ground fraction would
+     * not match (the deck's value sits 35% of the way on ORIGINAL, 51% on SANDSTONE). */
     out->text_value     = pal ? theme_palette_argb(pal, k_ui_original.text_value, ROLE_IS_FILL)
                               : k_ui_original.text_value;
     out->text_off       = toward(sd->ink, down, 150);   /* switched off, still legible */
-    /* Lettering ON the accent, and the ONE role here that genuinely turns on polarity --
-     * everything else above is a direction, and directions do not flip. Whichever of
-     * ground/ink the accent is FURTHER from is the one that will hold on it, and the
-     * accent is always the BRIGHT thing: on a dark theme that makes it the ground, on a
-     * light one the ink.
-     *
-     * That is a constraint on the seed, not just a derivation: a light theme whose accent
-     * is dark gets dark lettering on a dark fill. Pick a light theme's accent bright
-     * enough to carry ink -- an amber or a warm yellow, not a mid-blue. */
-    /* MEASURED, not assumed from the polarity. The rule above is the right one; keying
-     * it on .light is a proxy for it that holds only while a light theme's accent is
-     * bright. SANDSTONE's is not, and the proxy handed it dark ink on a dark fill --
-     * 1.23 contrast against the deck's 4.39, which is lettering you cannot read.
-     * Asking which of the two the accent is actually further from costs two
-     * subtractions and cannot be wrong. */
+    /* Lettering on the accent: whichever of ground and ink is further from the accent in
+     * luminance. Computed, not keyed on .light: SANDSTONE's accent is dark, and a
+     * polarity rule would put dark ink on a dark fill. */
     out->text_on_accent = lum_gap(out->accent, sd->ink) > lum_gap(out->accent, sd->ground)
                           ? sd->ink : sd->ground;
-    /* The same measurement, kept as its own role because on ORIGINAL the two fills it
-     * and text_on_accent sit on have opposite polarity (see draw.h). Here the accent is
-     * the only fill measured, so the two agree -- by construction, not by accident. */
+    /* A separate role because on ORIGINAL the fills under it and text_on_accent have
+     * opposite polarity (see draw.h). Here only the accent is measured, so they agree. */
     out->text_lit       = out->text_on_accent;
     (void)light;
     out->dead           = toward(out->surface, down, 96);  /* "nothing here yet": below the plate */
@@ -328,38 +254,21 @@ void theme_ui_expand(struct theme_ui *out, const struct theme_palette *pal,
     out->track          = toward(out->surface, down, 48);
     out->tick           = toward(out->surface, up, 40);
     out->mark           = toward(sd->ground, down, 128);
-    /* warn and refuse have to stay TELLABLE APART -- one says "nothing to work with",
-     * the other answers a press. Same family, and the deck separates them by HUE and
-     * then by weight: 36 degrees toward the amber, then pulled back toward the
-     * lettering. Weight alone was not enough to tell them apart; see hue_rotate. */
+    /* warn and refuse must stay distinct. As on the deck, separated by hue first (36
+     * degrees toward amber), then by weight (toward the lettering); see hue_rotate. */
     out->warn           = toward(hue_rotate(sd->alarm, 36), sd->ink, 72);
     out->refuse         = sd->alarm;
-    /* The deck's own two bar greys through the palette. Derived from our plate instead,
-     * the lit one missed the deck's on five of the six themes -- #cdd9d5 against
-     * #a4aeaa on AURORA, #47485b against #686772 on SANDSTONE -- on a mark whose whole
-     * job is to say the button belongs to that row. */
+    /* The deck's two bar greys through the palette, so our bars match the deck's row
+     * (deriving from our plate does not). */
     out->bar            = pal ? theme_palette_argb(pal, k_ui_original.bar, ROLE_IS_FILL)
                               : k_ui_original.bar;
     out->bar_on         = pal ? theme_palette_argb(pal, k_ui_original.bar_on, ROLE_IS_FILL)
                               : k_ui_original.bar_on;
 
-    /* Opaque, always.
-     *
-     * A seed is authored as plain 0xRRGGBB -- there is no alpha in it, and there should
-     * not be: a seed states hues, not coverage. But the roles taken STRAIGHT off it
-     * inherit that missing byte, so surface, text, accent, bypass, refuse,
-     * text_on_accent and all three stems came out fully TRANSPARENT and the mod's own UI
-     * painted nothing at all on every seeded theme. The roles routed through toward()
-     * were fine, because it assembles its result with the alpha already in -- which is
-     * why what survived on screen was one button edge and one bar, and nothing else.
-     *
-     * ORIGINAL and WHITE were the two that looked right, and that is not a coincidence
-     * worth reading as evidence about them: they are simply the only themes that never
-     * reach this function.
-     *
-     * Forced once here rather than at each assignment, over the struct as a flat array of
-     * ARGB words -- the same reason derive() walks it that way. A role added to the struct
-     * and forgotten in a hand-written list is precisely the omission that caused this. */
+    /* Force every role opaque. Seeds are authored as 0xRRGGBB with no alpha, so roles
+     * copied straight from a seed would be fully transparent (toward() sets alpha
+     * itself). Done over the struct as a flat array of ARGB words, as in derive(), so new
+     * roles are covered. */
     {
         uint32_t *p = (uint32_t *)out;
         unsigned w, n = sizeof(*out) / sizeof(uint32_t);
@@ -369,14 +278,11 @@ void theme_ui_expand(struct theme_ui *out, const struct theme_palette *pal,
     }
 }
 
-/* Two roles that NAME DIFFERENT THINGS must not be the same colour.
+/* Log role pairs that name different things but have the same colour.
  *
- * Deliberately an exact-match test and not a contrast one. It is not trying to judge a
- * theme -- it is catching the one mistake a seed actually makes, which is reusing one of
- * its own colours for two jobs: three of the five seeds here had `alarm` set to one of
- * their own stems, so the bypass icon sat inside the wedge it exists to be told apart
- * from, and on one of them the X-PAD's armed flags came out identical to its value.
- * Nothing said so. An exact match cannot cry wolf about a theme that is merely tight.
+ * An exact-match test, not a contrast one: it catches a seed reusing one of its colours
+ * for two jobs (e.g. `alarm` equal to a stem, putting the bypass icon in the wedge's own
+ * colour) without flagging themes that are merely low-contrast.
  *
  * Once per theme change, on the message thread. [message] */
 static void theme_ui_warn(const struct theme_ui *u, const char *name)
@@ -417,10 +323,9 @@ static void theme_ui_warn(const struct theme_ui *u, const char *name)
     }
 }
 
-/* Bumped whenever the roles under a caller change. See mod_ui_gen in draw.h for what
- * it is for: a colour STORED on one of our components -- a juce::Label's lettering --
- * is not re-read at paint time the way a fill from mod_ui() is, so it survives a theme
- * change unless something puts it back. */
+/* Bumped whenever the roles change. See mod_ui_gen in draw.h: a colour stored on one of
+ * our components (a juce::Label's lettering) is not re-read at paint time, so it must be
+ * reset on a theme change. */
 static unsigned ui_g_gen = 1;
 
 unsigned mod_ui_gen(void)
@@ -428,9 +333,8 @@ unsigned mod_ui_gen(void)
     return __atomic_load_n(&ui_g_gen, __ATOMIC_RELAXED);
 }
 
-/* See draw.h. The palette IS the hook's transform, so this and an unbracketed fill
- * of the same value land on the same pixel; `is_fill` is 1 for the same reason the
- * hook passes 1 -- this is a surface, not a glyph. */
+/* See draw.h. Same transform as the setFill hook, so this matches an unbracketed fill of
+ * the same value; `is_fill` is 1 as in the hook. */
 uint32_t mod_colour_stock(uint32_t argb)
 {
     const struct theme_palette *pal = mod_theme()->palette;
@@ -450,15 +354,14 @@ const struct theme_ui *mod_ui(void)
         __atomic_add_fetch(&ui_g_gen, 1, __ATOMIC_RELAXED);
     }
 
-    /* Tell the draw kit which way the ground goes. Done here rather than from the theme
-     * switch because this is the call EVERY consumer already makes, so the kit cannot be
-     * left on a stale polarity by a path that changed the theme without announcing it. */
+    /* Tell the draw kit the ground polarity. Done here because every consumer calls
+     * mod_ui(), so the kit cannot miss a theme change. */
     if (t->light != told) {
         told = t->light;
         mod_draw_ground(t->light);
     }
 
-    /* Authored beats derived: a theme that says what its stems are gets to keep them. */
+    /* Authored roles take precedence over derived ones. */
     if (t->ui)
         return t->ui;
     if (t->seed) {
@@ -471,8 +374,7 @@ const struct theme_ui *mod_ui(void)
         }
         return &g_derived;
     }
-    /* ORIGINAL, and any theme that only re-tints images: no transform to apply, so hand
-     * back the source rather than a copy of it. */
+    /* No palette (ORIGINAL): return the source table itself. */
     if (t->palette == NULL)
         return &k_ui_original;
     if (id != g_derived_id) {

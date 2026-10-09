@@ -2,8 +2,8 @@
 /*
  * The search dialog.
  *
- * A native <dialog> opened with showModal(), which is what gives the focus
- * trap, the inert background and Escape without any of them being written here.
+ * A native <dialog> opened with showModal(), which provides the focus trap,
+ * the inert background and Escape.
  *
  * The list is driven by the keyboard first: the input keeps focus throughout
  * and the arrow keys move a selection that the results only render, so typing
@@ -163,8 +163,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
 
 <style scoped lang="scss">
 .dialog {
-  /* The element IS the backdrop area under showModal(); the panel inside it is
-   * what has a surface. */
+  /* Under showModal() the element is the backdrop area; the panel inside it
+   * has the surface. */
   width: min(38rem, calc(100vw - var(--space-4) * 2));
   max-height: min(32rem, calc(100dvh - var(--space-8)));
   margin: 0;

@@ -129,12 +129,11 @@
     }
   }
 
-  /* Screenshots. Boxed like a code block so a deck screenshot reads as a thing
-   * being shown rather than as decoration bleeding into the page.
+  /* Screenshots. Boxed like a code block so they read as content, not
+   * decoration.
    *
    * The deck's screen is 1280x720 and every shot is native, so they are never
-   * upscaled past their own width -- a stretched screenshot of a UI is a
-   * screenshot of a different UI. */
+   * upscaled past their own width. */
   img {
     display: block;
     width: 100%;
@@ -154,13 +153,12 @@
 
   /* A paragraph of nothing but images.
    *
-   * auto-fit rather than a fixed two columns, because this wraps BOTH cases: a
-   * lone screenshot is one paragraph of one image and must fill the column,
-   * while a pair or a set of seven should sit side by side. A hard
-   * `repeat(2, 1fr)` rendered every single screenshot at half width.
+   * auto-fit rather than a fixed two columns, because this covers both cases:
+   * a lone screenshot (one paragraph, one image) must fill the column, while a
+   * pair or a set of seven sits side by side.
    *
-   * The `min()` is what keeps it from overflowing below 20rem: the track floor
-   * becomes 100% there instead of a width the column does not have. */
+   * The `min()` keeps it from overflowing below 20rem: the track floor becomes
+   * 100% there instead of a width the column does not have. */
   .md-gallery {
     /* Galleries opt out of the reading measure: a side-by-side comparison at
      * 68 characters wide is two thumbnails. */
@@ -171,8 +169,8 @@
     margin-block: var(--space-5);
   }
 
-  /* A short silent clip of a gesture. Same box as a screenshot, because that is
-   * what it is standing in for; the caption carries what the motion shows. */
+  /* A short muted clip of a gesture, in the same box as a screenshot; the
+   * caption says what the motion shows. */
   .md-video {
     max-width: 100%;
     margin-block: var(--space-5);
@@ -304,11 +302,11 @@
  * mirror tokens/_color.scss exactly: dark by default, light by media query
  * unless overridden, light when explicitly chosen.
  *
- * FOREGROUND ONLY. Shiki also publishes a background per theme, and taking it
- * would put a github surface inside our own -- and would do it inconsistently,
- * because the scheme-specific selectors here outrank `.prose pre` while the
- * default one does not. The block's surface is the token; the syntax colours
- * are shiki's.
+ * Foreground only. Shiki also emits a background per theme; using it would
+ * put a GitHub surface inside ours, and inconsistently, because the
+ * scheme-specific selectors here outrank `.prose pre` while the default one
+ * does not. The block's surface comes from the tokens, the syntax colours from
+ * shiki.
  */
 .shiki,
 .shiki span {

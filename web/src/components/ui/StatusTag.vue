@@ -2,9 +2,8 @@
 /*
  * Whether a feature is finished.
  *
- * Only shown when it is not: a tag on everything would be noise, and "working"
- * is what a feature on the list is expected to be. `partial` is worth the row
- * it takes, because the alternative is a DJ finding out on a deck.
+ * Only shown when it is not; a tag on every feature would be noise. `partial`
+ * tells a DJ before they find out on a deck.
  */
 import type { FeatureStatus } from '@/content/features'
 

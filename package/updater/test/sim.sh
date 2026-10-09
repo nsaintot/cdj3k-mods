@@ -1,18 +1,18 @@
 #!/bin/bash
-# sim.sh - dry-run the install / runtime / removal scripts against a FAKE deck,
+# sim.sh - dry-run the install / runtime / removal scripts against a fake deck,
 # inside a container, so their behaviour can be checked before touching real
 # hardware. Run it via test/dryrun.sh (which provides the container).
 #
-# It models the one thing that makes the mechanism safe: pdj.tar.gz is an
-# overlay UPPER layer over /home/root, whose LOWER layer is the read-only stock
-# rootfs. Each boot the merged view is rebuilt as (stock + archive, archive
-# wins), and whatever /home/root/scripts/apl_start.sh resolves to is executed -
-# exactly as EP122.service would. The deck's hardware touch points (block
-# devices, systemctl, gui_image, ...) are stubbed; the update scripts themselves
-# run UNMODIFIED, straight from updater/src/.
+# It models what makes the mechanism safe: pdj.tar.gz is an overlay upper layer
+# over /home/root, whose lower layer is the read-only stock rootfs. Each boot
+# the merged view is rebuilt as (stock + archive, archive wins), and whatever
+# /home/root/scripts/apl_start.sh resolves to is executed, as EP122.service
+# would. The deck's hardware touch points (block devices, systemctl,
+# gui_image, ...) are stubbed; the update scripts run unmodified, straight from
+# updater/src/.
 #
-# The central claim under test: the phase `rm`s edit the extracted archive in a
-# mktemp dir, never the live system, so the STOCK rootfs is byte-identical from
+# The main claim under test: the phase `rm`s edit the extracted archive in a
+# mktemp dir, never the live system, so the stock rootfs is byte-identical from
 # first boot to last. That is asserted after every step.
 set -u
 
@@ -29,28 +29,20 @@ fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAILED=1; }
 step() { printf '\n== %s ==\n' "$*"; }
 
 # --- the integrity metric -----------------------------------------------------
-# This has to measure a tree the scripts under test can actually REACH. An
-# earlier version checksummed $STOCK (/sim/stock), which nothing under test ever
-# names: the scripts only touch /home/root, /mnt, /media, /tmp and mktemp dirs.
-# It could not fail, so the five "stock unchanged" assertions built on it were
-# decoration. Deliberately destructive mutants (a phase rm -rf'ing the live
-# /home/root, an installer mounting the wrong partition) passed the whole suite.
-#
-# So: measure the LIVE tree, at the paths the scripts really write, and record
-# more than content. md5sum over `-type f` is blind to modes, ownership,
-# symlinks, deletions of empty dirs and device nodes - all of which are ways a
-# bad update damages a deck. `tar` captures every one of those in one hash.
+# The metric must cover a live tree the scripts can reach (they only touch
+# /home/root, /mnt, /media, /tmp and mktemp dirs); a checksum of $STOCK
+# (/sim/stock) could never fail. md5sum over `-type f` misses modes, ownership,
+# symlinks, deleted empty dirs and device nodes, all of which a bad update can
+# damage; `tar` captures every one of them in one hash.
 # PROTECTED: the live system outside the overlay. Nothing this package does may
-# ever touch these, in any phase. Measured with tar so modes, ownership,
-# symlinks and empty directories all count, not just file content.
+# touch these, in any phase.
 PROTECTED_PATHS="/etc /usr"
 protected_sum() {
     tar --numeric-owner --sort=name -cf - $PROTECTED_PATHS 2>/dev/null | md5sum
 }
 
-# A canary: if a deliberate chmod does NOT move the hash, the metric is blind
-# and every assertion built on it is decoration. Fail loudly rather than report
-# false confidence - this is the check that the previous metric would have failed.
+# A canary: if a deliberate chmod does not move the hash, the metric is blind
+# and every assertion built on it is meaningless, so the run fails.
 protected_selftest() {
     local before after probe=/etc/.canary
     : > "$probe"; chmod 600 "$probe"; before=$(protected_sum)
@@ -59,23 +51,19 @@ protected_selftest() {
     [ "$before" != "$after" ]
 }
 
-# The real non-destructiveness claim: a script may change what the deck sees in
-# /home/root ONLY by rewriting the overlay archive - never by writing to the live
-# tree. So rebuild the expected merged view from (stock + current archive) and
-# diff it against what is actually there. A phase that rm -rf's or chmods the
-# live /home/root diverges here even though the archive is perfect.
-# Snapshot taken at boot, right after the overlay is applied and BEFORE the
-# launcher runs. Comparing against this proves the script changed the deck only
-# by rewriting the archive, never by writing to the live tree. (Comparing
-# against the archive instead would be wrong: a phase legitimately rewrites it
-# mid-boot, so the live tree is expected to lag it until the next boot.)
+# A script may change what the deck sees in /home/root only by rewriting the
+# overlay archive, never by writing to the live tree. The snapshot is taken at
+# boot, right after the overlay is applied and before the launcher runs; a
+# phase that rm -rf's or chmods the live /home/root diverges from it even when
+# the archive is correct. The archive itself is not a valid reference: a phase
+# rewrites it mid-boot, so the live tree lags it until the next boot.
 EXPECT=/sim/expect
 live_snapshot() { rm -rf "$EXPECT"; mkdir -p "$EXPECT"; cp -a /home/root/. "$EXPECT/" 2>/dev/null; }
 live_untouched() { diff -r --no-dereference "$EXPECT" /home/root >/dev/null 2>&1; }
 
-# extract the current overlay archive for inspection. Fails LOUDLY: a swallowed
-# tar error made "X was removed from the archive" assertions pass against a
-# corrupt or absent archive.
+# Extract the current overlay archive for inspection. Fails loudly, so "X was
+# removed from the archive" assertions cannot pass against a corrupt or absent
+# archive.
 peek() {
     local t; t=$(mktemp -d)
     if ! tar xzf /mnt/pdj.tar.gz -C "$t" 2>/dev/null; then
@@ -127,7 +115,7 @@ EOF
              "$STOCK/pdj/EP1000TestMode" "$STOCK/pdj/helper"
 
     # The settings partition (mmcblk1p7 on the deck), a separate mount from the
-    # overlay. The deck's OWN files sit beside ours and must survive a removal.
+    # overlay. The deck's own files sit beside ours and must survive a removal.
     # A symlink in the stock tree, because it is a mount point on the deck and
     # its contents are not part of the overlay.
     rm -rf "$SETTINGS"; mkdir -p "$SETTINGS"
@@ -138,7 +126,7 @@ EOF
     printf 'DECK-OWN-MY-SETTING'   > "$SETTINGS/CDJ3K_MYSETTING.DAT"
     ln -sfn "$SETTINGS" "$STOCK/settings"
 
-    # The ISO the deck would mount: the REAL update scripts + DUMMY binaries
+    # The ISO the deck would mount: the real update scripts + dummy binaries
     # (this harness tests the script plumbing, not the aarch64 binaries).
     cp "$SRC/usb_update.sh" "$SRC/phase1.sh" "$SRC/phase2.sh" \
        "$SRC/payload.sh"    "$SRC/uninstall.sh" "$ISO/"
@@ -149,9 +137,8 @@ echo "[stemd_client stub] up; LD_PRELOAD=${LD_PRELOAD:-<unset>}"
 EOF
     chmod +x "$ISO/mods/stemd_client"
 
-    # A stock deck's overlay is NOT empty: Pioneer's update ships pdj.tar.gz
-    # containing cache.conf. Model that, so every install runs against a
-    # realistic starting state rather than a blank one.
+    # A stock deck's overlay is not empty: the stock update ships pdj.tar.gz
+    # containing cache.conf, so every install starts from that.
     rm -rf /sim/stockoverlay; mkdir -p /sim/stockoverlay
     : > /sim/stockoverlay/cache.conf
     tar -czf /mnt/pdj.tar.gz -C /sim/stockoverlay . 2>/dev/null || true
@@ -163,7 +150,7 @@ EOF
     : > /media/CDJ3Kv000.UPD
 
     # Exactly one layout must be present, so the scripts' if/elif picks the
-    # branch under test and the other one is genuinely unreachable.
+    # branch under test and the other is unreachable.
     if [ "$VARIANT" = renesas ]; then
         rm -f /dev/mmcblk1p8 /dev/mmcblk1p7
         [ -b /dev/mmcblk0p5 ] || mknod /dev/mmcblk0p5 b 179 5
@@ -201,7 +188,7 @@ set -- $rest; dev=$1; tgt=$2
 echo "$opts|$dev|$tgt" >> /sim/mount.log
 case "$opts" in *remount*) exit 0;; esac
 # Only the overlay partition may be mounted for writing. Anything else is a bug
-# that would eat a real partition, so refuse it loudly instead of pretending.
+# that would destroy a real partition, so refuse it.
 case "$dev" in
   /dev/mmcblk1p8|/dev/mmcblk0p5) rmdir "$tgt" 2>/dev/null; ln -sfn /mnt "$tgt"; exit 0;;
   /dev/mmcblk1p7)                rmdir "$tgt" 2>/dev/null; ln -sfn /sim/settings "$tgt"; exit 0;;
@@ -269,7 +256,7 @@ boot() {
     # bit or a broken shebang has to fail here too.
     live_snapshot
     /home/root/scripts/apl_start.sh; BOOT_RC=$?
-    # Checked NOW, before the next boot's reset would heal anything a script
+    # Checked now, before the next boot's reset would heal anything a script
     # wrote directly to the live tree.
     live_untouched || BOOT_DAMAGED=1
     return $BOOT_RC
@@ -300,10 +287,10 @@ P=$(peek)
 grep -q '^71$' /sys/class/gpio/export && pass "front-panel LED GPIO 71 exported" || fail "LED not exported"
 grep -q '^out$' /sys/class/gpio/gpio71/direction && pass "LED GPIO set to output" || fail "LED direction not set"
 grep -qE '^[01]$' /sys/class/gpio/gpio71/value && pass "LED is being driven (blink running)" || fail "LED never driven"
-# gui_image NEVER RETURNS - it paints a full screen and stays up until killed,
-# which is why the deck's recovery always backgrounds it. A foreground call here
-# hung a real install: the log stopped mid-line and the deck fell back to asking
-# for the stick. Guard the shape at the source, since the stub cannot block.
+# gui_image never returns: it paints a full screen and stays up until killed,
+# so the deck's recovery always backgrounds it. A foreground call hangs the
+# install (the log stops mid-line and the deck falls back to asking for the
+# stick). Check the source, since the stub cannot block.
 bad=$(grep -n 'gui_image' "$SRC"/usb_update.sh \
       | grep -vE '^[0-9]+:[[:space:]]*#' \
       | grep -vE '&[[:space:]]*$' \
@@ -443,9 +430,8 @@ bad=$(grep -v 'remount' /sim/mount.log | cut -d'|' -f2 | grep -vE '^/dev/mmcblk(
 [ -z "$bad" ] && pass "only the overlay and settings partitions were mounted rw" || fail "mounted rw: $bad"
 
 step "STEP 5e  firmware below 3.13 is refused before anything is written"
-# 3.12, not 2.99: the version one step below the floor is the only one that can
-# tell this gate from the 3.00 one it replaced. A major-version case passes
-# under either and proves nothing about where the boundary sits.
+# 3.12, one step below the floor, is what pins where the boundary sits; a
+# major-version case such as 2.99 would also pass a 3.00 floor.
 rm -f /mnt/pdj.tar.gz; : > /sim/gui_image.log
 echo "3.12" > /sim/fw_release
 # mods_fail holds the error image up forever, so the run has to be timed out.
@@ -532,9 +518,9 @@ echo "$out" | grep -q 'helper] a launcher tool ran; LD_PRELOAD=<unset>' \
 step "STEP 8  UNRECOGNISED launcher -> installs nothing, deck stays stock"
 setup rockchip
 rm -f /mnt/pdj.tar.gz /media/*.log; rm -rf /mnt/cdj3k-mods-logs
-# A launcher that DOES start the app, but in a form our pattern does not
-# recognise (`exec ./EP1000`, not a bare `./EP1000` line). This is the case that
-# matters: phase2 still runs, so it has to refuse rather than guess.
+# A launcher that does start the app, but in a form our pattern does not
+# recognise (`exec ./EP1000`, not a bare `./EP1000` line). phase2 still runs,
+# so it must refuse instead of guessing.
 cat > "$STOCK/scripts/apl_start.sh" <<'EOF'
 #!/bin/bash
 /home/root/pdj/helper
@@ -559,9 +545,9 @@ echo "$out" | grep -q 'LD_PRELOAD=<unset>' \
 
 step "STEP 9  UPDATE an already-modded deck (v1 -> v2): no compounding"
 setup rockchip
-# NOTE: do NOT clear /mnt/pdj.tar.gz here - setup() has just written the stock
-# overlay (cache.conf) and this step is specifically about installing onto a
-# deck that already has one.
+# Do not clear /mnt/pdj.tar.gz here: setup() has just written the stock
+# overlay (cache.conf), and this step tests installing onto a deck that already
+# has one.
 rm -f /media/*.log; rm -rf /mnt/cdj3k-mods-logs
 printf '\177ELF shim-v1\n' > "$ISO/mods/ep122_shim.so"
 

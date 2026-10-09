@@ -1,12 +1,48 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
  * mods/stem/grid_edit.c - moving, scaling and resetting the deck's beat grid.
+ *
+ * The CDJ-3000X grid panel's [x2], [x1/2], [Enlarge] and [Reduce], which the
+ * 3000 lacks, are all one operation: rescale the beat interval. Every mode of
+ * the deck's own gridAdjustChengeReq moves only the int16 offset, so there is
+ * no firmware path to borrow and the grid array has to be replaced.
+ *
+ * Replacing the array is safe. The loaded array is laid out as:
+ *
+ *     [ chunk size 0x3465 ][ 16 x 0xAF ][ N cells ][ 16 x 0xEF ]
+ *                           ^ beats-16   ^ beats
+ *
+ * The 0xAF/0xEF runs are meow::overrun_helper::Checker's red zones (the
+ * "signiture" it asserts on), and the word at beats-24 is a glibc chunk header
+ * (0x3460 with PREV_INUSE|NON_MAIN_ARENA) sized exactly for 16 + N*16 + 16. So
+ * the array is ordinary heap from operator new, and `operator delete` on it is
+ * a plain free of beats-16. The shim shares the process heap, so a malloc'd
+ * replacement handed over as ours+16 with both red zones written is
+ * indistinguishable from the deck's own. This makes [x2], which needs more
+ * cells than exist, no riskier than the in-place edits.
+ *
+ * The original is never freed or written, so RESET is a restore rather than an
+ * inverse calculation. Our arrays leak instead, ~13 kB per edit.
+ *
+ * Swapping under live readers: pointer and count are two words and cannot be
+ * exchanged atomically, so the order keeps every intermediate state in bounds:
+ *
+ *   growing   pointer first, then count: a reader in between sees the new,
+ *             longer array with the old, smaller count
+ *   shrinking count first, then pointer: a reader in between sees the old
+ *             array with the new, smaller count
+ *
+ * The beats and bars are swapped one after the other, so a reader can briefly
+ * pair new beats with old bars: a bar number one frame stale, never an
+ * out-of-bounds read.
  */
 #include "stem/grid_internal.h"
 #include "cue/cue.h"
 #include "db/db.h"
 #include "kit/mod.h"
 
+/* The original grid's position at fractional beat index `x`, interpolated.
+ * Outside the array the end intervals are extended. */
 static double grid_pos_at(const int64_t *pos, int32_t n, double x)
 {
     int32_t i;
@@ -24,6 +60,9 @@ static double grid_pos_at(const int64_t *pos, int32_t n, double x)
     return (double)pos[i] + f * (double)(pos[i + 1] - pos[i]);
 }
 
+/* Point one (pointer, count) pair at a new array, in the order that keeps
+ * every intermediate state in bounds (see the file header). Used for both of a
+ * Content's arrays. */
 static int grid_swap_pair(uintptr_t content, unsigned ptr_off, unsigned cnt_off,
                           uintptr_t arr, int32_t count, int32_t old_count)
 {
@@ -46,6 +85,19 @@ static int grid_swap(uintptr_t content, uintptr_t beats, int32_t count,
                           beats, count, old_count);
 }
 
+/* The bar array for a grid of `n_new` beats whose original first downbeat was
+ * `bar0`, rescaled by `k`.
+ *
+ * Four beats to a bar, phased on the original downbeat. Scaling the old bar
+ * indices by k would keep the number of bars (eight-beat bars after a x2); a x2
+ * means twice as many bars. So the phase is carried and the spacing rebuilt.
+ *
+ * The phase is taken mod 4 because the deck's own reader assumes the first
+ * downbeat is inside the first bar: before it, it answers i - bars[0] + 4,
+ * which goes negative if bars[0] >= 4.
+ *
+ * Returns the array (the pointer the Content wants, guards written) or 0, and
+ * the count in *n_out. */
 static uintptr_t grid_build_bars(int32_t bar0, double k, int32_t n_new,
                                  int32_t *n_out)
 {
@@ -101,9 +153,8 @@ int stem_grid_edit_scale(double k)
         return -1;
     }
 
-    /* The FIRST edit on this content is what RESET goes back to. A later edit
-     * rescales the ORIGINAL rather than compounding, so tapping x2 twice is x2
-     * and not x4 -- which is what a control with its own RESET means. */
+    /* The first edit on this content records what RESET restores. Later edits
+     * rescale the original instead of compounding: x2 twice is x2, not x4. */
     if (grid_g_orig_content != content) {
         grid_g_orig_content = content;
         grid_g_orig_beats   = beats;
@@ -124,9 +175,9 @@ int stem_grid_edit_scale(double k)
         return -1;
     }
 
-    /* The original, read once into our own memory: the interpolation below
-     * reads it n_new times and each mod_safe_read is a syscall. Positions and
-     * per-beat BPMs both, because a cell is both. */
+    /* Read the original positions and per-beat BPMs once into our memory: the
+     * interpolation reads them n_new times and each mod_safe_read is a
+     * syscall. */
     orig = malloc((size_t)count * sizeof(*orig));
     obpm = malloc((size_t)count * sizeof(*obpm));
     if (!orig || !obpm) {
@@ -159,10 +210,9 @@ int stem_grid_edit_scale(double k)
     for (j = 0; j < n_new; j++) {
         double  x = (double)j / k;
         int64_t p = (int64_t)(grid_pos_at(orig, count, x) + 0.5);
-        /* The cell's own BPM, scaled by the same k -- this is what the deck's
-         * readout shows, so leaving it alone makes a rescaled grid read 0.0.
-         * Taken from the source beat rather than a constant, so a variable
-         * grid keeps its shape here too. */
+        /* The cell's BPM, scaled by k from the source beat so a variable grid
+         * keeps its shape. The deck's readout shows it; left alone it would
+         * read 0.0. */
         int32_t i0 = (int32_t)x;
         double  b;
 
@@ -182,10 +232,8 @@ int stem_grid_edit_scale(double k)
         return -1;
     }
 
-    /* And the bars, which are the same grid counted differently. A Content with
-     * no bar array is left without one: the deck answers "no bar" for every
-     * beat there already, and inventing a structure it never had is a change
-     * nobody asked for. */
+    /* Rebuild the bars too. A Content with no bar array is left without one;
+     * the deck already answers "no bar" for every beat there. */
     if (grid_g_orig_bars && grid_g_orig_barcnt > 0) {
         int32_t bar0 = 0, nbar = 0;
         uintptr_t bars;
@@ -203,7 +251,7 @@ int stem_grid_edit_scale(double k)
                  (int)nbar, (int)grid_g_orig_barcnt, (int)bar0);
     }
 
-    /* Ours leaks deliberately -- see the header. */
+    /* Ours leaks deliberately; see the file header. */
     MDBG("grid: rescaled by %.4f -> %d beats (was %d)\n", k, n_new,
          (int)grid_g_orig_count);
     return 0;
@@ -272,6 +320,33 @@ static uintptr_t grid_cache(void)
     return cif.obj;
 }
 
+/* Make an edit persist. The edits move the Content the deck cached for this
+ * track, which lives only as long as the cache entry: gone at the next eject,
+ * possibly sooner on a media re-read.
+ *
+ * The grid is registered the way the deck keeps its own: no file is opened, no
+ * format is reimplemented, and the write lands where the deck's writes land.
+ * The chain, client end first:
+ *
+ *   TrackInfoRepositoryCache::registerBeatGrid    slot 0x50, the cache is
+ *     |                                           updated on the way past
+ *     -> CacheableBeatGrid::registerBeatGrid
+ *        -> BeatGridBodyRegisterCommand::doExecute
+ *           -> TrackInfoRepositoryRequestFacade, as IBeatGridRegistrar
+ *              -> Quantize_RegisterTicket    CMD_SAV_SPECIFIED_ATOM_INFO
+ *                 -> [DB][SRV] "update specified atom"
+ *
+ * The last step writes the Quantize atom of the track's analysis file (ANLZ
+ * under PIONEER/USBANLZ), not the library the browser reads.
+ *
+ * The arguments mirror the deck's GRID ADJUST, which registers an offset
+ * through slot 0x58 with the same arguments except an int16 where this passes
+ * a grid, as built in trackinfo_stocker::BeatGridOffsetRegistHandler::doRequest
+ * (including the listener reference and the priority byte).
+ *
+ * The browser's tempo beside the title is DJDBCONTENT.BPM in the media library,
+ * a different back end that registering a grid does not update, so it is set
+ * here too via mod_djdb_set_bpm, where the TrackID naming the row is known. */
 int stem_grid_edit_save(void)
 {
     struct grid_listener_ref lr = { 0, 0, 0 };
@@ -284,8 +359,7 @@ int stem_grid_edit_save(void)
     double    bpm;
     int       ok;
 
-    /* Which track, before anything else: a holder we cannot name is one we can
-     * edit and must not write. */
+    /* A holder without a TrackID can be edited but must not be saved. */
     if (!grid_g_holder_tid_lo && !grid_g_holder_tid_hi) {
         MDBG("grid: this grid did not come with a TrackID -> not saved\n");
         return -1;
@@ -321,8 +395,8 @@ int stem_grid_edit_save(void)
          (unsigned long long)tid[0], (unsigned long long)tid[1],
          ok ? "accepted" : "REFUSED");
 
-    /* The library's own copy of the tempo, which the grid does not reach. The
-     * content id is the TrackID's third word -- the low half of its second
+    /* The library's copy of the tempo, which the grid does not update. The
+     * content id is the TrackID's third word, the low half of its second
      * doubleword. */
     bpm = stem_grid_bpm();
     if (bpm > 0.0)

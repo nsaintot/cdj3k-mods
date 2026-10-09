@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * mods/stem/audio_probe.c - watching the stretcher, capturing its blocks, and the periodic report.
+ * mods/stem/audio_probe.c - watching the stretcher, the track watch, and the periodic report.
  */
 #include "stem/audio_internal.h"
 #include <math.h>
@@ -12,6 +12,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+/* Accumulate one call, nothing else. This runs on the audio thread and the
+ * track loader thread, where MDBG is unsafe: it is fprintf+fflush to a stderr
+ * that journald drains, so under backpressure it blocks. A blocked loader
+ * thread times out dj_player::AsyncLoadFunctionHandler::waitForAsyncProcessing
+ * and the deck sits at "Not Loaded" with the hot cues blinking. mod_safe_read
+ * is out too (a pread syscall per call). mod_stem_audio_report() prints from
+ * the message thread. */
 void probe_tick(struct probe *p, int64_t len)
 {
     uint64_t n = (uint64_t)(len > 0 ? len : 0);
@@ -23,6 +30,10 @@ void probe_tick(struct probe *p, int64_t len)
     if (n > p->win_maxblk) p->win_maxblk = n;
 }
 
+/* Track change: drop the old stems and ask for the new track's. Runs from every
+ * paint, outside the report window, which would otherwise add up to
+ * PROBE_WIN_SEC before the upload starts. The remaining delay is the worker's
+ * usleep (<=100 ms) and the length probe (~0.5-2 s for an 8-minute track). */
 static void stem_track_act(const char *path, const char *why)
 {
     static char acted_on[STEM_CACHE_PATH_MAX];
@@ -36,25 +47,33 @@ static void stem_track_act(const char *path, const char *why)
     MDBG("stem_audio: track change (%s) -> %s [%s]\n", why,
          g_stems_on ? "requesting stems" : "STEMS off, idle",
          path ? path : "no path yet");
-    /* The waveform first, and from HERE rather than from the worker's cancel
-     * branch. This is the instant the sourceId moves; the worker gets there up
-     * to 100 ms later, and in that window the levels below snap back to unity,
-     * the wave worker sees gains move, and it repaints the NEW track's array
-     * from the OLD track's pristine copy -- which the deck then never corrects,
-     * because it has already finished filling it. That is the waveform stuck
-     * showing the previous track. */
+    /* The waveform first, and from here rather than from the worker, which
+     * gets there up to 100 ms later. In that window the levels below snap to
+     * unity, the wave worker sees gains move and repaints the new track's
+     * array from the old track's pristine copy, which the deck never corrects
+     * because it has already filled it. */
     wave_stems_track_gone();
-    /* Before the cancel, so the levels are already at unity by the time the old
-     * set is dropped and there is no window where a leftover level could be
-     * applied to whatever arrives next. Safe from here: this whole function runs
-     * on the message thread, which is the one that owns the Sliders. */
+    /* Before the teardown, so the levels are at unity when the old set is
+     * dropped and no leftover level applies to the next track. This runs on the
+     * message thread, which owns the Sliders. */
     mod_stems_reset_levels();
-    /* Naming the new track IS the teardown: it clears readiness and hands the
+    /* Naming the new track is the teardown: it clears readiness and gives the
      * loader a new generation. A separation running for the track we just left
-     * is deliberately untouched -- it finishes into the cache. */
+     * is left alone and finishes into the cache. */
     stem_job_set_track(path);
 }
 
+/* Resolve the sourceId to a path and act on it here, on the message thread
+ * (the sequence moves Sliders). Two ways of learning the id:
+ *
+ * The page pool's reads. A deck parked at the cue point still pre-buffers, so
+ * those reads carry the track's id with a countdown in the top half; masking
+ * that half (see stem_source_read) is what makes AUTO CUE work.
+ *
+ * The deck's own load result, for a deck loaded and left at 0:00 with AUTO CUE
+ * off, which reads nothing.
+ *
+ * Both feed stem_track_act, deduplicated on the path. */
 static void stem_track_watch(void)
 {
     static uint32_t seen_track, seen_load;
@@ -62,9 +81,9 @@ static void stem_track_watch(void)
     uint32_t lgen = __atomic_load_n(&g_load.gen, __ATOMIC_RELAXED);
     char sid[64];
 
-    /* The load event first: it is the earlier of the two on a deck that loads
-     * and does not play, and on one that does the reads follow with the same id
-     * and stem_track_act sees the same path. */
+    /* The load event first: it comes first on a deck that loads and does not
+     * play; on one that does, the reads follow with the same id and
+     * stem_track_act sees the same path. */
     if (lgen != seen_load && !(lgen & 1u)) {
         uint64_t lo, hi;
 
@@ -84,15 +103,17 @@ static void stem_track_watch(void)
         return;
     seen_track = gen;
 
-    /* Resolve WHICH track before anything else. The sourceId is the only honest
-     * answer -- the deck opens nothing when the pool already holds the track, so
-     * asking decode.c for "the last file opened" hands back the previous song. */
+    /* Resolve which track first. Only the sourceId is reliable: the deck opens
+     * nothing when the pool already holds the track, so "the last file opened"
+     * can be the previous song. */
     snprintf(sid, sizeof(sid), "sid %llx:%llx",
              (unsigned long long)g_src.sid_hi,
              (unsigned long long)g_src.sid_lo);
     stem_track_act(stem_decode_path_for_sid(g_src.sid_lo, g_src.sid_hi), sid);
 }
 
+/* Called from the play-screen paint hook on the juce message thread, where
+ * blocking on stderr costs a dropped frame rather than an audio stall. */
 void mod_stem_audio_report(void)
 {
     static uint64_t last;
@@ -123,8 +144,7 @@ void mod_stem_audio_report(void)
 
         p->win_calls = p->win_frames = p->win_maxblk = 0;
         if (!calls) continue;
-        /* The stretcher's window IS the engine rate, so it is published from
-         * here rather than sampled again somewhere else. */
+        /* The stretcher's window is the engine rate, so publish it here. */
         if (i == PROBE_STRETCH) {
             int r = snap_rate((frames * hz) / dt);
 
@@ -145,12 +165,10 @@ void mod_stem_audio_report(void)
              (unsigned long long)p->calls);
     }
 
-    /* The mix point, reported until it is established and then only on change.
-     * `vt` is the one number worth carrying off the deck: it names the source
-     * class through ep122sym.py and confirms the stretcher is fed by what we
-     * think it is. A second vt means two players are alive and only one of them
-     * is being mixed -- loud, because the symptom is otherwise just one stem
-     * bank quietly doing nothing. */
+    /* The mix point, reported until established and then only on change. `vt`
+     * identifies the source class feeding the stretcher. A second vt means two players are alive and only one is being
+     * mixed; warned loudly because otherwise one stem bank silently does
+     * nothing. */
     {
         static uintptr_t reported_vt;
         static uint64_t  reported_sets;
@@ -169,11 +187,10 @@ void mod_stem_audio_report(void)
                  (unsigned long long)g_src.misses, g_src.last);
         }
         if (g_src.hits) {
-            /* Printed every window while audio flows: this is the number that
-             * says a slider move landed, and it is only useful as a series.
-             * `posrate` is the pool's sample rate at 1.0x -- the alignment
-             * constant for every stem -- and `sid` identifies the track the
-             * pool is serving, which is what a track change moves. */
+            /* Printed every window while audio flows, to show slider moves
+             * landing. `posrate` is the pool's sample rate at 1.0x (the
+             * alignment constant for every stem); `sid` is the track the pool
+             * is serving. */
             static int64_t last_pos;
             int64_t dpos = g_src.pos - last_pos;
             uint64_t posrate = (dpos > 0 ? (uint64_t)dpos : 0) * hz / dt;
@@ -227,6 +244,11 @@ void mod_stem_audio_report(void)
     }
 }
 
+/* Is this read the loaded track's? Decided by the sourceId in the Position,
+ * not by the object. The adapter's own +0x18 is a CascadedTimeStretchManager
+ * but not the one setSource is called on, so the objects never match. The id
+ * is masked as in stem_source_read: the top half of `hi` counts down while a
+ * track is still arriving. */
 static int stretch_is_play_path(const void *src)
 {
     uint64_t lo, hi;
@@ -246,6 +268,15 @@ static int stretch_is_play_path(const void *src)
     return 1;
 }
 
+/* ReadableTimeStretchAdapter::read is a three-line forwarder:
+ *
+ *     x4 = *(this + 0x18);                    // the CascadedTimeStretchManager
+ *     (*(*x4 + 0x98))(x4, src_pos, dst);      // operate(), not IReadable::read
+ *     return sret;
+ *
+ * so it sees the stretcher's output. It carries steady playback (constant
+ * 64-frame blocks matching the ALSA period), which lets the rate report tell
+ * the play path from a loader or the preview player. */
 pcm_pos_t probe_read_stretch(void *self, void *dst, const void *src, int64_t len)
 {
     struct probe *p = &g_probe[PROBE_STRETCH];
@@ -255,9 +286,9 @@ pcm_pos_t probe_read_stretch(void *self, void *dst, const void *src, int64_t len
     probe_tick(p, len);
     r = ((read_fn_t)p->orig)(self, dst, src, len);
 
-    /* THE POST-STRETCH MIX POINT. `dst` now holds the stretcher's output, so
-     * anything summed here is past everything that would have warped it -- see
-     * xpad/ext.h for why the sampler needs that and the stems do not. */
+    /* The post-stretch mix point. `dst` now holds the stretcher's output, so
+     * anything summed here is not warped by it; see xpad/ext.h for why the
+     * sampler needs that and the stems do not. */
     if (dst && len > 0 && stretch_is_play_path(src)) {
         int64_t rp = 0, d;
 

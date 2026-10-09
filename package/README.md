@@ -8,7 +8,7 @@ removes them.
 ```
 deck/       deck-side sources: the mods, the STEMS sidecar, tests.
             mods.mk is the shared source list, included by this build and by
-            the emulator's
+            any other that links the mods
 docker/     the aarch64 build
 updater/    the .UPD builder and its install/runtime/removal scripts
 build.sh    build the binaries and pack a .UPD
@@ -37,13 +37,13 @@ writes to the read-only rootfs, no reflash.
 The deck mounts the first FAT32/exFAT volume it can — the bare device, then
 partitions 1 to 5 — and gives up on the stick if the `.UPD` is not on that one.
 A stick formatted on macOS with a **GUID partition map** therefore fails: its EFI
-partition is found first and holds no `.UPD`, and the deck sits on "Connect USB
+partition is found first and holds no `.UPD`, and the deck stays on "Connect USB
 storage device" until you unplug. Format as **MBR with a single FAT32
-partition** and this cannot happen.
+partition**.
 
-**Updating** is just flashing the newer `.UPD`; there is no need to remove first.
-The overlay is rebuilt from scratch each time, so nothing stacks and nothing from
-an older version lingers.
+**Updating** is flashing the newer `.UPD`; there is no need to remove first.
+The overlay is rebuilt from scratch each time, so nothing from an older version
+remains.
 
 **Removing**: the deck's front-panel service-mode key combo, or flash the removal
 `.UPD` from `uninstall/`. Either way the deck returns to stock.
@@ -119,10 +119,10 @@ boot, so nothing changes until then.
 ssh cdj-real systemctl reboot
 ```
 
-Installing the mods in the first place is still the `.UPD`'s job; `devpush.sh`
-refuses a deck that is not already modded. There is no rollback, so push a build
-you have already run: a shim that crashes EP122 leaves the deck in a reboot loop,
-and the way out is flashing the `.UPD`.
+The first install still needs the `.UPD`; `devpush.sh` refuses a deck that is
+not already modded. There is no rollback, so push a build you have already run:
+a shim that crashes EP122 leaves the deck in a reboot loop, and the only fix is
+flashing the `.UPD`.
 
 ## Hardware variants
 
