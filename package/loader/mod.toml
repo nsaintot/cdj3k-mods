@@ -1,0 +1,13 @@
+[mod]
+name = "cdj3k-mods"
+version = "@VERSION@"
+author = "nsaintot"
+description = "QoL missing features from the stock firmware: Gate Cue, MOD SETTINGS, Themes, STEMS, X-PAD."
+url = "https://github.com/nsaintot/cdj3k-mods"
+# The shim acts only inside EP122; the shell helpers that
+# apl_start.sh starts load it and are not affected.
+preload = ["ep122_shim.so"]
+
+# The firmwares the shim resolves every symbol on (RK3399 and Renesas).
+[compat]
+cdj3k = ">=3.13, <=3.22"
