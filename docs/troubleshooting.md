@@ -114,8 +114,11 @@ See [browsing](browsing.md).
 
 ## The waveform does not follow the faders
 
-You are on a waveform style other than the **3-band** detailed waveform. The
-others do not follow the faders yet.
+- Only the detailed waveform follows the faders. The overview does not.
+- **BYPASS** is on, or **ENABLE STEMS** is off: the deck's own waveform is
+  shown.
+- The track has not played yet. The waveform starts following once playback
+  has started.
 
 ## Something looks wrong under a theme
 

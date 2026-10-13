@@ -19,8 +19,8 @@
  *   slots 2-4  onEmptyDetailedWaveformCreated_{3Band,RGB,Blue}
  *   slots 5-7  replyDetailedWaveformRequest_{3Band,RGB,Blue}
  *
- * Only the selected style is requested, so whichever hook fires is the active
- * one. The classes come from the resolver; only the offsets are stated here. */
+ * Each style's reply is latched and scaled. The classes come from the resolver;
+ * only the offsets are stated here. */
 #define WS_OFF_REPLY_3BAND 0x28
 #define WS_OFF_REPLY_RGB   0x30
 #define WS_OFF_REPLY_BLUE  0x38
