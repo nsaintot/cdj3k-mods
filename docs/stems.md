@@ -133,8 +133,15 @@ Same track, same point in it, with only the DRUMS fader moved:
 
 Put the faders back to full and the stock waveform returns exactly.
 
-> Only the **3-band** detailed waveform style follows the faders. The other
-> styles do not yet.
+All three detailed waveform styles follow the faders:
+
+| Style | What follows the faders |
+| --- | --- |
+| **3-band** | Each band's height, by that band's share of each part |
+| **RGB** | The height. The colour stays the full mix's |
+| **BLUE** | The height and the whiteness |
+
+The overview waveform does not follow the faders.
 
 ## The dot on the STEMS button
 
