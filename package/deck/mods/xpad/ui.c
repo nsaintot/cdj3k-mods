@@ -388,7 +388,7 @@ static int xpad_ui_install(void)
     xpad_g_api_ok = FN_ADD_VISIBLE && FN_SET_BOUNDS && FN_LABEL_CTOR &&
                     FN_LABEL_SETFONT && FN_LABEL_JUSTIFY &&
                     MOD_FN_GFX_SETCOLOUR && MOD_FN_GFX_FILLRECT &&
-                    MOD_FN_GFX_SETFONT && MOD_FN_GFX_DRAWTEXT;
+                    MOD_FN_GFX_SETFONT && MOD_FN_GFX_DRAWFITTEDTEXT;
     if (!xpad_g_api_ok) {
         MDBG("xpad: juce primitives did not resolve -> feature off\n");
         return -1;

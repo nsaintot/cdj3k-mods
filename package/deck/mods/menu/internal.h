@@ -190,7 +190,7 @@ extern "C" {
 /* JUCE render primitives. */
 #define FN_G_SETFONT   ep122_sym(EP122_JUCE_GFX_SETFONT)  /* juce::Graphics::setFont(Graphics*, Font*)        */
 #define FN_G_SETCOL    ep122_sym(EP122_JUCE_GFX_SETCOLOUR)  /* juce::Graphics::setColour(Graphics*, Colour*)    */
-#define FN_DRAW_TEXT   ep122_sym(EP122_JUCE_GFX_DRAWTEXT)  /* drawText(g,String*,x,y,w,h,Justification*,ellip) */
+#define FN_DRAW_FITTED ep122_sym(EP122_JUCE_GFX_DRAWFITTEDTEXT)  /* drawFittedText(g,String*,x,y,w,h,Justification*,maxLines,minScale) */
 
 /* No prologue guards: every primitive below comes from a masked signature match
  * or a vtable found by the RTTI walk, which validates the target better. */
@@ -292,7 +292,8 @@ extern "C" {
 /* font_ret_t / str_ret_t and the x8 return convention: ../juce.h */
 typedef str_ret_t (*key_to_text_t)(int key);
 typedef void      (*kbdkey_t)(void *listener, long key);
-typedef void    (*draw_text_t)(void *g, void *str, int x, int y, int w, int h, int *justif, int ellipsis);
+typedef void    (*draw_fitted_t)(void *g, void *str, int x, int y, int w, int h, int *justif,
+                                 int max_lines, float min_scale);
 typedef int32_t (*numrows_t)(void *self);
 typedef void    (*paintcell_t)(void *self, void *g, int row, int col, int w, int h, int sel);
 typedef int64_t (*switch_t)(void *view, long a2, long delta);

@@ -41,7 +41,7 @@ void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
 {
     int j = justification;
 
-    if (!MOD_FN_GFX_SETFONT || !MOD_FN_GFX_DRAWTEXT || !FN_FONT_BUILD ||
+    if (!MOD_FN_GFX_SETFONT || !MOD_FN_GFX_DRAWFITTEDTEXT || !FN_FONT_BUILD ||
         !FN_STR_CTOR)
         return;
 
@@ -53,10 +53,10 @@ void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
     mod_gfx_colour(g, argb);
 
     juce::String s(text);
-    /* The trailing 1 is juce's useEllipsesIfTooBig: text that does not fit is
-     * truncated with an ellipsis instead of squashed. */
-    ep_call(void(void *, void *, int, int, int, int, int *, int))
-        ::at(MOD_FN_GFX_DRAWTEXT, g, s, x, y, w, h, &j, 1);
+    /* One line, minimumHorizontalScale 0.0f: the arguments stock paintCell
+     * passes. The scale is passed in s0 and must be set explicitly. */
+    ep_call(void(void *, void *, int, int, int, int, int *, int, float))
+        ::at(MOD_FN_GFX_DRAWFITTEDTEXT, g, s, x, y, w, h, &j, 1, 0.0f);
 }
 
 uint32_t mod_colour_scale(uint32_t argb, uint32_t q8)

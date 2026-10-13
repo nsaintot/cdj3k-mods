@@ -34,7 +34,7 @@ void menu_draw_field(void *self, void *g, uintptr_t fonth_off, uint32_t colour,
     uint8_t s[16] __attribute__((aligned(16)));
     int j = justif;
     ((str_ctor_t)FN_STR_CTOR)(s, text);
-    ((draw_text_t)FN_DRAW_TEXT)(g, s, x, 0, w, h, &j, 1);
+    ((draw_fitted_t)FN_DRAW_FITTED)(g, s, x, 0, w, h, &j, 1, 0.0f);   /* stock's arguments */
     ((str_dtor_t)FN_STR_DTOR)(s);
 }
 
@@ -58,8 +58,8 @@ void menu_draw_mod_header(void *self, void *g, int w, int h, const char *text)
     if (!menu_g_render_ok) return;
     menu_draw_field(self, g, MODEL_LBL_FONTH_OFF, MOD_HEADER_COLOUR, text, 0xe, w, h, 1);
     /* The build version, right-aligned in the value column; the only place a DJ
-     * can see it without a shell. drawText ellipsises a long version instead of
-     * overlapping the title. */
+     * can see it without a shell. drawFittedText squeezes a long version into
+     * its box instead of overlapping the title. */
     menu_draw_field(self, g, MODEL_VAL_FONTH_OFF, MOD_HEADER_COLOUR,
                EP122_MOD_VERSION, 0, w - 0xe, h, 2);
 }

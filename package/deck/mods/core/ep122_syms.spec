@@ -411,7 +411,7 @@ func JUCE_FONT_DTOR          addr=0x1afa8a0 ren=0x1d2d530
 func JUCE_GFX_SETFONT        addr=0x1ad0840 ren=0x1cf9ae0
 func JUCE_GFX_SETCOLOUR      addr=0x1ad03f0 ren=0x1d28110
 func JUCE_GFX_FILLRECT_INT   addr=0x1ad0930 ren=0x1cf9bc0
-func JUCE_GFX_DRAWTEXT       addr=0x1b0c600 ren=0x1d34b00
+func JUCE_GFX_DRAWFITTEDTEXT addr=0x1b0c600 ren=0x1d34b00
 func JUCE_COMP_REPAINT_RECT  addr=0x1ba7620 ren=0x1dbe2e0
 func JUCE_COMP_REPAINT       addr=0x1ba9e50 ren=0x1dc0ad0
 func JUCE_COMP_SETCOLOUR     addr=0x1b5f510 ren=0x1d7db70

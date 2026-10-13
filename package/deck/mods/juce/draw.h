@@ -39,7 +39,7 @@ extern "C" {
 #define MOD_FN_GFX_FILLRECT   ep122_sym(EP122_JUCE_GFX_FILLRECT_INT)  /* fillRect(int x,int y,int w,int h)  */
 
 #define MOD_FN_GFX_SETFONT    ep122_sym(EP122_JUCE_GFX_SETFONT)       /* setFont(const Font&)              */
-#define MOD_FN_GFX_DRAWTEXT   ep122_sym(EP122_JUCE_GFX_DRAWTEXT)      /* drawText(String, x,y,w,h, just, e) */
+#define MOD_FN_GFX_DRAWFITTEDTEXT ep122_sym(EP122_JUCE_GFX_DRAWFITTEDTEXT) /* drawFittedText(String, x,y,w,h, just, maxLines, minScale) */
 
 void mod_gfx_colour(void *g, uint32_t argb);
 void mod_gfx_fill(void *g, int x, int y, int w, int h);

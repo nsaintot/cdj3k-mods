@@ -171,7 +171,7 @@ enum ep122_sym {
     EP122_JUCE_GFX_SETFONT,
     EP122_JUCE_GFX_SETCOLOUR,
     EP122_JUCE_GFX_FILLRECT_INT,
-    EP122_JUCE_GFX_DRAWTEXT,
+    EP122_JUCE_GFX_DRAWFITTEDTEXT,
     EP122_JUCE_COMP_REPAINT_RECT,
     EP122_JUCE_COMP_REPAINT,
     EP122_JUCE_COMP_SETCOLOUR,
@@ -450,8 +450,8 @@ static const struct ep122_fn_spec {
     { EP122_JUCE_GFX_SETCOLOUR, 0xffff, 0, 0, 0, 8, 0, 0x6eb6, 0xdfc9507ab80a701aULL },   /* 0x1d28110 */
     { EP122_JUCE_GFX_FILLRECT_INT, 0xffff, 0, 0, 0, 8, 0, 0x3567, 0x46e7b285c7b28f3cULL },   /* 0x1ad0930 */
     { EP122_JUCE_GFX_FILLRECT_INT, 0xffff, 0, 0, 0, 8, 0, 0xf5ea, 0xbecf8bde01aeb8c2ULL },   /* 0x1cf9bc0 */
-    { EP122_JUCE_GFX_DRAWTEXT, 0xffff, 0, 0, 0, 8, 0, 0x9a8e, 0xb7579f8dc3ae6e30ULL },   /* 0x1b0c600 */
-    { EP122_JUCE_GFX_DRAWTEXT, 0xffff, 0, 0, 0, 8, 0, 0x7c39, 0x85d766be393994d0ULL },   /* 0x1d34b00 */
+    { EP122_JUCE_GFX_DRAWFITTEDTEXT, 0xffff, 0, 0, 0, 8, 0, 0x9a8e, 0xb7579f8dc3ae6e30ULL },   /* 0x1b0c600 */
+    { EP122_JUCE_GFX_DRAWFITTEDTEXT, 0xffff, 0, 0, 0, 8, 0, 0x7c39, 0x85d766be393994d0ULL },   /* 0x1d34b00 */
     { EP122_JUCE_COMP_REPAINT_RECT, 0xffff, 0, 0, 0, 8, 0, 0x7ec1, 0x20a24e0bb7b64fbbULL },   /* 0x1ba7620 */
     { EP122_JUCE_COMP_REPAINT_RECT, 0xffff, 0, 0, 0, 8, 0, 0x7ec1, 0xb8c5e9177135f6dbULL },   /* 0x1dbe2e0 */
     { EP122_JUCE_COMP_REPAINT, 0xffff, 0, 0, 0, 16, 0, 0x2ea9, 0x5325d307ec848315ULL },   /* 0x1ba9e50 */
@@ -744,7 +744,7 @@ static const char *const k_ep122_sym_name[] = {
     "JUCE_GFX_SETFONT",
     "JUCE_GFX_SETCOLOUR",
     "JUCE_GFX_FILLRECT_INT",
-    "JUCE_GFX_DRAWTEXT",
+    "JUCE_GFX_DRAWFITTEDTEXT",
     "JUCE_COMP_REPAINT_RECT",
     "JUCE_COMP_REPAINT",
     "JUCE_COMP_SETCOLOUR",

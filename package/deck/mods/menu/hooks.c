@@ -264,7 +264,7 @@ static void mod_mousedown(void *self, void *event)
 static int menu_install(void)
 {
     /* Every primitive is resolved by name, so checking that it resolved is enough. */
-    menu_g_render_ok = FN_FONT_BUILD && FN_DRAW_TEXT && FN_G_SETFONT && FN_G_SETCOL;
+    menu_g_render_ok = FN_FONT_BUILD && FN_DRAW_FITTED && FN_G_SETFONT && FN_G_SETCOL;
     if (!menu_g_render_ok) {
         MERR("modmenu: render primitives unavailable -> disabled\n");
         return -1;
