@@ -4,10 +4,11 @@ A sampler on a touch strip under the waveform. Moving your finger across the
 strip picks a loop length, and moving it up and down bends the pitch. The hot
 cue pads play eight samples from your stick.
 
-Off by default. Turn **ENABLE X-PAD** on in [MOD SETTINGS](mod-settings.md), and
-an **X-PAD** button appears in the row above the waveform, next to STEMS.
+Off by default. Turn **ENABLE X-PAD** on under PLAYER SETTING in
+[MOD SETTINGS](mod-settings.md), and an **X-PAD** button appears in the row
+above the waveform, next to STEMS.
 
-![ENABLE X-PAD, switched on in MOD SETTINGS.](img/mod-settings-xpad.png)
+![ENABLE X-PAD switched on under PLAYER SETTING in MOD SETTINGS.](img/mod-settings-xpad.png)
 
 ## The panel is the mode
 

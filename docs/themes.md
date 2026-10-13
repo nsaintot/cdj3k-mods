@@ -1,7 +1,7 @@
 # Themes
 
 Colour themes for the deck's screen. Choose one in
-[MOD SETTINGS](mod-settings.md) under **THEME**.
+[MOD SETTINGS](mod-settings.md), under DISPLAY > **THEME**.
 
 ## The themes
 

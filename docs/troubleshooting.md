@@ -43,8 +43,8 @@ On a firmware the mods do not fully recognise, nothing installs. There is no
 state where some features work and the settings screen is missing. See
 [getting started](getting-started.md).
 
-If it *does* end in `-m` and tapping still does nothing, you are not on the
-**DJ SETTING** screen. The label only works there.
+If it ends in `-m` and tapping does nothing, tap the version text itself, at
+the right end of the header.
 
 ## A hot cue pad does nothing
 

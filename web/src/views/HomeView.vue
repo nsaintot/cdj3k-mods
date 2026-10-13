@@ -33,7 +33,7 @@ const shots = [
   },
   {
     src: 'mod-settings-open.png',
-    alt: 'The MOD SETTINGS list open on the deck’s DJ SETTING screen.',
+    alt: 'MOD SETTINGS open over the deck’s UTILITY screen.',
     caption: 'Settings on the deck',
     to: '/docs/mod-settings',
   },
