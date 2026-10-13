@@ -342,13 +342,17 @@ static int theme_install(void)
 
     for (i = 0; i < MOD_THEME_MAX; i++)
         k_theme_values[i] = mod_theme_name(i);
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
 
     MDBG("theme: installed (theme=%s images=%s, live-switchable)\n",
          mod_theme()->name, images ? "on" : "off");
     return 0;
 }
 
+static void theme_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_display, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_theme,
-        .name = "theme", .prio = 70, .install = theme_install,
+        .name = "theme", .prio = 70, .install = theme_install, .menu = theme_menu,
         .what = "live re-theme via setFill");

@@ -653,9 +653,10 @@ void stem_track_gone(void)
  * nothing reads. [message] for the callbacks; registration is [init]. */
 static const char *const k_stem_where[2] = { "AUTO", "MANUAL" };
 
+static const struct kit_cat k_cat_stems = { "stems", "STEMS", KIT_ORDER_STEMS };
+
 static const struct kit_row k_rows[] = {
-    KIT_ROW_BOOL("ENABLE STEMS", &g_stems_on,
-                 .idx = KIT_IDX_STEMS, .changed = mods_stem_settings_changed),
+    KIT_ROW_BOOL("ENABLE STEMS", &g_stems_on, .changed = mods_stem_settings_changed),
     { .label = "STEM SERVER LOCATION", .idx = 0, .parent = &k_rows[0], .show_when = 1,
       .state = &g_stem_manual, .values = k_stem_where, .nvalues = 2,
       .changed = mods_stem_settings_changed },
@@ -682,12 +683,16 @@ static int stem_job_install(void)
     /* Runs after mods_settings_load(), so this is the saved setting, not the
      * compiled default. */
     g_stems_was_on = g_stems_on ? 1 : 0;
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
     MDBG("stem_job: worker thread up (STEMS %s)\n",
          g_stems_was_on ? "on" : "off");
     return 0;
 }
 
+static void stem_job_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &k_cat_stems, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_stem_job,
-        .name = "stem_job", .prio = 60, .install = stem_job_install,
+        .name = "stem_job", .prio = 60, .install = stem_job_install, .menu = stem_job_menu,
         .what = "the worker thread that owns the sidecar link");

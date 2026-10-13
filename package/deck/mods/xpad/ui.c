@@ -402,10 +402,14 @@ static int xpad_ui_install(void)
     if (mod_patch_vslot("xpadTick", EP122_DISPLAY_REFRESH, 0x10,
                         (void *)xpad_tick, &xpad_g_orig_tick) != 0)
         MDBG("xpad: no display tick -> the lit brick will not blink\n");
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
     return 0;
 }
 
+static void xpad_ui_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_player, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_xpad_ui,
-        .name = "xpad_ui", .prio = 35, .install = xpad_ui_install,
+        .name = "xpad_ui", .prio = 35, .install = xpad_ui_install, .menu = xpad_ui_menu,
         .what = "X-PAD SAMPLER quick-menu button + touch strip");

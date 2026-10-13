@@ -97,8 +97,8 @@ vtable DJSET_MODEL        class=N3gui19DJSettingTableModelE
 vtable DJSET_RMODEL       class=N3gui28DJSettingRightPaneTableModelE
 vtable UTILITY_VIEW       class=N3gui11UtilityViewE
 vtable SOURCE_SELECT_VIEW class=N3gui16SourceSelectViewE
-vtable UTILITY_AS_MODEL_LISTENER class=N3gui11UtilityViewE base=N3gui19DJSettingTableModel9IListenerE
 vtable UTILITY_AS_KBD_LISTENER   class=N3gui11UtilityViewE base=N3gui27SoftwareKeyboardPopupWidget9IListenerE
+vtable MEOW_SLB           class=N4meow18SkinLoadableButtonE
 
 # --- mods/theme/ ---
 vtable GFX_RENDERER       class=N4juce32LowLevelGraphicsSoftwareRendererE
@@ -322,20 +322,9 @@ slot ROWCOMP_MOUSEDRAG      vtable=ROWCOMP            off=0x30
 slot ROWCOMP_MOUSEUP        vtable=ROWCOMP            off=0x38
 slot ROWCOMP_PAINT          vtable=ROWCOMP            off=0xd0
 
-slot DJSET_NUMROWS          vtable=DJSET_MODEL        off=0x10
-slot DJSET_PAINTCELL        vtable=DJSET_MODEL        off=0x20
-slot DJSET_SELCHANGED       vtable=DJSET_MODEL        off=0x60
-slot DJSET_RNUMROWS         vtable=DJSET_RMODEL       off=0x10
-slot DJSET_RCELLCLICK       vtable=DJSET_RMODEL       off=0x30
-slot DJSET_RREFRESH         vtable=DJSET_RMODEL       off=0x28
-slot DJSET_RSELCHANGED      vtable=DJSET_RMODEL       off=0x60
-slot VIEW_MOUSEDOWN         vtable=UTILITY_VIEW       off=0x28
-slot VIEW_TOUCHSEL          vtable=UTILITY_VIEW       off=0x178
-slot VIEW_INPUT             vtable=UTILITY_VIEW       off=0x190
-slot VIEW_SWITCH            vtable=UTILITY_VIEW       off=0x198
 slot SOURCE_SELECT_BUILD    vtable=SOURCE_SELECT_VIEW off=0x178
-slot VIEW_ROWCHANGED        vtable=UTILITY_AS_MODEL_LISTENER off=0x0
-slot VIEW_KBD_KEY           vtable=UTILITY_AS_KBD_LISTENER   off=0x0
+
+slot MEOW_SLB_SETTOGGLE     vtable=MEOW_SLB           off=0x168
 
 slot GFX_SETFILL            vtable=GFX_RENDERER       off=0x90
 slot GFX_DRAWIMAGE          vtable=GFX_RENDERER       off=0xc8
@@ -416,7 +405,6 @@ func JUCE_COMP_REPAINT_RECT  addr=0x1ba7620 ren=0x1dbe2e0
 func JUCE_COMP_REPAINT       addr=0x1ba9e50 ren=0x1dc0ad0
 func JUCE_COMP_SETCOLOUR     addr=0x1b5f510 ren=0x1d7db70
 func JUCE_COMP_SETBOUNDS     addr=0x1bc08c0 ren=0x1dc59f0
-func JUCE_COMP_SETTOPLEFT    addr=0x1bc1560 ren=0x1dc6300
 func JUCE_COMP_ADDVISIBLE    addr=0x1bbef90 ren=0x1ddc2e0
 func JUCE_COMP_GRABFOCUS     addr=0x1baf350 ren=0x1dd24d0
 
@@ -444,6 +432,28 @@ func JUCE_EDITOR_CTOR        addr=0x1c00480 ren=0x1e148a0
 func JUCE_EDITOR_SETFONT     addr=0x1bd1ac0 ren=0x1dceea0
 func JUCE_EDITOR_JUSTIFY     addr=0x1b7ba70
 
+# --- mods/menu/: the overlay's lists, images and rail buttons ---
+# Scopes for the Image calls below, whose signatures are not unique: the
+# DJ right-pane model's base ctor loads its dot images, and its
+# refreshComponentForCell copies one.
+func RPANE_BASE_CTOR               addr=0x15a16b0 ren=0x17736c0
+func RPANE_REFRESH                 addr=0x15980d8 ren=0x176c1c0
+func JUCE_TABLELISTBOX_CTOR        addr=0x1bd9f30 ren=0x1def050
+func JUCE_TABLEHEADER_CTOR         addr=0x1bb9d40 ren=0x1ddad40
+func JUCE_TABLEHEADER_ADDCOLUMN    addr=0x1babbf0 ren=0x1dc2cb0
+func JUCE_TABLELISTBOX_SETHEADER   addr=0x1bd6b80 ren=0x1dec5e0
+func JUCE_TABLELISTBOX_SETHEADERHEIGHT addr=0x1bc1350 ren=0x1df2bb0
+func JUCE_LISTBOX_SETROWHEIGHT     addr=0x1bdc4c0 ren=0x1df2450
+func JUCE_VIEWPORT_SETSCROLLBARS   addr=0x1bcb400 ren=0x1dd3880
+func JUCE_COMP_TOFRONT             addr=0x1be28a0 ren=0x1de3e10
+func JUCE_COMP_SETINTERCEPTS       addr=0x1b5ec10 ren=0x1d7d2d0
+func JUCE_IMAGE_CTOR               addr=0x1ad2590 ren=0x1cfad50
+func JUCE_IMAGE_DTOR               addr=0x1ac58a0 in=RPANE_BASE_CTOR nth=0 ren=0x1d280c0 ren_in=RPANE_BASE_CTOR ren_nth=0
+func JUCE_IMAGE_COPY               addr=0x1ad26c0 in=RPANE_REFRESH nth=0 ren=0x1cfada0 ren_in=RPANE_REFRESH ren_nth=0
+func JUCE_IMAGE_SWAP               addr=0x1ad2780 in=RPANE_BASE_CTOR nth=0 ren=0x1cfade0 ren_in=RPANE_BASE_CTOR ren_nth=0
+func JUCE_GFX_CTOR_IMAGE           addr=0x1acfe80 ren=0x1cf9510
+func JUCE_GFX_DTOR                 addr=0x1acfed0 ren=0x1cf9570
+
 # --- EP122's own ---
 func EP122_FONT_BUILD        addr=0x175d6e8 ren=0x1986da0
 func CREATE_READER_FOR       addr=0xa3d120 ren=0xad9e10
@@ -451,7 +461,9 @@ func SET_QUICKMENU_MODE      addr=0x14a40e0 ren=0x1664360
 func KBD_SHOW                addr=0x143a608 ren=0x15eea10
 func KBD_HIDE                addr=0x143a5b0 ren=0x15ee660
 func KBD_KEY_TO_TEXT         addr=0x144e5b8 ren=0x16088a0
-func ENTER_DJSETTING         addr=0x14361e0 ren=0x15e7500
+func MEOW_SLB_CTOR            addr=0x1900320 ren=0x1b30460
+func GUI_ILU_CTOR              addr=0x14bff40 ren=0x1681d90
+func GUI_ILU_SETUP             addr=0x14c01a8 ren=0x1682050
 func POPUP_CTOR              addr=0x15782b0 ren=0x174c7a0
 func POPUP_SETMESSAGE        addr=0x15734b0 ren=0x17488e0
 # Since v3.22 a second function is byte-identical to this one for 41
@@ -460,7 +472,6 @@ func POPUP_SETMESSAGE        addr=0x15734b0 ren=0x17488e0
 # is called from SourceSelectView's builder, and the twin has no callers.
 # nth=0 because the scope leaves exactly one.
 func POPUP_ADDLISTENER       addr=0x1573540 in=SOURCE_SELECT_BUILD span=0x400 nth=0 ren=0x1748b00
-func RMODEL_SETSTRINGS       addr=0x159c468 ren=0x176e5bc
 func SRC_CTOR                addr=0xa54430 ren=0xaf40d0
 
 # track_info_repository::AsyncCommand::RequestID::RequestID()

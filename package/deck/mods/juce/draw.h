@@ -51,6 +51,10 @@ void mod_gfx_fill(void *g, int x, int y, int w, int h);
 void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
                   int x, int y, int w, int h, int justification);
 
+/* The same, in the colour already set on `g`. */
+void mod_gfx_text_in(void *g, const char *text, float font_h,
+                     int x, int y, int w, int h, int justification);
+
 /* ---- "these pixels are ours" ----
  *
  * The theme's setFill hook re-colours every fill the app performs, and our drawing
@@ -135,10 +139,9 @@ struct theme_ui {
      * own panels. */
     uint32_t text_deck;
     uint32_t text_dim;
-    /* The value column of a row in the deck's settings list. The MOD SETTINGS rows
-     * sit inside DJ SETTING among the deck's own rows, so they must match its grey:
-     * #7d7d7d, against text_dim's #afafaf (the skin grey, from the Ver label), which
-     * is right for our own controls.
+    /* The value column of a row in the deck's settings lists: #7d7d7d, against
+     * text_dim's #afafaf (the skin grey, from the Ver label), which is right for
+     * our own controls.
      *
      * Derived from the deck's colour, never authored, like the plate. */
     uint32_t text_value;

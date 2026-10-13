@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * mods/stem/job_settings.c - the STEMS rows in MOD SETTINGS, and the server address they carry.
+ * mods/stem/job_settings.c - what the STEMS settings rows (declared in job.c) do
+ * when they change, and the server address they carry.
  */
 #include "stem/job_internal.h"
 

@@ -144,10 +144,11 @@ MODS_PURE_LIBC := memcpy memmove memset memcmp exp log sqrt
 # here means adding its externals to stubs.c.
 # theme/palette.c is here, not in the pure list, because its cache-stats line
 # logs: nm finds fprintf/fflush/stderr/time and g_mod_log, and stubs.c
-# provides g_mod_log.
+# provides g_mod_log. kit/menu.c logs its refused rows the same way.
 MODS_TEST_DEPS := $(MODS_DIR)/mods/theme/roles.c \
                   $(MODS_DIR)/mods/theme/presets.c \
-                  $(MODS_DIR)/mods/theme/palette.c
+                  $(MODS_DIR)/mods/theme/palette.c \
+                  $(MODS_DIR)/mods/kit/menu.c
 
 MODS_TEST_SRCS := $(wildcard $(MODS_DIR)/tests/test_*.c)
 MODS_TEST_STUBS := $(MODS_DIR)/tests/stubs.c

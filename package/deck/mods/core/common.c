@@ -6,6 +6,7 @@
 #include "core/mod_core.h"
 #include "core/mod_settings.h"
 #include "kit/mod.h"
+#include "kit/menu.h"
 /* The settings record's field widths and the theme name it logs; no feature's
  * install is named here. */
 #include "stem/stem.h"
@@ -646,7 +647,7 @@ static void __attribute__((constructor)) mods_init(void)
     /* Resolving is also the detection: it requires ~130 named classes to be
      * present. */
     ep122_resolve();
-    if (!ep122_sym(EP122_DJSET_NUMROWS))
+    if (!ep122_sym(EP122_DJSET_MODEL))
         return;   /* big enough to be the deck, but not the deck */
 
     /* All spec symbols must resolve or no mod runs, even if only one feature
@@ -720,6 +721,7 @@ void mods_install_all(void)
         r = ord[i]->install();
         if (r == 0) {
             ok++;
+            if (ord[i]->menu) ord[i]->menu(kit_menu_instance());
         } else {
             /* A refusal can leave slots repointed; the journal knows which. */
             int undone = mod_unpatch_owner(ord[i]->name);
