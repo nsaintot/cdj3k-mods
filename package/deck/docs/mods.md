@@ -13,13 +13,13 @@ Includes are root-relative (`"kit/mod.h"`). `docs/` and `tools/` sit beside
 | --- | --- |
 | `core/` | safe memory access, slot patching, patch journal, logging, symbol resolution, settings record, `cdj3k_mods.h` (host-shim interface) |
 | `juce/` | constructing/calling JUCE objects, component-tree walks, Label-as-button, `Graphics`; `call.hh`/`juce.hh` are the C++ half |
-| `kit/` | feature building blocks: mod descriptor, settings rows, message popup |
+| `kit/` | feature building blocks: mod descriptor, MOD SETTINGS instance (categories, rows, pages), stock UTILITY drawing (`ui.h`), message popup |
 | `browse/` | playlist reorder, sort, drag |
 | `cue/` | hot-cue interception layer and the behaviours on it |
 | `db/` | library back end (see `djdb-schema.md`) |
 | `grid/` | beat-grid panel |
 | `lamp/` | pad lamp appearance and ownership |
-| `menu/` | MOD SETTINGS overlay on the DJ SETTING list |
+| `menu/` | MOD SETTINGS overlay on the UTILITY screen |
 | `stem/`, `stem/ui/` | stem playback, groove circuit, STEMS panel |
 | `theme/` | theme model, palette transform, sprite recolour |
 | `wave/` | waveform following the stem faders |
@@ -293,15 +293,59 @@ the app, without a syscall hook.
 
 ## Menu
 
-- Opened by tapping the "Ver.X.XX" label; collapses the stock DJ SETTING list in
-  place. Twelve vtable slots, all or nothing.
-- Features declare rows in `kit/menu.h` and register them at install; `menu/`
-  names no feature.
-- Row types: CHOICE (state index into values; `kit_off_on`) or TEXT. A row with
-  `parent` shows only while `*parent->state == show_when`.
-- The visible list is rebuilt per query in `idx` order. Duplicate sibling `idx`
-  disables all rows (reported on tap). More than `KIT_MENU_MAX_ROWS` (9, or 7;
-  see `kit_menu_set_shown`) drops the surplus with a log line.
-- The right pane is the deck's; `menu/pane.c` overrides counts and labels.
-- TEXT rows use the deck's keyboard but their own buffer (the stock editor would
-  overwrite HISTORY NAME).
+MOD SETTINGS opens over UTILITY on a tap of the Ver label: a category rail, a
+settings list and a value pane. Features add their own content through
+`kit/menu.h`; `menu/` names no feature.
+
+**Add settings**: give the `KIT_MOD` a `.menu` callback. Core calls it with
+the MOD SETTINGS instance after a successful install.
+
+```c
+static void gate_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_player, k_rows, (int)(sizeof k_rows / sizeof k_rows[0]));
+}
+
+KIT_MOD(k_mod_cue_gate, .name = "cue_gate", .install = gate_install, .menu = gate_menu, ...);
+```
+
+**Add a category**: declare a `struct kit_cat` and register under it. Use
+`kit_cat_player` or `kit_cat_display` to join a shared one.
+
+```c
+static const struct kit_cat k_cat_stems = { "stems", "STEMS", KIT_ORDER_STEMS };
+```
+
+- `id` is unique; features passing the same id share the category.
+- The rail label uses `\n` between lines; `order` (`KIT_ORDER_*`) sets the
+  position. 7 categories fit.
+- A category holds rows or one page.
+
+**Rows** (`struct kit_row`, static arrays):
+
+| Kind | Fields |
+| --- | --- |
+| CHOICE | `state` (index), `values`, `nvalues`; `KIT_ROW_BOOL(label, &flag, ...)` for OFF/ON |
+| TEXT | `text`, `text_cap`; edited on the deck's keyboard |
+| INFO | `info`; read-only |
+
+- `idx` orders siblings; a duplicate disables every row.
+- `parent` + `show_when`: the row shows only while the parent's state equals it.
+- `changed` runs after a commit and before the save; clear a bad value there.
+- Keep labels short: a long one is squeezed over the value.
+
+**Pages** (`kit_menu_page(menu, &cat, &page)`): the feature draws the content
+area and handles input.
+
+| `struct kit_page` | |
+| --- | --- |
+| `paint(ctx, g, w, h)` | draw with `kit/ui.h`: `kit_ui_row_bg`, `kit_ui_setting`, `kit_ui_text`, `KIT_UI_*` colours and fonts |
+| `turn`, `push`, `tap` | input while the page has focus |
+| `back` | return 0 to give focus back to the rail |
+| `shown` | the page came on screen or left it |
+
+Call `kit_menu_page_repaint(menu)` after a change.
+
+Lists scroll with the rotary. Touch selects on touch-down, as stock; drag
+scrolling is not done (when a list needs it: select on lift-up, on the same
+row, as the 3000X).

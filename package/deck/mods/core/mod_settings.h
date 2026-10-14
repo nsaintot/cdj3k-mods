@@ -14,6 +14,10 @@
 #ifndef EP122_MOD_SETTINGS_H
 #define EP122_MOD_SETTINGS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Read the saved record into the feature globals. A file that is absent, the
  * wrong size, the wrong version, or fails its CRC leaves every default in
  * place; a record is never partly applied. */
@@ -27,5 +31,9 @@ void mods_settings_save(void);
  * It arrives over the network and becomes a directory name on removable media.
  * Does not persist by itself. */
 void mods_set_sep_id(const char *id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* EP122_MOD_SETTINGS_H */

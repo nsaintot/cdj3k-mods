@@ -131,7 +131,7 @@ export const featureGroups: FeatureGroup[] = [
         id: 'mod-settings',
         name: 'MOD SETTINGS',
         summary:
-          'Tap the Ver. label on the DJ SETTING screen to show the mods’ settings in its place.',
+          'Tap the Ver. label on the UTILITY screen to open the mods’ settings over it.',
         status: 'working',
         links: [{ doc: 'mod-settings', label: 'How to open it' }],
       },

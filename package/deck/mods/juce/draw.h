@@ -39,7 +39,7 @@ extern "C" {
 #define MOD_FN_GFX_FILLRECT   ep122_sym(EP122_JUCE_GFX_FILLRECT_INT)  /* fillRect(int x,int y,int w,int h)  */
 
 #define MOD_FN_GFX_SETFONT    ep122_sym(EP122_JUCE_GFX_SETFONT)       /* setFont(const Font&)              */
-#define MOD_FN_GFX_DRAWTEXT   ep122_sym(EP122_JUCE_GFX_DRAWTEXT)      /* drawText(String, x,y,w,h, just, e) */
+#define MOD_FN_GFX_DRAWFITTEDTEXT ep122_sym(EP122_JUCE_GFX_DRAWFITTEDTEXT) /* drawFittedText(String, x,y,w,h, just, maxLines, minScale) */
 
 void mod_gfx_colour(void *g, uint32_t argb);
 void mod_gfx_fill(void *g, int x, int y, int w, int h);
@@ -50,6 +50,10 @@ void mod_gfx_fill(void *g, int x, int y, int w, int h);
  * juce's flag word; JUCE_JUSTIFY_* in juce.h names the useful ones. */
 void mod_gfx_text(void *g, const char *text, float font_h, uint32_t argb,
                   int x, int y, int w, int h, int justification);
+
+/* The same, in the colour already set on `g`. */
+void mod_gfx_text_in(void *g, const char *text, float font_h,
+                     int x, int y, int w, int h, int justification);
 
 /* ---- "these pixels are ours" ----
  *
@@ -135,10 +139,9 @@ struct theme_ui {
      * own panels. */
     uint32_t text_deck;
     uint32_t text_dim;
-    /* The value column of a row in the deck's settings list. The MOD SETTINGS rows
-     * sit inside DJ SETTING among the deck's own rows, so they must match its grey:
-     * #7d7d7d, against text_dim's #afafaf (the skin grey, from the Ver label), which
-     * is right for our own controls.
+    /* The value column of a row in the deck's settings lists: #7d7d7d, against
+     * text_dim's #afafaf (the skin grey, from the Ver label), which is right for
+     * our own controls.
      *
      * Derived from the deck's colour, never authored, like the plate. */
     uint32_t text_value;

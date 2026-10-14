@@ -175,8 +175,7 @@ CUE_HANDLER(k_cue_preview,
 
 /* ---- the row -------------------------------------------------------------- */
 
-/* On by default: the gesture already sets a hot cue in stock; this only
- * changes where. */
+/* The gesture already sets a hot cue in stock; this only changes where. */
 static const struct kit_row k_rows[] = {
     KIT_ROW_BOOL("PREVIEW HOTCUE", &g_preview_on, .idx = KIT_IDX_PREVIEW),
 };
@@ -197,10 +196,14 @@ static int preview_install(void)
         return -1;
     }
     preview_g_ready = 1;
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
     return 0;
 }
 
+static void preview_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_player, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_cue_preview,
-        .name = "cue_preview", .prio = 12, .install = preview_install,
+        .name = "cue_preview", .prio = 12, .install = preview_install, .menu = preview_menu,
         .what = "preview hot cue: assign under the needle");

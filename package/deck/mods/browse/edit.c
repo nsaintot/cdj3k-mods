@@ -492,7 +492,7 @@ static int be_install(void)
     if (!FN_LABEL_CTOR || !FN_ADD_VISIBLE || !FN_SET_BOUNDS || !FN_FONT_BUILD ||
         !FN_LABEL_SETFONT || !FN_LABEL_JUSTIFY || !FN_COMP_SETCOLOUR ||
         !MOD_FN_GFX_SETCOLOUR || !MOD_FN_GFX_FILLRECT ||
-        !MOD_FN_GFX_SETFONT || !MOD_FN_GFX_DRAWTEXT) {
+        !MOD_FN_GFX_SETFONT || !MOD_FN_GFX_DRAWFITTEDTEXT) {
         MDBG("browse: juce primitives did not resolve -> no EDIT\n");
         return -1;
     }

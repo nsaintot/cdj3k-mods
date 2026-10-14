@@ -11,6 +11,8 @@
 #ifndef EP122_MOD_KIT_MOD_H
 #define EP122_MOD_KIT_MOD_H
 
+struct kit_menu;
+
 struct kit_mod {
     /* Tags every slot this mod patches; uninstall and the install summary use it. */
     const char *name;
@@ -24,6 +26,11 @@ struct kit_mod {
     /* 0 when installed, -1 when the deck runs stock for this feature. The
      * caller unwinds whatever a failed install patched. */
     int (*install)(void);   /* [init] */
+
+    /* Optional, [init]: called after a successful install with the MOD
+     * SETTINGS instance, to register the feature's rows or page under a
+     * category (kit/menu.h). */
+    void (*menu)(struct kit_menu *menu);
 };
 
 /* One descriptor. `used` because only the section refers to it. */

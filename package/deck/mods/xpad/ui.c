@@ -388,7 +388,7 @@ static int xpad_ui_install(void)
     xpad_g_api_ok = FN_ADD_VISIBLE && FN_SET_BOUNDS && FN_LABEL_CTOR &&
                     FN_LABEL_SETFONT && FN_LABEL_JUSTIFY &&
                     MOD_FN_GFX_SETCOLOUR && MOD_FN_GFX_FILLRECT &&
-                    MOD_FN_GFX_SETFONT && MOD_FN_GFX_DRAWTEXT;
+                    MOD_FN_GFX_SETFONT && MOD_FN_GFX_DRAWFITTEDTEXT;
     if (!xpad_g_api_ok) {
         MDBG("xpad: juce primitives did not resolve -> feature off\n");
         return -1;
@@ -402,10 +402,14 @@ static int xpad_ui_install(void)
     if (mod_patch_vslot("xpadTick", EP122_DISPLAY_REFRESH, 0x10,
                         (void *)xpad_tick, &xpad_g_orig_tick) != 0)
         MDBG("xpad: no display tick -> the lit brick will not blink\n");
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
     return 0;
 }
 
+static void xpad_ui_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_player, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_xpad_ui,
-        .name = "xpad_ui", .prio = 35, .install = xpad_ui_install,
+        .name = "xpad_ui", .prio = 35, .install = xpad_ui_install, .menu = xpad_ui_menu,
         .what = "X-PAD SAMPLER quick-menu button + touch strip");

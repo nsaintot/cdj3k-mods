@@ -17,7 +17,7 @@ count, or a model that does not produce the parts the player needs.
 
 ## Turning it on
 
-In [MOD SETTINGS](mod-settings.md):
+In [MOD SETTINGS](mod-settings.md), under **STEMS**:
 
 1. **ENABLE STEMS** → ON. Nothing is allocated until you do, so a deck with
    stems off is unaffected.

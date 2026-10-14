@@ -150,10 +150,14 @@ static int gate_install(void)
         MDBG("gate: no cue interception -> no row\n");
         return -1;
     }
-    kit_menu_add(k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
     return 0;
 }
 
+static void gate_menu(struct kit_menu *menu)
+{
+    kit_menu_rows(menu, &kit_cat_player, k_rows, (int)(sizeof(k_rows) / sizeof(k_rows[0])));
+}
+
 KIT_MOD(k_mod_cue_gate,
-        .name = "cue_gate", .prio = 10, .install = gate_install,
+        .name = "cue_gate", .prio = 10, .install = gate_install, .menu = gate_menu,
         .what = "momentary gate cue");

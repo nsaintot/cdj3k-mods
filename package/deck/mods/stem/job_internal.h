@@ -3,7 +3,8 @@
  * mods/stem/job_internal.h - what the STEMS job files share.
  *
  * job.c owns the job state machine and every flag below; job_loader.c hands
- * decoded stems to the audio side; job_settings.c owns the MOD SETTINGS rows.
+ * decoded stems to the audio side; job_settings.c handles changes to the STEMS
+ * settings rows.
  * Declarations only.
  */
 #ifndef EP122_MOD_STEM_JOB_INTERNAL_H
