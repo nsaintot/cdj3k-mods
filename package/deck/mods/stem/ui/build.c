@@ -11,9 +11,9 @@
 static int g_lane_x[N_STEMS], g_lane_w, g_lane_y, g_row_w;
 static int g_lanes_placed = -1;    /* the STEM MUTE PADS value the lanes are laid out for */
 
-/* Lay the controls out, drawn where the design puts them, with touch areas that cover
- * the whole row: each blank gap is split at its middle between the ink on either side
- * (a key's plate, a fader's strip and cap), BYPASS reaches the left edge and the last
+/* Place each control at its drawn rect and give it a touch area that covers the row:
+ * each blank gap is split at its middle between the ink on either side (the switch's
+ * frame, a MUTE key, a fader's wedge), the switch reaches the left edge and the last
  * fader the right one. A finger anywhere along the row lands on the nearest control. */
 void stems_lanes_place(void)
 {
@@ -31,10 +31,10 @@ void stems_lanes_place(void)
     c[n].comp = stems_g_btn_bypass; c[n].stem = -1;
     c[n].l = ROW_LEFT; c[n].r = ROW_LEFT + SW_CELL_W; n++;
     for (i = 0; i < N_STEMS; i++) {
-        if (stems_g_caption[i]) {
-            stems_set_visible(stems_g_caption[i], !pads);
+        if (stems_g_mute_key[i]) {
+            stems_set_visible(stems_g_mute_key[i], !pads);
             if (!pads) {
-                c[n].comp = stems_g_caption[i]; c[n].stem = -1;
+                c[n].comp = stems_g_mute_key[i]; c[n].stem = -1;
                 c[n].l = g_lane_x[i]; c[n].r = g_lane_x[i] + MUTE_W; n++;
             }
         }
@@ -90,10 +90,10 @@ static uintptr_t stems_build_row(void)
     const int32_t *panel = kit_band_rect();
     /* The same boundaries that weight the fill. */
     static const int k_prog_bound[N_PROG_BOUND] = PROG_BOUND_LIST;
-    int usable, x, i;
+    int usable, lane_w, x, i;
     int row_y   = panel[1] - ROW_RISE;
     int row_h   = panel[3] + ROW_RISE;
-    int wedge_h = row_h - WEDGE_Y - ROW_PAD / 2;
+    int prog_h  = row_h - PROG_Y - ROW_PAD / 2;
     uintptr_t band, row;
 
     /* `band` is the strip covering the panel rect and is returned, since it is what
@@ -118,13 +118,13 @@ static uintptr_t stems_build_row(void)
     stems_g_prog_x = ROW_LEFT;
     stems_g_prog_w = panel[2] - ROW_LEFT - ROW_RIGHT;
     /* Centred in the wedge band, which follows the panel rect and ROW_RISE. */
-    stems_g_prog_y = WEDGE_Y + (wedge_h - PROG_BAR_H) / 2;
+    stems_g_prog_y = PROG_Y + (prog_h - PROG_BAR_H) / 2;
     /* Stock roles, not mod_ui()'s: juce paints these Labels and every fill already
      * goes through the theme hook (see mod_ui_stock). Resolved values would be
      * resolved twice, e.g. #ffffff on #ffffff under WHITE. */
     stems_g_prog_text = stems_label(stems_g_progress, "", FONT_CAPTION, 0x00000000u,
                               mod_ui_stock()->text, 0,
-                              stems_g_prog_x, ROW_PAD / 2, stems_g_prog_w, CAPTION_H);
+                              stems_g_prog_x, ROW_PAD / 2, stems_g_prog_w, PROG_CAPTION_H);
     stems_g_prog_track = stems_label(stems_g_progress, "", FONT_CAPTION,
                                mod_ui_stock()->track, mod_ui_stock()->track, 0,
                                stems_g_prog_x, stems_g_prog_y, stems_g_prog_w, PROG_BAR_H);
@@ -148,23 +148,24 @@ static uintptr_t stems_build_row(void)
     /* The STEMS switch (BYPASS's button). */
     stems_g_btn_bypass = stems_label(row, "", FONT_CAPTION, 0x00000000u, mod_ui()->text, 1,
                                  ROW_LEFT, g_lane_y, SW_CELL_W, LANE_H);
-    if (stems_g_btn_bypass && stems_icon_vt_ready())
-        *(uintptr_t *)stems_g_btn_bypass = stems_g_icon_vptr;
+    if (stems_g_btn_bypass && stems_switch_vt_ready())
+        *(uintptr_t *)stems_g_btn_bypass = stems_g_switch_vptr;
 
     /* One gap between neighbours, so N lanes leave N-1 gaps inside the free span. */
     x        = ROW_LEFT + SW_CELL_W - SW_OVERLAP + ROW_GAP;
     usable   = panel[2] - x - ROW_RIGHT;
-    g_lane_w = (usable - (N_STEMS - 1) * ROW_GAP) / N_STEMS;
-    if (g_lane_w < MUTE_W + MUTE_GAP + 4 * LANE_CAP_W) {
+    lane_w   = (usable - (N_STEMS - 1) * ROW_GAP) / N_STEMS;
+    if (lane_w < LANE_MIN_FADER_W) {
         MDBG("stems: only %dpx left for the lanes -> row too narrow, skipping them\n",
              usable);
         return band;
     }
+    g_lane_w = lane_w;
 
     for (i = 0; i < N_STEMS; i++, x += g_lane_w + ROW_GAP) {
         g_lane_x[i] = x;
         /* The MUTE key; placed and shown by stems_lanes_place. */
-        stems_g_caption[i] = stems_label(row, "", FONT_CAPTION, 0x00000000u,
+        stems_g_mute_key[i] = stems_label(row, "", FONT_CAPTION, 0x00000000u,
                                          mod_ui()->text, 1, x, g_lane_y, MUTE_W, LANE_H);
         if (!stems_wedge(row, x, g_lane_y, g_lane_w, LANE_H, i))
             MDBG("stems: lane %s failed to build\n", k_stem_name[i]);

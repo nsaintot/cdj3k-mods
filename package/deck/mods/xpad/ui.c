@@ -148,8 +148,8 @@ static void xpad_btn_paint(void *self, void *g)
                           xpad_refuse_hot() ? ui->refuse
                           : xpad_g_open     ? ui->accent
                                             : ui->surface, lift);
-        /* The bar lifts with the plate; it is one colour, so lifted directly,
-         * as on the stems button. */
+        /* The bar is pressed with the plate; it is one colour, so pressed
+         * directly, as on the stems button. */
         mod_btn_bar(g, 0, 0, b[2], b[3],
                     mod_colour_press(xpad_g_open ? ui->bar_on : ui->bar, lift));
     }

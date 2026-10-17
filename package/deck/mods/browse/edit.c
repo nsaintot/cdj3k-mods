@@ -195,9 +195,9 @@ static void be_paint(void *self, void *g)
      * does not change, so a derived partner colour is used. */
     mod_draw_enter();
     if (be_g_on)
-        mod_checker_lift(g, 0, 0, b[2], b[3], ui->mode, lift);
+        mod_checker_press(g, 0, 0, b[2], b[3], ui->mode, lift);
     else
-        mod_checker_lift2(g, 0, 0, b[2], b[3], ui->surface, ui->surface2, lift);
+        mod_checker_press2(g, 0, 0, b[2], b[3], ui->surface, ui->surface2, lift);
     mod_btn_bar(g, 0, 0, b[2], b[3],
                 mod_colour_press(be_g_on ? ui->bar_on : ui->bar, lift));
     /* Our own lettering: the Label can only centre in its bounds, and this

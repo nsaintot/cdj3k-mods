@@ -49,12 +49,7 @@ void stems_progress_poll(void)
         return;
     }
 
-    /* Everything between the request and the stems being resident counts as busy.
-     * Named exclusions, not a range: LOADING sits above the two terminal values,
-     * because the wire enum is the sidecar's and ours only extends it. */
-    busy = st.stage != STEM_STAGE_IDLE &&
-           st.stage != STEM_STAGE_DONE &&
-           st.stage != STEM_STAGE_FAILED;
+    busy = stem_stage_busy(st.stage);
     if (!busy) {
         if (stems_g_processing)
             MDBG("stems: processing finished (stage %d)\n", st.stage);
@@ -93,14 +88,13 @@ int stems_available(void)
      * refusal blink mid-flash (leaving the plate red). */
     if (!st.reachable || !st.compatible)
         return 0;
-    if (st.stage != STEM_STAGE_IDLE && st.stage != STEM_STAGE_DONE &&
-        st.stage != STEM_STAGE_FAILED)
+    if (stem_stage_busy(st.stage))
         return 1;                           /* a job is running: it may well land */
     return 1;
 }
 
-/* g_stem_ready is written by the worker, so the row follows it on the display tick.
- * Does nothing unless the value changed. */
+/* g_stem_ready is written by the worker, so the row follows it on the display tick,
+ * row open or closed. Does nothing unless the value changed. */
 static void stems_ready_poll(void)
 {
     static int shown = -1;
@@ -109,21 +103,24 @@ static void stems_ready_poll(void)
 
     if (now == shown) return;
     shown = now;
-    /* Clear BYPASS when the stems go away, so it does not apply to the next set. */
-    if (!now && stems_g_bypass_on) {
-        stems_g_bypass_on = 0;
-        stem_bypass_set(0);
+    /* When the stems go away, clear BYPASS and every mute, so neither applies to the
+     * next set. */
+    if (!now) {
+        if (stems_g_bypass_on) {
+            __atomic_store_n(&stems_g_bypass_on, 0, __ATOMIC_RELAXED);
+            stem_bypass_set(0);
+            MDBG("stems: stems gone -> BYPASS off\n");
+        }
+        stems_mute_clear_all();
     }
     stems_repaint(stems_g_btn_bypass);
-    for (i = 0; i < N_STEMS; i++) {
-        stems_caption_sync(i);
-        stems_repaint(stems_g_wedge[i]);
-    }
+    for (i = 0; i < N_STEMS; i++)
+        stems_part_repaint(i);
     MDBG("stems: %s\n", now ? "stems resident -> row live"
                              : "no stems resident -> row inert");
 }
 
-/* Half-cycle of the loading blink, in display ticks: as slow as the wave-wait pulse. */
+/* Half-cycle of the loading blink, in display ticks: the wave-wait pulse's pace. */
 #define STEMS_LOAD_BLINK (MOD_BLINK_PERIOD * 3)
 
 /* The mark in the corner of the STEMS button. Blinking slowly: stems are loading or
@@ -138,20 +135,20 @@ static void stems_edit_poll(void)
 {
     const struct theme_ui *ui = mod_ui();
     uint32_t want = 0;
-    int edited = 0, i;
+    int show = 0, i;
 
     if (!stems_g_edit)
         return;
 
     if (g_stems_on && !stem_bypass_get()) {
-        edited = gc_active_part() >= 0;
-        for (i = 0; !edited && i < N_STEMS; i++)
+        show = gc_active_part() >= 0;
+        for (i = 0; !show && i < N_STEMS; i++)
             if (stem_gain_get(i) != 1.0f)
-                edited = 1;
+                show = 1;
     }
     if (g_stems_on && stems_loading())
-        edited = ((stems_g_ticks / STEMS_LOAD_BLINK) & 1) == 0;
-    if (edited)
+        show = ((stems_g_ticks / STEMS_LOAD_BLINK) & 1) == 0;
+    if (show)
         want = stems_g_btn_state == BTN_ON ? ui->text : ui->accent;
 
     /* Only on change: this runs at the display rate and setColour notifies
@@ -250,7 +247,7 @@ static void stems_theme_restamp(void)
     /* Let the next tick resolve the edit mark's colour from the new palette. */
     stems_g_edit_col = 0;
     for (i = 0; i < N_STEMS; i++)
-        stems_caption_sync(i);
+        stems_part_repaint(i);
     stems_repaint(stems_g_row);
     stems_repaint(stems_g_btn_stems);
     MDBG("theme: restamped the stem row for %s\n", mod_theme()->name);
@@ -301,6 +298,16 @@ static void stems_drc_timer(void *self)
         t0 = -1;
     }
 
+    /* Before the build check: the mute pads are claimed once this has run, and must
+     * work with the row closed or never built. Repaints of unbuilt components are
+     * no-ops. */
+    stems_pad_poll();
+    stems_ready_poll();
+    stems_mute_blink();
+    /* Again after the blink, so a mute pad flips in the same tick as its MUTE key
+     * or tag. Writes only on a change. */
+    cue_led_tick();
+
     if (!stems_g_built)
         return;
     /* Theme and band first: the band poll can close the row, and the polls below
@@ -309,17 +316,9 @@ static void stems_drc_timer(void *self)
     kit_band_poll();
     /* STEM MUTE PADS can change while the row exists. */
     stems_lanes_place();
-    /* Outside the row-open guard: the mute pads work and blink with the row
-     * closed. */
-    stems_pad_poll();
-    stems_mute_blink();
-    /* Again after the blink, so a mute pad flips in the same tick as its
-     * caption. Writes only on a change. */
-    cue_led_tick();
     if (stems_g_row_open) {
         stems_progress_poll();
         stems_wavewait_poll();
-        stems_ready_poll();
     }
     stems_warn_poll();
     /* Outside the row-open guard: the mark shows state the closed row hides. */

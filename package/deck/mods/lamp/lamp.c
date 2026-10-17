@@ -45,6 +45,10 @@ uint32_t lamp_now_ms(void)
  *   4. the groove circuit, whose pads apply only while the stems row is open;
  *      gc_pad_lamp checks that itself.
  *
+ * The cue handlers claim presses in the same order (X-PAD prio 3, mute pads 4,
+ * groove circuit 5); change both together, or a lamp shows one owner while another
+ * takes the press.
+ *
  * Unclaimed pads keep the colour the app painted. */
 int lamp_pad(int pad, struct lamp *out)
 {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * ui/wedge.c - the three level controls, drawn and dragged
+ * ui/wedge.c - the three faders and the STEMS switch, drawn and dragged
  *
  * Part of the STEMS play-screen UI. The shared contract, and the reasoning
  * behind the design, is in ui.h.
@@ -8,17 +8,17 @@
 #include "stem/ui/ui.h"
 
 /* ================================================================== */
-/* The lane                                                           */
+/* The fader                                                          */
 /* ================================================================== */
 
-/* One Component per stem, painted by us: the name, the value, the level strip and the
- * cap. The level is a plain int.
+/* One Component per stem, painted by us: the name, the value, the wedge and the cap.
+ * The level is a plain int. A lane is the cell holding a part's MUTE key and fader.
  *
- * The lane is a Label with a second cloned vtable (paint and the three mouse slots),
+ * The fader is a Label with a second cloned vtable (paint and the three mouse slots),
  * so the Label ctor does the allocation and Component setup; Label's paint is never
  * reached. */
 uintptr_t stems_g_wedge[N_STEMS];
-static int32_t   g_wedge_w[N_STEMS];    /* cached lane width: the strip is laid out in it */
+static int32_t   g_wedge_w[N_STEMS];    /* the drawn width: the wedge is laid out in it */
 int       stems_g_level[N_STEMS] = { 100, 100, 100 };   /* percent, 0..STEM_LEVEL_MAX */
 /* MUTE per stem, from the MUTE key or the pad. Kept separate from the level so
  * unmuting restores the fader's value. */
@@ -35,21 +35,21 @@ static uintptr_t g_wedge_vptr;
 /* ---- one gesture, one control ------------------------------------------------------
  *
  * Whoever takes the gesture at mouseDown owns every control in the row until the finger
- * lifts, so a sweep that starts on a lane cannot mute a stem through its MUTE key or
- * toggle BYPASS. A control that did not start the gesture does nothing, including
- * highlighting. */
+ * lifts, so a sweep that starts on a fader cannot mute a part through its MUTE key or
+ * flip the STEMS switch. A control that did not start the gesture does nothing,
+ * including highlighting. */
 uintptr_t stems_g_grab;        /* who owns the gesture right now */
 uintptr_t stems_g_grab_last;   /* who owned it most recently */
 static unsigned  g_grab_freed;  /* the display tick it was let go on */
 unsigned  stems_g_ticks;       /* display ticks; exists only for the cooldown */
 
-/* After a mouseUp, another wedge cannot take the grab for GRAB_COOLDOWN ticks.
+/* After a mouseUp, another fader cannot take the grab for GRAB_COOLDOWN ticks.
  *
- * Dragging across a boundary produces an up on the control being left and a down on the
- * one entered, microseconds apart, with no event to tell that from a new touch, so the
- * distinction is made by time. Four ticks is about 90 ms: far longer than a crossing,
- * too short to notice when moving to another fader. Re-taking the same control is never
- * delayed. */
+ * A drag across a boundary arrives as an up on the fader being left and a down on the
+ * next, microseconds apart, with no event to tell that from a new touch, so the
+ * distinction is made by time; without it the next fader would take the rest of the
+ * drag. Four ticks is about 90 ms: far longer than a crossing, too short to notice when
+ * moving to another fader. Re-taking the same control is never delayed. */
 #define GRAB_COOLDOWN 4
 
 static int stems_wedge_index(uintptr_t comp);
@@ -58,8 +58,7 @@ int stems_grab_take(uintptr_t self)
 {
     if (stems_g_grab)
         return stems_g_grab == self;
-    /* The cooldown applies only to wedges, which jump to the touch point; on buttons
-     * it would drop presses. */
+    /* The cooldown applies only to faders; on buttons it would drop presses. */
     if (stems_wedge_index(self) >= 0 &&
         stems_g_grab_last && stems_g_grab_last != self &&
         (unsigned)(stems_g_ticks - g_grab_freed) < GRAB_COOLDOWN)
@@ -90,15 +89,15 @@ void stems_repaint(uintptr_t comp)
     r[1] = 0;
     ((void (*)(void *, const int32_t *))FN_COMP_REPAINT)((void *)comp, r);
 }
-/* How much a component is lit while it holds the gesture, as a Q8 for the draw kit;
- * zero at rest. Both buttons and the bar use it.
+/* How far a component is pressed while it holds the gesture, as a Q8 for the draw
+ * kit; zero at rest.
  *
- * It lifts the colour the button is changing to: mouseDown changes the state before
- * the coalesced paint runs, so pressing an unlit button flashes a lightened accent and
- * pressing a lit one a lightened grey.
+ * It presses the colour the button is changing to: mouseDown changes the state before
+ * the coalesced paint runs, so pressing an unlit button flashes a pressed accent and
+ * pressing a lit one a pressed grey.
  *
- * Returns the lift, not a colour: the checker surface's two halves are lifted
- * independently (see mod_checker_lift). */
+ * Returns the amount, not a colour: the checker's two halves are pressed independently
+ * (see mod_checker_press). */
 uint32_t stems_touch_lift(uintptr_t comp)
 {
     return comp && stems_g_grab == comp ? MOD_CHECKER_HOT_Q8 : 0;
@@ -160,7 +159,6 @@ void stems_level_set(int i, int pct)
     stems_g_level[i] = pct;
     stems_publish_gain(i);
     stems_repaint(stems_g_wedge[i]);
-    stems_repaint(stems_g_btn_bypass);      /* its bars show the levels */
 }
 
 /* Is a stem set resident right now? The row can be open with none (failed probe, no
@@ -170,7 +168,7 @@ int stems_ready(void)
     return __atomic_load_n(&g_stem_ready, __ATOMIC_ACQUIRE) != 0;
 }
 
-/* Out of circuit: no stems resident, or BYPASS on. The lanes and MUTE keys draw at
+/* Out of circuit: no stems resident, or BYPASS on. The faders and MUTE keys draw at
  * the stock 30 % and take no input. A muted part stays live: its cap still moves. */
 int stems_row_inert(void)
 {
@@ -235,11 +233,11 @@ static int lane_x0(int w, int n)
 static int lane_cap_x(int x0, int span, int pct)
 {
     return x0 + LANE_CAP_W / 2 +
-           (pct * (span - LANE_CAP_W) + STEM_LEVEL_MAX_I / 2) / STEM_LEVEL_MAX_I;
+           (pct * (span - LANE_CAP_W) + STEM_LEVEL_MAX / 2) / STEM_LEVEL_MAX;
 }
 
-/* The fader's ink along the row, in its own coordinates: the wedge. The row splits its
- * gaps between inks. */
+/* Left and right edges of the wedge in a fader `w` px wide. stems_lanes_place splits
+ * the gaps between controls at these edges. */
 void stems_lane_ink(int w, int *l, int *r)
 {
     int n = lane_bars(w);
@@ -254,12 +252,13 @@ static const int k_lane_name_w[N_STEMS] = LANE_NAME_W;
 
 /* ---- the gesture --------------------------------------------------------------------
  *
- * A touch anywhere in the lane grabs the cap where it is and changes nothing. A drag
+ * A touch anywhere on the fader grabs the cap where it is and changes nothing. A drag
  * moves the level by the distance dragged, so a stray touch or a palm cannot set a
  * level. A drag step longer than LANE_JUMP_PX is not a finger (the panel reports one
  * averaged point for two contacts, and a lift can report far away): the anchor moves
- * there and the level stays. */
-static int g_drag_x0;       /* the anchor, in lane pixels */
+ * there and the level stays. A drag past either end re-anchors at the end, so moving
+ * back moves the level at once. */
+static int g_drag_x0;       /* the anchor, in the fader's pixels */
 static int g_drag_lvl0;     /* the level at the anchor */
 static int g_drag_last;     /* the previous event's x */
 static int g_drag_from;     /* the level when the grab began, for the log */
@@ -272,7 +271,7 @@ static int lane_event_x(void *event)
     return (int)pos[0];
 }
 
-/* Paint one lane:
+/* Paint one fader:
  *
  *   name [glyph] [MUTE]                                55%
  *                                       .:|||||[cap]
@@ -319,11 +318,11 @@ static void stems_wedge_paint(void *self, void *g)
         nx += WAVEWAIT_W + LANE_HEAD_GAP;
     }
     /* With the MUTE keys folded away, the tag is the screen's only sign of a mute. It
-     * blinks on the pads' phase: filled in the stem colour with near-black lettering,
-     * then outlined with lettering in the colour. */
+     * blinks on the mute blink: filled in the part's colour with text_on_accent
+     * lettering, then outlined with lettering in the colour. */
     if (muted && g_stem_mute_pads) {
         int ty = LANE_NAME_MID - LANE_TAG_H / 2;
-        int fill = __atomic_load_n(&stems_g_mute_lit, __ATOMIC_RELAXED);
+        int fill = stems_g_mute_lit;
 
         if (fill) {
             mod_gfx_colour(g, stem);
@@ -342,8 +341,8 @@ static void stems_wedge_paint(void *self, void *g)
     mod_gfx_text(g, "%", FONT_LANE_PCT, val_c, right - LANE_PCT_W,
                  LANE_HEAD_Y, LANE_PCT_W, LANE_HEAD_H - LANE_PCT_DROP, JUCE_JUSTIFY_BOT_R);
 
-    /* The wedge. */
-    m1 = (n - 1 + 1) / 3;
+    /* Scale marks at both ends and the thirds. */
+    m1 = n / 3;
     m2 = (2 * (n - 1) + 1) / 3;
     for (k = 0; k < n; k++) {
         int bx   = x0 + k * LANE_BAR_PITCH;
@@ -355,7 +354,7 @@ static void stems_wedge_paint(void *self, void *g)
 
         if (mark)
             c = on ? (muted ? stems_dim(mod_colour_stock(COL_SKIN_MARK_OFF), dim)
-                            : stems_dim(mod_colour_press(ui->stem[i], LANE_MARK_LIFT_Q8), dim))
+                            : stems_dim(mod_colour_press(ui->stem[i], LANE_MARK_Q8), dim))
                    : stems_dim(ui->tick, dim);
         else
             c = on ? (muted ? grey : stem) : stems_dim(ui->surface, dim);
@@ -364,7 +363,6 @@ static void stems_wedge_paint(void *self, void *g)
                      mark ? LANE_BAR_W : LANE_BAR_THIN, bh);
     }
 
-    /* The cap. */
     {
         int capx = cx - LANE_CAP_W / 2;
 
@@ -398,7 +396,7 @@ static void stems_wedge_down(void *self, void *event)
 static void stems_wedge_drag(void *self, void *event)
 {
     int i = stems_wedge_index((uintptr_t)self);
-    int x, dx, span;
+    int x, dx, travel, lvl;
 
     if (i < 0 || !event || stems_g_grab != (uintptr_t)self || stems_row_inert()) return;
     x  = lane_event_x(event);
@@ -410,10 +408,16 @@ static void stems_wedge_drag(void *self, void *event)
         MDBG("stems: %s drag jumped %dpx -> re-anchored, level kept\n", k_stem_name[i], dx);
         return;
     }
-    span = lane_span(lane_bars(g_wedge_w[i])) - LANE_CAP_W;   /* the cap's travel */
-    if (span <= 0) return;
-    dx = x - g_drag_x0;
-    stems_level_set(i, g_drag_lvl0 + (dx * STEM_LEVEL_MAX_I + (dx >= 0 ? span : -span) / 2) / span);
+    travel = lane_span(lane_bars(g_wedge_w[i])) - LANE_CAP_W;
+    if (travel <= 0) return;
+    dx  = x - g_drag_x0;
+    lvl = g_drag_lvl0 + (dx * STEM_LEVEL_MAX + (dx >= 0 ? travel : -travel) / 2) / travel;
+    if (lvl < 0 || lvl > STEM_LEVEL_MAX) {
+        lvl = lvl < 0 ? 0 : STEM_LEVEL_MAX;
+        g_drag_x0   = x;
+        g_drag_lvl0 = lvl;
+    }
+    stems_level_set(i, lvl);
 }
 
 static void stems_wedge_up(void *self, void *event)
@@ -438,7 +442,7 @@ static int stems_wedge_vt_ready(void)
     if (mod_safe_read(LABEL_VTABLE - 2 * sizeof(uintptr_t),
                       g_wedge_vt, sizeof(g_wedge_vt)) != 0) return 0;
     if (g_wedge_vt[2 + VT_SLOT_PAINT / sizeof(uintptr_t)] != LABEL_FN_PAINT) {
-        MERR("stems: label vtable paint slot holds %#lx, expected %#lx -> no lanes\n",
+        MERR("stems: label vtable paint slot holds %#lx, expected %#lx -> no faders\n",
              (unsigned long)g_wedge_vt[2 + VT_SLOT_PAINT / sizeof(uintptr_t)],
              (unsigned long)LABEL_FN_PAINT);
         return 0;
@@ -448,7 +452,7 @@ static int stems_wedge_vt_ready(void)
     g_wedge_vt[2 + VT_SLOT_MOUSEDRAG / sizeof(uintptr_t)] = (uintptr_t)stems_wedge_drag;
     g_wedge_vt[2 + VT_SLOT_MOUSEUP   / sizeof(uintptr_t)] = (uintptr_t)stems_wedge_up;
     g_wedge_vptr = (uintptr_t)&g_wedge_vt[2];
-    MDBG("stems: cloned juce::Label vtable for lanes -> %#lx\n",
+    MDBG("stems: cloned juce::Label vtable for faders -> %#lx\n",
          (unsigned long)g_wedge_vptr);
     return 1;
 }
@@ -457,14 +461,14 @@ static int stems_wedge_vt_ready(void)
  * (the skin grey block, black word) while the stems play; OFF is lit in the bypass
  * colour when they are switched off. Pressing it toggles BYPASS. Drawn at 30 % while
  * no stems are resident. */
-static uintptr_t g_icon_vt[2 + VT_CLONE_SLOTS];
-uintptr_t stems_g_icon_vptr;
+static uintptr_t g_switch_vt[2 + VT_CLONE_SLOTS];
+uintptr_t stems_g_switch_vptr;
 
-static void stems_bypass_paint(void *self, void *g)
+static void switch_paint(void *self, void *g)
 {
     const struct theme_ui *ui = mod_ui();
     int32_t b[4];
-    int w, h, ox, y, on_off, dim;
+    int w, h, ox, y, off_lit, dim;
     uint32_t grey, block, lit_text, lift = stems_touch_lift((uintptr_t)self);
 
     if (stems_bounds((uintptr_t)self, b) != 0) return;
@@ -473,10 +477,10 @@ static void stems_bypass_paint(void *self, void *g)
     if (w < SW_W || h < SW_H) return;
 
     dim    = !stems_ready();
-    on_off = stems_g_bypass_on;                  /* OFF lit */
+    off_lit = stems_g_bypass_on;
     grey   = stems_dim(mod_colour_stock(COL_SKIN_GREY), dim);
     lit_text = stems_dim(mod_colour_stock(COL_SKIN_BLACK), dim);
-    block  = on_off ? ui->bypass : mod_colour_stock(COL_SKIN_GREY);
+    block  = off_lit ? ui->bypass : mod_colour_stock(COL_SKIN_GREY);
     block  = mod_colour_press(block, lift);
     block  = stems_dim(block, dim);
     ox    += (w - SW_W) / 2;
@@ -489,24 +493,24 @@ static void stems_bypass_paint(void *self, void *g)
     mod_gfx_colour(g, stems_dim(mod_colour_stock(COL_SKIN_BLACK), dim));
     mod_gfx_fill(g, ox + SW_FRAME, y + SW_FRAME, SW_W - 2 * SW_FRAME, SW_H - 2 * SW_FRAME);
     mod_gfx_colour(g, block);
-    mod_gfx_fill(g, ox + (on_off ? SW_INSET : SW_W - SW_INSET - SW_BLOCK), y + SW_INSET,
+    mod_gfx_fill(g, ox + (off_lit ? SW_INSET : SW_W - SW_INSET - SW_BLOCK), y + SW_INSET,
                  SW_BLOCK, SW_BLOCK);
-    mod_gfx_text(g, "OFF", FONT_SWITCH, on_off ? lit_text : grey,
+    mod_gfx_text(g, "OFF", FONT_SWITCH, off_lit ? lit_text : grey,
                  ox + SW_INSET, y + SW_INSET, SW_BLOCK, SW_BLOCK, JUCE_JUSTIFY_CENTRED);
-    mod_gfx_text(g, "ON", FONT_SWITCH, on_off ? grey : lit_text,
+    mod_gfx_text(g, "ON", FONT_SWITCH, off_lit ? grey : lit_text,
                  ox + SW_W - SW_INSET - SW_BLOCK, y + SW_INSET, SW_BLOCK, SW_BLOCK,
                  JUCE_JUSTIFY_CENTRED);
 }
 
 /* The button clone with paint taken as well, so the press behaviour is shared with
  * STEMS and only the drawing differs. */
-int stems_icon_vt_ready(void)
+int stems_switch_vt_ready(void)
 {
-    if (stems_g_icon_vptr) return 1;
+    if (stems_g_switch_vptr) return 1;
     if (!stems_label_vt_ready()) return 0;
-    memcpy(g_icon_vt, stems_g_label_vt, sizeof(g_icon_vt));
-    g_icon_vt[2 + VT_SLOT_PAINT / sizeof(uintptr_t)] = (uintptr_t)stems_bypass_paint;
-    stems_g_icon_vptr = (uintptr_t)&g_icon_vt[2];
+    memcpy(g_switch_vt, stems_g_label_vt, sizeof(g_switch_vt));
+    g_switch_vt[2 + VT_SLOT_PAINT / sizeof(uintptr_t)] = (uintptr_t)switch_paint;
+    stems_g_switch_vptr = (uintptr_t)&g_switch_vt[2];
     return 1;
 }
 
@@ -525,7 +529,7 @@ uintptr_t stems_wedge(uintptr_t parent, int x, int y, int w, int h, int stem)
     return p;
 }
 
-/* Move a lane, when the MUTE keys fold away or come back. `x`/`w` are the touch
+/* Move a fader, when the MUTE keys fold away or come back. `x`/`w` are the touch
  * area; the fader draws `dw` wide at `dl` inside it. */
 void stems_wedge_place(int stem, int x, int y, int w, int h, int dl, int dw)
 {
