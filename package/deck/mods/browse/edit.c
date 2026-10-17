@@ -199,7 +199,7 @@ static void be_paint(void *self, void *g)
     else
         mod_checker_lift2(g, 0, 0, b[2], b[3], ui->surface, ui->surface2, lift);
     mod_btn_bar(g, 0, 0, b[2], b[3],
-                mod_colour_lift(be_g_on ? ui->bar_on : ui->bar, lift));
+                mod_colour_press(be_g_on ? ui->bar_on : ui->bar, lift));
     /* Our own lettering: the Label can only centre in its bounds, and this
      * plate has a word and a mark. The Label holds no text, so Label::paint is
      * not chained (it would draw nothing). */

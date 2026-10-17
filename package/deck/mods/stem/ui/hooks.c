@@ -123,8 +123,12 @@ static void stems_ready_poll(void)
                              : "no stems resident -> row inert");
 }
 
-/* The edit mark in the corner of the STEMS button: the track is not playing as it
- * came, i.e. a level is off unity or a groove circuit is active.
+/* Half-cycle of the loading blink, in display ticks: as slow as the wave-wait pulse. */
+#define STEMS_LOAD_BLINK (MOD_BLINK_PERIOD * 3)
+
+/* The mark in the corner of the STEMS button. Blinking slowly: stems are loading or
+ * separating (a failure shows the warn badge instead). Steady: the track is not playing
+ * as it came, i.e. a level is off unity or a groove circuit is active.
  *
  * Levels and the groove circuit persist while the row is closed, so the mark goes on
  * the title bar button, which is always visible. One colour for every cause: the
@@ -145,6 +149,8 @@ static void stems_edit_poll(void)
             if (stem_gain_get(i) != 1.0f)
                 edited = 1;
     }
+    if (g_stems_on && stems_loading())
+        edited = ((stems_g_ticks / STEMS_LOAD_BLINK) & 1) == 0;
     if (edited)
         want = stems_g_btn_state == BTN_ON ? ui->text : ui->accent;
 
@@ -301,10 +307,18 @@ static void stems_drc_timer(void *self)
      * would otherwise update a strip another panel is drawing over. */
     stems_theme_poll();
     kit_band_poll();
+    /* STEM MUTE PADS can change while the row exists. */
+    stems_lanes_place();
+    /* Outside the row-open guard: the mute pads work and blink with the row
+     * closed. */
+    stems_pad_poll();
+    stems_mute_blink();
+    /* Again after the blink, so a mute pad flips in the same tick as its
+     * caption. Writes only on a change. */
+    cue_led_tick();
     if (stems_g_row_open) {
         stems_progress_poll();
         stems_wavewait_poll();
-        stems_mute_blink();
         stems_ready_poll();
     }
     stems_warn_poll();

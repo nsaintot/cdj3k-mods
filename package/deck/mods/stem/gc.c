@@ -142,14 +142,15 @@ int gc_active_slot(void)
 /* ---- the pads' colours ---------------------------------------------------
  *
  * A slot's colour is the stem it replaces: red drums, blue harmonics, green
- * vocals, indexed by STEM_PART_*. Unlit when gc_slot_part() returns -1 (row
- * closed, no file, or no stems resident), the same test the press uses.
+ * vocals, indexed by STEM_PART_*. Dim while loaded, blinking lit while it
+ * plays. Not ours when gc_slot_part() returns -1 (row closed, no file, or no
+ * stems resident), the same test the press uses.
  *
  * The blink uses the monotonic clock, not a draw count, because the lamp's
  * redraw rate varies with deck load. */
 #define GC_BLINK_MS 350
 
-static const uint8_t k_gc_part_hue[N_STEMS][3] = {
+const uint8_t k_stem_pad_hue[N_STEMS][3] = {
     { 255,   0,   0 },      /* STEM_PART_DRUMS     */
     {   0,   0, 255 },      /* STEM_PART_HARMONICS */
     {   0, 255,   0 },      /* STEM_PART_VOCALS    */
@@ -161,12 +162,17 @@ int gc_pad_lamp(int pad, struct lamp *out)
 
     if (part < 0 || part >= N_STEMS)
         return 0;
-    if (pad == gc_active_slot() && ((lamp_now_ms() / GC_BLINK_MS) & 1)) {
+    if (pad != gc_active_slot()) {
+        lamp_set(out, k_stem_pad_hue[part][0], k_stem_pad_hue[part][1],
+                 k_stem_pad_hue[part][2], LAMP_DIM);
+        return 1;
+    }
+    if ((lamp_now_ms() / GC_BLINK_MS) & 1) {
         lamp_dark(out);                 /* the dark half of the blink */
         return 1;
     }
-    lamp_set(out, k_gc_part_hue[part][0], k_gc_part_hue[part][1],
-             k_gc_part_hue[part][2], LAMP_LIT);
+    lamp_set(out, k_stem_pad_hue[part][0], k_stem_pad_hue[part][1],
+             k_stem_pad_hue[part][2], LAMP_LIT);
     return 1;
 }
 

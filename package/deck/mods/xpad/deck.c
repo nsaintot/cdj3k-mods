@@ -69,11 +69,11 @@ static void xpad_pad(const struct cue_event *ev, enum cue_phase phase)
          xpad_bank_name(ev->pad));
 }
 
-/* Ahead of GROOVE CIRCUIT at 5. The two cannot both claim (the circuit is gated
- * on the stem row, this on the X-PAD panel, and the band holds one panel), but
- * the order is explicit anyway. */
+/* Ahead of the stem mute pads at 4, which work with any panel open, and of
+ * GROOVE CIRCUIT at 5, which is gated on the stem row (the band holds one
+ * panel). */
 CUE_HANDLER(k_cue_xpad,
-            .name = "xpad", .prio = 4,
+            .name = "xpad", .prio = 3,
             .pad = xpad_pad, .pad_claim = xpad_pad_claim);
 
 /* ---- the three panel controls --------------------------------------------- */

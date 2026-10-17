@@ -33,6 +33,8 @@ one column right, press **BACK** to go one column left. Touch works too.
 | | **PREVIEW HOTCUE** | OFF / ON | OFF |
 | | **ENABLE X-PAD** | OFF / ON | OFF |
 | STEMS | **ENABLE STEMS** | OFF / ON | OFF |
+| | STEM MUTE MODE | HOLD / TOGGLE | HOLD |
+| | STEM MUTE PADS | OFF / ON | OFF |
 | | STEM SERVER LOCATION | AUTO / MANUAL | AUTO |
 | | STEM SERVER ADDRESS | text | empty |
 | DISPLAY | **THEME** | theme list | ORIGINAL |

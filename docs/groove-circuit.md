@@ -79,12 +79,15 @@ The tempo fader works normally, and the loop follows it.
 | Blue | Harmonics |
 | Green | Vocals |
 
-**Steady** means the slot is loaded and ready. **Blinking** means it is
+**Dim** means the slot is loaded and ready. **Blinking** means it is
 playing.
 
 ![The hot cue pads with groove circuit slots loaded: red pads replace drums, blue harmonics, green vocals. A still cannot show which one is blinking.](img/gc-pads.png)
 
 ![The STEMS row open, with circuit pads firing against the track.](vid/gc-pads.mp4)
+
+With [STEM MUTE PADS](stems.md#mute-from-the-pads) on, pads F, G and H are
+stem mutes, so slots 6, 7 and 8 are not used.
 
 A pad only lights when pressing it will do something. If a pad with a config
 line is unlit, the row is closed, the file did not load, or the track has no
