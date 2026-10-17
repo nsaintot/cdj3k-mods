@@ -13,8 +13,7 @@ place of its harmonics, with everything else still playing.
 
 ## Setting it up
 
-Put your loops on your USB stick or SD card, and list them in a plain text file
-at:
+Put your loops on your USB stick or SD card, and list them in a plain text file at:
 
 ```
 mods/gc/gc-config.txt
@@ -30,21 +29,14 @@ Contents/pads/Am.wav, 4, h, 124
 
 | Field | Means |
 | --- | --- |
-| **audio path** | Where the file is. Relative paths start from the **root of the stick**, not from `mods/gc`, so your loops can stay where you keep them. An absolute path is used as given. |
-| **slot** | `1` to `8`, which is pad **A** to **H**. |
+| **audio path** | The file's location: absolute, or relative to the **root of the stick**. |
+| **slot** | `1` to `8`, for pads **A** to **H**. |
 | **stem** | Which part it replaces: `d` drums, `h` harmonics, `v` vocals. |
 | **bpm** | The tempo of your file. Optional, but recommended. See below. |
 
-Lines starting with `#` are comments. Fields are comma-separated, so paths can
-contain spaces.
+Lines starting with `#` are comments. Fields are comma-separated.
 
-Notes on the file:
-
-- **First bank only.** These pads belong to the deck, not to a track, so there
-  is no second bank.
-- **Up to 30 seconds** per loop. A longer file is cut to its first 30 seconds.
-- **A pad with no line stays a normal hot cue.** You decide how many pads
-  groove circuit uses; the rest are untouched.
+Each loop can be **up to 30 seconds** long. A longer file is cut to its first 30 seconds.
 
 ### Give it a BPM
 
@@ -52,22 +44,21 @@ With a `bpm` on the line, the loop is locked to the track's beat grid: it lands
 on the track's downbeats, follows tempo changes within the track, and stays in
 place after a seek.
 
-Without one, it is stretched by a fixed ratio instead. That is exact while the
-tempo is constant, but drifts on a track whose grid speeds up or slows down.
+Without one, it is stretched by a fixed ratio, and can drift out of sync on a track
+with a dynamic beat grid.
 
 A file whose stated tempo is more than 4× away from the track's is refused.
 This is almost always a typo in the config.
 
 ## Using it
 
-**Open the STEMS row.** Groove circuit only takes over the pads while the stem
-control row is open. With the row closed, all eight pads are ordinary hot cues.
+**Open the STEMS row.** Groove circuit pads only work while the STEMS row is open.
 
 With the row open:
 
-- **Press a pad** to start its loop, replacing the stem named on its line.
-- **Press it again** to stop it.
-- **One at a time.** Starting a slot stops whichever one was playing.
+- **Press a pad** to start or stop its loop, which replaces the stem named on its
+  line.
+- **One at a time.** Only one loop plays at a time.
 
 The tempo fader works normally, and the loop follows it.
 
@@ -79,34 +70,25 @@ The tempo fader works normally, and the loop follows it.
 | Blue | Harmonics |
 | Green | Vocals |
 
-**Dim** means the slot is loaded and ready. **Blinking** means it is
+A **dim** pad means the slot is loaded and ready. A **blinking** pad means it is
 playing.
 
-![The hot cue pads with groove circuit slots loaded: red pads replace drums, blue harmonics, green vocals. A still cannot show which one is blinking.](img/gc-pads.png)
+![The hot cue pads with groove circuit slots loaded and dim: red pads replace drums, blue harmonics, green vocals.](img/gc-pads.png)
 
 ![The STEMS row open, with circuit pads firing against the track.](vid/gc-pads.mp4)
 
 With [STEM MUTE PADS](stems.md#mute-from-the-pads) on, pads F, G and H are
-stem mutes, so slots 6, 7 and 8 are not used.
-
-A pad only lights when pressing it will do something. If a pad with a config
-line is unlit, the row is closed, the file did not load, or the track has no
-stems yet.
+stem mutes, so slots 6, 7 and 8 cannot be used for loops.
 
 ## What happens to what is playing
 
-A replacement stays on until you press its pad again or **load a different
-track**. Nothing else stops it:
+- A playing loop stops only when you press its pad again or load another track.
+- Closing the **STEMS** row does not stop it. With the row closed, the pads do not
+  show a playing loop; the
+  [dot on the STEMS button](stems.md#the-dot-on-the-stems-button) does.
 
-- **Pausing does not.**
-- **Closing the STEMS row does not.** A running replacement keeps running.
+## Volume
 
-With the row closed, the pads do not show a running replacement. The
-[dot on the STEMS button](stems.md#the-dot-on-the-stems-button) shows it
-instead.
-
-## Level
-
-Your file plays at the level it was made at. Adding audio that is unrelated to
-the track can push the output past full scale; use the three stem faders to
-bring it back down.
+Loops are not normalised: each plays at the level it was made at. Audio unrelated
+to the track can push the output past full scale and clip; use the three stem
+faders to bring it back down.

@@ -40,8 +40,8 @@ uint32_t lamp_now_ms(void)
  *   2. the X-PAD, because while its panel is open the pads are sample banks,
  *      mute pads included. The band holds one panel, so the stems row that
  *      arms the circuit is shut and this cannot collide with 4.
- *   3. the mute pads F, G and H, row open or not, which take those pads from
- *      the groove circuit; stems_pad_lamp checks the setting itself.
+ *   3. the mute pads F, G and H, whether the row is open or not;
+ *      stems_pad_lamp checks the setting itself.
  *   4. the groove circuit, whose pads apply only while the stems row is open;
  *      gc_pad_lamp checks that itself.
  *

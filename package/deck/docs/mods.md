@@ -147,10 +147,10 @@ the build on a non-static function with no header declaration.
   change there is a bug.
 - A colour copied from a stock sprite (a black well, a skin grey) goes through
   `mod_colour_stock`, so a light theme maps it as it maps the sprite. A raw
-  literal stays the same in every theme: use one only on purpose (white lettering
-  on an engaged colour checker).
-- Disabled art: blend 30 % toward the ground, `mod_colour_stock(0xff000000)` (see
-  `stems_dim`).
+  literal is the same in every theme; use one only when that is intended, such as
+  white lettering on an engaged colour checker.
+- Disabled art: the colour at 30 % over the ground, `mod_colour_stock(0xff000000)`
+  (see `stems_dim`).
 - Press highlight and emphasis: `mod_colour_press` moves a colour away from the
   ground (lighter on a dark theme, darker on a light one, as stock held buttons
   do). `mod_colour_lift` always lightens.
@@ -292,13 +292,14 @@ Beat grid (`stem/grid*.c`), read from any cue slot's `PositionWithSourceInfo`:
 - Presses arrive on `[deck]`; the handler only counts taps or stores up/down, and
   `stems_pad_poll` applies them on the display tick. A pad held when the mutes are
   cleared is ignored until it is released.
-- `stems_g_mute_lit` is the blink phase, kept on every tick, row open or closed:
-  the pads, a MUTE key whose only bit is `STEMS_MUTE_LATCH`, and the lanes' MUTE
-  tag blink on it. It starts on the engaged half. A held key (HOLD) is steady.
+- `stems_g_mute_lit` is the blink phase, updated on every tick whether the row is
+  open or not. The pads, a MUTE key whose only bit is `STEMS_MUTE_LATCH`, and the
+  lanes' MUTE tag blink on it. It starts on the engaged half. A key held in HOLD is
+  steady.
 - With no stems resident the pads show the load state (`load_state` in pads.c):
-  busy (`stem_stage_busy`) blinks dim white every 250 ms; failed is lit orange
-  once it has lasted the warn badge's settle time, and holds until the track
-  changes, stems land or a server appears.
+  busy (`stem_stage_busy`) blinks dim white every 250 ms. Failed turns steady
+  orange after the warn badge's settle time, and stays until the track changes,
+  stems land or a server appears.
 
 ### Row layout
 

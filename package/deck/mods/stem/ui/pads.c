@@ -3,8 +3,8 @@
  * ui/pads.c - pads F, G and H as mutes for DRUMS, HARMONICS and VOCALS
  *
  * Part of the STEMS play-screen UI. With STEM MUTE PADS on, the three pads do what
- * the MUTE keys do, as set by STEM MUTE MODE, whether the row is open or not. The X-PAD
- * panel takes them first; they take them from the groove circuit.
+ * the MUTE keys do, as set by STEM MUTE MODE, whether the row is open or not. The
+ * X-PAD panel has priority over them, and they have priority over the groove circuit.
  *
  * Unlike the rest of stem/ui/, this file also runs off the message thread: the cue
  * handler runs on [deck] and the lamp on [any]. The handler only records presses;
@@ -25,8 +25,8 @@ static int      g_pad_down[N_STEMS];
  * released, so a held pad does not mute the next track. [message] */
 static int      g_pad_ignore[N_STEMS];
 
-/* Set by the first poll. Until the display tick runs, nothing would apply a press,
- * so the pads are not claimed. [message] writes, [deck] reads. */
+/* Set by the first poll. The pads are not claimed before the display tick runs,
+ * since nothing would apply a press. [message] writes, [deck] reads. */
 static int      g_polled;
 
 /* What the pads show while no stems are resident. [message] writes on the display
@@ -54,8 +54,8 @@ static int stems_pad_part(int pad)
     return pad - PAD_F;
 }
 
-/* Taken even when there is nothing to mute: the pad is dark then, and a dark pad
- * must not jump to a hot cue or start a loop. */
+/* Claimed even when there is nothing to mute, so a dark pad does not jump to a hot
+ * cue or start a loop. */
 static int stems_pad_claim(const struct cue_event *ev)
 {
     return __atomic_load_n(&g_polled, __ATOMIC_ACQUIRE) && stems_pad_part(ev->pad) >= 0;
@@ -113,9 +113,9 @@ static int load_raw(void)
     return LOAD_NONE;
 }
 
-/* FAILED shows after the warn badge's settle time; until then the stems are still on
- * their way. An offline deck reports "unavailable" for a moment on every track
- * change, before the cache lookup starts. */
+/* FAILED shows only after the warn badge's settle time and reads as BUSY until then:
+ * an offline deck reports "unavailable" for a moment on every track change, before the
+ * cache lookup starts. */
 static int load_state(void)
 {
     int raw = load_raw(), available = stems_available();
@@ -185,7 +185,7 @@ void stems_pad_poll(void)
 
 /* Dim white / dark blink: stems are loading.
  * Orange: the stems failed, or there is no server and nothing on the stick.
- * Dark: nothing to mute (no track, or the STEMS switch on OFF).
+ * Dark: nothing to mute (no track, or the STEMS switch set to OFF).
  * Part colour: the part plays.
  * White / part colour blink: muted, on the mute blink (stems_g_mute_lit). A new mute
  * starts on white, so even a short hold shows. */

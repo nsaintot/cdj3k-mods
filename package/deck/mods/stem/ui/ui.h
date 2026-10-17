@@ -207,9 +207,9 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define QM_SLOT_H        KIT_BAND_SLOT_H
 
 /* How far the row's top edge sits above the stock panel rect. The controls sit on the
- * stock rect; the extra pixels give the progress caption room. Not more: the loop
- * indicator draws just above the row while a loop is set. Check any change with a loop
- * set. */
+ * stock rect; the extra pixels give the progress caption room. A larger value collides
+ * with the loop indicator, which draws just above the row while a loop is set. Check
+ * any change with a loop set. */
 #define ROW_RISE         3
 #define ROW_PAD          0
 /* The row's outer margins.
@@ -224,13 +224,13 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define PROG_CAPTION_H   36
 #define PROG_Y           (PROG_CAPTION_H + ROW_PAD / 2)
 
-/* ---- the controls: the stock 3000 panel language ----
+/* ---- the controls, drawn like the stock panel ----
  *
- * Every control is the stock panel height (the band's own rect, 84 px), sitting on
- * the band's rect inside the row, on the stock footer's columns. The STEMS switch
+ * Every control is the stock panel height (84 px) and sits on the band's own rect,
+ * aligned to the stock footer's columns. The STEMS switch
  * (OFF | ON, BYPASS inverted) comes first. Each lane is a MUTE key and the fader
  * beside it; with STEM MUTE PADS on, the keys fold away and the fader takes the lane.
- * Art is the stock button vocabulary:
+ * The art reuses the stock buttons:
  *
  *   OFF       surface / COL_SKIN_DARK checker, 2 px COL_SKIN_GREY outline
  *   ON        COL_SKIN_GREY / COL_SKIN_ON2 checker, 2 px white outline (a held cap)
@@ -242,8 +242,8 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define COL_SKIN_ON2     0xff646464u   /* the ON checker's dark half */
 #define COL_SKIN_BLACK   0xff000000u   /* the page switch's well and its lit lettering */
 /* Lettering and the foot bar on an engaged colour checker (a muted MUTE key). White in
- * every theme, as on the stock BEAT LOOP on: the theme's ink is dark on a light ground
- * and would sit black on the colour. */
+ * every theme, as on the stock BEAT LOOP when on; a light theme's text colour is dark
+ * and would read black on the colour. */
 #define COL_ON_ENGAGED   0xffffffffu
 #define LANE_DISABLED_Q8 77            /* the stock disabled art: 77/256, about 30 % */
 /* The darker half of an engaged checker: #ff7323 -> #e15a0f on BEAT LOOP. */
@@ -271,8 +271,8 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define SW_INSET         4
 #define SW_BLOCK         40
 
-/* The fader, in its own coordinates. The whole lane takes the touch. The header line
- * spans the wedge: the name flush with the first bar, the value with the last. */
+/* The fader, in its own coordinates. The header line spans the wedge: the name is
+ * flush with the first bar and the value with the last. */
 #define LANE_HEAD_Y      1
 #define LANE_HEAD_H      26
 #define LANE_NAME_DY     2     /* puts the name's baseline on the value's */
@@ -305,7 +305,7 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define LANE_CAP_LINE_Y  6
 /* The narrowest lane that still gets faders. */
 #define LANE_MIN_FADER_W (MUTE_W + MUTE_GAP + 4 * LANE_CAP_W)
-/* A drag step longer than this is not a finger; see the gesture in wedge.c. */
+/* A drag step longer than this is treated as a jump; see the gesture in wedge.c. */
 #define LANE_JUMP_PX     80
 
 #define FONT_LANE_NAME   17.0f

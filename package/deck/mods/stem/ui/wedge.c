@@ -18,7 +18,7 @@
  * so the Label ctor does the allocation and Component setup; Label's paint is never
  * reached. */
 uintptr_t stems_g_wedge[N_STEMS];
-static int32_t   g_wedge_w[N_STEMS];    /* the drawn width: the wedge is laid out in it */
+static int32_t   g_wedge_w[N_STEMS];    /* the drawn width, which the wedge is laid out in */
 int       stems_g_level[N_STEMS] = { 100, 100, 100 };   /* percent, 0..STEM_LEVEL_MAX */
 /* MUTE per stem, from the MUTE key or the pad. Kept separate from the level so
  * unmuting restores the fader's value. */
@@ -178,7 +178,7 @@ int stems_row_inert(void)
 /* ---- drawing helpers, shared with the MUTE keys (row.c) ---------------------------- */
 
 /* The stock disabled art: the colour at 30 % over the panel's ground, so it fades toward
- * black on a dark theme and toward the paper on a light one. */
+ * black on a dark theme and toward white on a light one. */
 uint32_t stems_dim(uint32_t argb, int dim)
 {
     uint32_t ground, out = argb & 0xff000000u;
@@ -254,9 +254,9 @@ static const int k_lane_name_w[N_STEMS] = LANE_NAME_W;
  *
  * A touch anywhere on the fader grabs the cap where it is and changes nothing. A drag
  * moves the level by the distance dragged, so a stray touch or a palm cannot set a
- * level. A drag step longer than LANE_JUMP_PX is not a finger (the panel reports one
- * averaged point for two contacts, and a lift can report far away): the anchor moves
- * there and the level stays. A drag past either end re-anchors at the end, so moving
+ * level. A drag step longer than LANE_JUMP_PX is treated as a jump, since the panel
+ * reports one averaged point for two contacts and a lift can report a point far away:
+ * the anchor moves there and the level stays. A drag past either end re-anchors at the end, so moving
  * back moves the level at once. */
 static int g_drag_x0;       /* the anchor, in the fader's pixels */
 static int g_drag_lvl0;     /* the level at the anchor */
@@ -386,7 +386,7 @@ static void stems_wedge_down(void *self, void *event)
     int i = stems_wedge_index((uintptr_t)self);
 
     if (i < 0 || !event || stems_row_inert())
-        return;                         /* out of circuit: inert, not merely greyed */
+        return;                         /* out of circuit: no input */
     if (!stems_grab_take((uintptr_t)self)) return;
     g_drag_x0   = g_drag_last = lane_event_x(event);
     g_drag_lvl0 = g_drag_from = stems_g_level[i];

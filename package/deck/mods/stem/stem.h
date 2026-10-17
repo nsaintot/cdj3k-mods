@@ -54,8 +54,8 @@ extern int g_stem_mute_toggle;
  * firing hot cues or groove circuit slots, row open or not. */
 extern int g_stem_mute_pads;
 
-/* STEM MUTE MODE changed: clear every mute, so a latched mute cannot outlive a switch
- * to HOLD. [message] */
+/* Called when STEM MUTE MODE changes: clears every mute, so a latched mute does not
+ * survive a switch to HOLD. [message] */
 void stems_mute_mode_changed(void);
 
 /* The server's identity for its separations (backend, model, preset and stemd
@@ -195,9 +195,9 @@ struct stem_ui_state {
  * anything yet, in which case *out is left zeroed. */
 int stem_ui_read(struct stem_ui_state *out);   /* [message] */
 
-/* Between the request and the stems being resident. LOADING sits above the two
- * terminal values, because the wire enum is the sidecar's and ours extends it, so the
- * test names the exclusions. */
+/* True between the request and the stems being resident. The test lists the stages
+ * it excludes: LOADING is numbered above DONE and FAILED, because our enum extends
+ * the sidecar's wire enum. */
 static inline int stem_stage_busy(int stage)
 {
     return stage != STEM_STAGE_IDLE && stage != STEM_STAGE_DONE &&
