@@ -7,7 +7,7 @@
  */
 #include "lamp/lamp.h"
 #include "xpad/xpad.h"       /* the panel's sample banks */
-#include "stem/stem.h"       /* the groove circuit       */
+#include "stem/stem.h"       /* the mute pads, the groove circuit */
 
 const uint8_t k_lamp_wheel[LAMP_HUES][3] = {
     { 255,   0,   0 },   /* red        */
@@ -37,10 +37,12 @@ uint32_t lamp_now_ms(void)
  *
  *   1. the startup dance, which owns every pad while it runs and then declines
  *      forever. It ends before a deck can be played.
- *   2. the X-PAD, because while its panel is open the pads are sample banks.
- *      The band holds one panel, so the stems row that arms the circuit is
- *      shut and this cannot collide with 3.
- *   3. the groove circuit, whose pads apply only while the stems row is open;
+ *   2. the X-PAD, because while its panel is open the pads are sample banks,
+ *      mute pads included. The band holds one panel, so the stems row that
+ *      arms the circuit is shut and this cannot collide with 4.
+ *   3. the mute pads F, G and H, row open or not, which take those pads from
+ *      the groove circuit; stems_pad_lamp checks the setting itself.
+ *   4. the groove circuit, whose pads apply only while the stems row is open;
  *      gc_pad_lamp checks that itself.
  *
  * Unclaimed pads keep the colour the app painted. */
@@ -51,6 +53,8 @@ int lamp_pad(int pad, struct lamp *out)
     if (lamp_dance_ask(pad, out))
         return 1;
     if (xpad_pad_lamp(pad, out))
+        return 1;
+    if (stems_pad_lamp(pad, out))
         return 1;
     return gc_pad_lamp(pad, out);
 }

@@ -151,7 +151,7 @@ static void xpad_btn_paint(void *self, void *g)
         /* The bar lifts with the plate; it is one colour, so lifted directly,
          * as on the stems button. */
         mod_btn_bar(g, 0, 0, b[2], b[3],
-                    mod_colour_lift(xpad_g_open ? ui->bar_on : ui->bar, lift));
+                    mod_colour_press(xpad_g_open ? ui->bar_on : ui->bar, lift));
     }
     /* Bracketed: the Label's text colour is already themed, so the generic pass
      * must not transform it again. */

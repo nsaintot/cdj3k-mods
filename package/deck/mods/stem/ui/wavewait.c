@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * ui/wavewait.c - "the waveform cannot follow the faders yet".
+ * ui/wavewait.c - "the waveform cannot follow the faders yet", a glyph after each
+ * stem name.
  *
  * A fader changes the audio immediately and the waveform seconds later: once the
  * stems land, the worker re-decodes the track to derive drums, analyses it into
@@ -33,9 +34,7 @@
  * original's 160. The footprint matches the warn badge's (18x20).
  *
  * Trimmed to the ink: the source's four blank rows above and below are dropped, so
- * WAVEWAIT_H is the drawn height. */
-#define WAVEWAIT_W      18
-#define WAVEWAIT_H      16
+ * WAVEWAIT_H (ui.h) is the drawn height. */
 
 struct wavewait_run { uint8_t y, x, len, alpha; };
 
@@ -94,24 +93,13 @@ enum wavewait_state { WAVEWAIT_OFF, WAVEWAIT_PULSE, WAVEWAIT_STILL };
  * POLL_TICKS of its APPLY_MS loop, about eleven seconds. */
 #define WAVEWAIT_GIVEUP    700
 
-/* Clearance between the mark and BYPASS below it, in pixels, so the two do not read
- * as one stacked control.
- *
- * At its maximum, CAPTION_H - WAVEWAIT_H: the ink's top row is flush with the top of
- * the row. The deck's loop indicator sits just above (it is why ROW_RISE is 3), so
- * lower this if the mark looks crowded against it. The paint clamps y at 0, so a
- * change to CAPTION_H cannot push the glyph out of its cell. */
-#define WAVEWAIT_GAP        (CAPTION_H - WAVEWAIT_H)
-
-static uintptr_t g_wavewait;
-static uintptr_t g_vt[2 + VT_CLONE_SLOTS];
-static uintptr_t g_vptr;
 static int       g_state;
 static int       g_waited;      /* ticks in PULSE; also the pulse's own phase */
 
-/* Derived from the poll's counter on each call, never stored. */
-static uint32_t wavewait_alpha_q8(void)
+uint32_t stems_wavewait_level(void)
 {
+    if (g_state == WAVEWAIT_OFF)
+        return 0;
     if (g_state == WAVEWAIT_STILL)
         return WAVEWAIT_A_DIM;
     return ((g_waited / WAVEWAIT_PULSE) & 1) ? WAVEWAIT_A_DIM : WAVEWAIT_A_BRIGHT;
@@ -120,18 +108,10 @@ static uint32_t wavewait_alpha_q8(void)
 /* The row is transparent (COL_ROW_BG is 0x00000000), so there is no background to
  * pre-blend against. Each run carries its own alpha into juce::Colour and the
  * renderer blends it over what is behind. */
-static void wavewait_paint(void *self, void *g)
+void stems_wavewait_draw(void *g, int x0, int y0, uint32_t lvl)
 {
     uint32_t rgb = mod_ui()->warn & 0x00ffffffu;
-    uint32_t lvl = wavewait_alpha_q8();
-    int32_t b[4];
-    int i, x0, y0;
-
-    if (stems_bounds((uintptr_t)self, b) != 0) return;
-    if (b[2] < WAVEWAIT_W || b[3] < WAVEWAIT_H) return;
-    x0 = (b[2] - WAVEWAIT_W) / 2;
-    y0 = b[3] - WAVEWAIT_H - WAVEWAIT_GAP;
-    if (y0 < 0) y0 = 0;
+    int i;
 
     for (i = 0; i < N_WAVEWAIT_RUN; i++) {
         const struct wavewait_run *r = &k_glyph[i];
@@ -143,36 +123,18 @@ static void wavewait_paint(void *self, void *g)
     }
 }
 
-static int wavewait_vt_ready(void)
+static void wavewait_repaint(void)
 {
-    if (g_vptr) return 1;
-    if (!stems_label_vt_ready()) return 0;
-    memcpy(g_vt, stems_g_label_vt, sizeof(g_vt));
-    g_vt[2 + VT_SLOT_PAINT / sizeof(uintptr_t)] = (uintptr_t)wavewait_paint;
-    g_vptr = (uintptr_t)&g_vt[2];
-    return 1;
-}
+    int i;
 
-/* Built on the controls container, not as a child of BYPASS, so it cannot take
- * BYPASS's press. Not clickable: it keeps stock Label::mouseDown, the empty stub. */
-uintptr_t stems_wavewait_build(uintptr_t parent, int x, int y, int w, int h)
-{
-    if (!wavewait_vt_ready()) return 0;
-    g_wavewait = stems_label(parent, "", FONT_CAPTION, 0x00000000u, mod_ui()->warn, 0,
-                             x, y, w, h);
-    if (!g_wavewait) return 0;
-    *(uintptr_t *)g_wavewait = g_vptr;
-    stems_set_visible(g_wavewait, 0);
-    g_state = WAVEWAIT_OFF;
-    g_waited = 0;
-    return g_wavewait;
+    for (i = 0; i < N_STEMS; i++)
+        stems_repaint(stems_g_wedge[i]);
 }
 
 void stems_wavewait_poll(void)
 {
     int want;
 
-    if (!g_wavewait) return;
     /* Stems resident and in circuit, and the analysis not there yet. Under BYPASS the
      * deck's own waveform is shown and the faders are inert, so nothing is pending. */
     want = stems_ready() && !stems_g_bypass_on && !wave_g_have_analysis;
@@ -180,26 +142,26 @@ void stems_wavewait_poll(void)
         if (g_state != WAVEWAIT_OFF) {
             g_state  = WAVEWAIT_OFF;
             g_waited = 0;
-            stems_set_visible(g_wavewait, 0);
+            wavewait_repaint();
         }
         return;
     }
     if (g_state == WAVEWAIT_OFF) {
         g_state  = WAVEWAIT_PULSE;
         g_waited = 0;
-        stems_set_visible(g_wavewait, 1);
-        return;                     /* addAndMakeVisible already drew the first half */
+        wavewait_repaint();
+        return;
     }
     if (g_state == WAVEWAIT_STILL)
         return;                     /* at rest: nothing moves, so nothing repaints */
     if (++g_waited >= WAVEWAIT_GIVEUP) {
         g_state = WAVEWAIT_STILL;
-        stems_repaint(g_wavewait);
+        wavewait_repaint();
         MDBG("stems: waveform analysis has not arrived -> the picture will not follow"
              " the faders on this track\n");
         return;
     }
     /* One repaint per half-cycle, not per tick. */
     if (g_waited % WAVEWAIT_PULSE == 0)
-        stems_repaint(g_wavewait);
+        wavewait_repaint();
 }

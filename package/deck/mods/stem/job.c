@@ -652,16 +652,22 @@ void stem_track_gone(void)
  * ENABLE STEMS and the address off MANUAL, so no row can be edited into a state
  * nothing reads. [message] for the callbacks; registration is [init]. */
 static const char *const k_stem_where[2] = { "AUTO", "MANUAL" };
+static const char *const k_stem_mute[2]  = { "HOLD", "TOGGLE" };
 
 static const struct kit_cat k_cat_stems = { "stems", "STEMS", KIT_ORDER_STEMS };
 
 static const struct kit_row k_rows[] = {
     KIT_ROW_BOOL("ENABLE STEMS", &g_stems_on, .changed = mods_stem_settings_changed),
-    { .label = "STEM SERVER LOCATION", .idx = 0, .parent = &k_rows[0], .show_when = 1,
+    { .label = "STEM SERVER LOCATION", .idx = 2, .parent = &k_rows[0], .show_when = 1,
       .state = &g_stem_manual, .values = k_stem_where, .nvalues = 2,
       .changed = mods_stem_settings_changed },
     { .label = "STEM SERVER ADDRESS", .idx = 0, .parent = &k_rows[1], .show_when = 1,
       .text = g_stem_addr, .text_cap = STEM_ADDR_MAX, .changed = addr_changed },
+    { .label = "STEM MUTE MODE", .idx = 0, .parent = &k_rows[0], .show_when = 1,
+      .state = &g_stem_mute_toggle, .values = k_stem_mute, .nvalues = 2,
+      .changed = stems_mute_mode_changed },
+    KIT_ROW_BOOL("STEM MUTE PADS", &g_stem_mute_pads, .idx = 1, .parent = &k_rows[0],
+                 .show_when = 1),
 };
 
 void stem_job_poll(void)

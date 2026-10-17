@@ -145,6 +145,15 @@ the build on a non-static function with no header declaration.
 - Mod controls paint with `struct theme_ui` (`juce/draw.h`) from
   `theme/roles.c`. Under ORIGINAL these reproduce the stock colours; any visible
   change there is a bug.
+- A colour copied from a stock sprite (a black well, a skin grey) goes through
+  `mod_colour_stock`, so a light theme maps it as it maps the sprite. A raw
+  literal stays the same in every theme: use one only on purpose (white lettering
+  on an engaged colour checker).
+- Disabled art blends toward the ground (`mod_colour_stock(black)`), not toward
+  black: `stems_dim`.
+- A press highlight moves away from the ground: `mod_colour_press` (lighter on a
+  dark theme, darker on a light one, as stock held buttons do). Never
+  `mod_colour_lift` for a press.
 
 ## Cues
 
@@ -220,6 +229,7 @@ Contents/pads/Am.wav, 4, h, 124
 - Pads are the circuit's only while the STEMS row is open. `gc_slot_part()` is the
   single predicate for both press and lamp (−1 if row closed, no file or no
   stems).
+- Lamp: dim while loaded, blinking lit/dark while playing.
 - Closing the row does not stop a running replacement. One replacement at a
   time; only a track change stops it (pause does not).
 - Never infer play state from `stem_source_pos()`: it stalls with the audio
@@ -263,6 +273,49 @@ Beat grid (`stem/grid*.c`), read from any cue slot's `PositionWithSourceInfo`:
 - The array is copied when the deck's grid reply lands and handed to the mix by
   atomic exchange, keyed on TrackID.
 
+## Stem mutes
+
+| Bit (`stems_g_mute_by`) | Set by |
+| --- | --- |
+| `STEMS_MUTE_LATCH` | TOGGLE: a MUTE key or pad press; the next press clears every bit |
+| `STEMS_MUTE_CAPTION` | HOLD: MUTE key down; any key mouseUp clears it |
+| `STEMS_MUTE_PAD` | HOLD: mute pad down |
+
+- A part is muted while any bit is set; `stems_g_mute[i]` is that boolean.
+- Mute pads (`stem/ui/pads.c`): pads F–H, cue handler prio 4, after X-PAD (3)
+  and ahead of the groove circuit (5). Claimed whenever STEM MUTE PADS and
+  ENABLE STEMS are on, row open or not, including when there is nothing to mute
+  (dark, inert).
+- Presses arrive on `[deck]`; the handler only counts taps or stores up/down, and
+  `stems_pad_poll` applies them on the display tick.
+- `stems_g_mute_lit` is the blink phase, kept on the tick: the pads, a MUTE key
+  whose only bit is `STEMS_MUTE_LATCH`, and the lanes' MUTE tag blink on it. A
+  held key (HOLD) is steady. The blink and the lamp repaint run on every tick, not only
+  while the row is open.
+- With no stems resident the pads show `g_pad_wait`, set on the tick: loading
+  (a job stage other than IDLE/DONE/FAILED) blinks dim white every 250 ms;
+  failed (`STEM_STAGE_FAILED`, or `!stems_available()`) is lit orange.
+- Row (`stem/ui/`): stock panel language on the footer's columns, constants in
+  `ui.h` (`LANE_*`, `MUTE_*`, `SW_*`). The STEMS switch (OFF | ON, drawn by the
+  BYPASS button's paint, 88 px cell), then three 366 px lanes from x 126; a lane is
+  a MUTE key (80, the `stems_g_caption` component) and the fader (`stems_g_wedge`),
+  a wedge 8 → 40 px with marks at the ends and thirds and a cap that travels inside
+  it.
+  `stems_lanes_place` folds the keys away while STEM MUTE PADS is on (the fader
+  is `LANE_PADS_W`, 320 px, centred in the lane), and sizes
+  the touch areas: each gap is split at its middle between its neighbours, BYPASS
+  reaches x 0 and the last fader the row's right edge. `stems_hit_set/get` record
+  where the drawing sits inside a wider component.
+- Fader gesture: mouseDown grabs and anchors, mouseDrag moves the level by
+  `dx / cap travel`, a step over `LANE_JUMP_PX` re-anchors without moving.
+- STEMS button mark: steady = edited (level off unity or GC); slow blink
+  (`STEMS_LOAD_BLINK`) = `stems_loading()`, a job in progress and nothing failed.
+  Inert (`stems_row_inert`: no stems or BYPASS) draws at `LANE_DISABLED_Q8`.
+- Name widths (`LANE_NAME_W`) are measured at `FONT_LANE_NAME`; the kit has no
+  text measurement. Re-measure if the names or the font change.
+- Changing STEM MUTE MODE clears every mute. A track change clears them in
+  `mod_stems_reset_levels`.
+
 ## STEMS dot
 
 - A 9 px `•` (U+2022) on the STEMS button whenever the track is not playing as
@@ -290,6 +343,8 @@ the app, without a syscall hook.
   pads always write slot 2; the app's own write is kept for restoring.
 - Pad identity: a source whose vtable is `EP122_IND_DECK_ID` is a deck lamp,
   ordinal at `+0x68`; pads are 8 ordinals from `ORD_HOTCUE_A` (4).
+- Owner order (`lamp/lamp.c`): startup dance, X-PAD, stem mute pads, groove
+  circuit; otherwise the app's colour.
 
 ## Menu
 

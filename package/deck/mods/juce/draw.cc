@@ -127,12 +127,18 @@ uint32_t mod_checker_alt(uint32_t base)
                           : mod_colour_scale(base, MOD_CHECKER_ALT_Q8);
 }
 
+uint32_t mod_colour_press(uint32_t argb, uint32_t q8)
+{
+    if (!q8) return argb;
+    return g_light_ground ? mod_colour_scale(argb, 256u - q8) : mod_colour_lift(argb, q8);
+}
+
 void mod_checker_lift2(void *g, int x, int y, int w, int h,
                        uint32_t base, uint32_t alt, uint32_t q8)
 {
-    /* Lift both after pairing them; draw.h explains why. */
+    /* Press both after pairing them; draw.h explains why. */
     mod_checker_pair(g, x, y, w, h,
-                     mod_colour_lift(base, q8), mod_colour_lift(alt, q8));
+                     mod_colour_press(base, q8), mod_colour_press(alt, q8));
 }
 
 void mod_checker_lift(void *g, int x, int y, int w, int h,
