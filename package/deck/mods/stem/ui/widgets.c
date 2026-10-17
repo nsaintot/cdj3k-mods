@@ -29,7 +29,7 @@ void stems_colour(uintptr_t comp, int id, uint32_t argb)
 /* Touch areas wider than the drawing. The row's gaps go to the controls beside them,
  * so a component can be wider than what it draws; this records where the drawing
  * sits inside it. */
-#define HIT_MAX 8
+#define HIT_MAX (1 + 2 * N_STEMS)   /* the switch, three MUTE keys, three faders */
 static struct { uintptr_t comp; int l, w; } g_hit[HIT_MAX];
 
 void stems_hit_set(uintptr_t comp, int l, int w)
@@ -41,7 +41,10 @@ void stems_hit_set(uintptr_t comp, int l, int w)
         if (g_hit[i].comp == comp) { g_hit[i].l = l; g_hit[i].w = w; return; }
         if (!g_hit[i].comp && free_i < 0) free_i = i;
     }
-    if (free_i < 0) return;
+    if (free_i < 0) {
+        MERR("stems: no room to record a touch area for %#lx\n", (unsigned long)comp);
+        return;
+    }
     g_hit[free_i].comp = comp;
     g_hit[free_i].l = l;
     g_hit[free_i].w = w;

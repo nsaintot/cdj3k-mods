@@ -2,8 +2,9 @@
 /*
  * ui.h - the contract between the parts of the STEMS play-screen UI.
  *
- * The quick-menu button and the stem control row. The settings are in menu/
- * (ENABLE STEMS / STEM SERVER LOCATION / STEM SERVER ADDRESS). Nothing here touches audio.
+ * The quick-menu button and the stem control row. The settings rows are in
+ * stem/job.c (ENABLE STEMS, STEM MUTE MODE, STEM MUTE PADS, STEM SERVER
+ * LOCATION, STEM SERVER ADDRESS). Nothing here touches audio.
  *
  * Approach
  * --------
@@ -30,17 +31,17 @@
  *     a flat button. To make one clickable the Label vtable is cloned into a
  *     writable array with mouseDown (+0x28) replaced; only our instances point at
  *     the clone.
- *   - the faders (lanes) are Labels with a second cloned vtable that also
+ *   - the faders are Labels with a second cloned vtable that also
  *     replaces paint and the mouse slots; see wedge.c.
  *
  * The Component pointers below are shared by every part of this UI. They are
- * declared here and defined in state.c (the app's tree) or wedge.c (the lanes).
+ * declared here and defined in state.c (the app's tree) or wedge.c (the faders).
  *
  * File layout under mods/stem/ui/:
  *
  *   state.c    the shared Component pointers and flags, defined once
  *   widgets.c  juce primitives, and the Label vtable clone that makes a button
- *   wedge.c    the three faders and BYPASS: paint, gesture, level maths
+ *   wedge.c    the three faders and the STEMS switch: paint, gesture, level maths
  *   panel.c    the row's visibility, and claiming/handing back the waveform band
  *   row.c      MUTE keys, mute, bypass, and the progress bar that replaces them
  *   pads.c     pads F, G, H as mutes, and their lamps
@@ -51,7 +52,8 @@
  * Finding the stock quick-menu panel and snapshotting it is in kit/band.c.
  *
  * Everything here runs on the juce message thread, which is also the only repaint
- * tick (see stem.h). Nothing in this directory may block.
+ * tick (see stem.h), except in pads.c: its cue handler runs on [deck] and its lamp on
+ * [any]. Nothing in this directory may block.
  */
 #ifndef EP122_MODS_STEM_UI_H
 #define EP122_MODS_STEM_UI_H
@@ -204,31 +206,23 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define QM_SLOT_W        KIT_BAND_SLOT_W
 #define QM_SLOT_H        KIT_BAND_SLOT_H
 
-/* How far the row's top edge sits above the stock panel rect, to balance the margins.
- * With a loop set and the row open:
- *
- *   loop indicator ends   y 371      caption starts  y 383   ->  11 px above
- *   wedge ends            y 466      footer starts   y 475   ->   8 px below
- *
- * The band's bottom does not move, so the three extra pixels go to the wedge height.
- *
- * Not the ten PANEL_GAP would suggest: the loop indicator draws in the band above,
- * only while a loop is set, and ten collides with it. Check any change with a loop
+/* How far the row's top edge sits above the stock panel rect. The controls sit on the
+ * stock rect; the extra pixels give the progress caption room. Not more: the loop
+ * indicator draws just above the row while a loop is set. Check any change with a loop
  * set. */
 #define ROW_RISE         3
 #define ROW_PAD          0
 /* The row's outer margins.
  *
- * LEFT aligns the BYPASS button with the stock PLAYER box beneath it.
+ * LEFT aligns the STEMS switch with the stock PLAYER box beneath it.
  *
  * RIGHT ends the row on the footer's last column (x 1264). */
 #define ROW_LEFT         20
 #define ROW_RIGHT        16
-#define ROW_GAP          20    /* after BYPASS and between lanes */
-/* The processing bar's caption band and the band under it; the controls no longer
- * use them. */
-#define CAPTION_H        36
-#define WEDGE_Y          (CAPTION_H + ROW_PAD / 2)
+#define ROW_GAP          20    /* after the switch and between lanes */
+/* The progress bar's caption band and the top of the band the bar is centred in. */
+#define PROG_CAPTION_H   36
+#define PROG_Y           (PROG_CAPTION_H + ROW_PAD / 2)
 
 /* ---- the controls: the stock 3000 panel language ----
  *
@@ -251,7 +245,7 @@ typedef void       (*value_set_t)(void *value, const void *v);
  * every theme, as on the stock BEAT LOOP on: the theme's ink is dark on a light ground
  * and would sit black on the colour. */
 #define COL_ON_ENGAGED   0xffffffffu
-#define LANE_DISABLED_Q8 77            /* the stock disabled art's alpha, 77/255 */
+#define LANE_DISABLED_Q8 77            /* the stock disabled art: 77/256, about 30 % */
 /* The darker half of an engaged checker: #ff7323 -> #e15a0f on BEAT LOOP. */
 #define MUTE_ON_ALT_Q8   205
 
@@ -292,7 +286,7 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define LANE_VALUE_W     40
 #define LANE_PCT_W       9     /* the % glyph at FONT_LANE_PCT, right-aligned */
 #define LANE_PCT_GAP     2
-#define LANE_PCT_DROP    4
+#define LANE_PCT_DROP    4     /* lifts the % box so its baseline meets the figures' */
 /* The wedge: bars every 9 px rising from FLOOR to H, bottoms on one line. Marks (both
  * ends and the thirds) are 5 px and lighter, the other bars 4 px. */
 #define LANE_WEDGE_Y     34
@@ -302,13 +296,15 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define LANE_BAR_THIN    4
 #define LANE_BAR_GAP     4
 #define LANE_BAR_PITCH   (LANE_BAR_W + LANE_BAR_GAP)
-#define LANE_MARK_LIFT_Q8 72   /* a lit mark: the stem colour away from the ground, #e03a3a -> #ec7272 */
+#define LANE_MARK_Q8     72    /* a lit mark: the part's colour away from the ground, #e03a3a -> #ec7272 */
 #define COL_SKIN_MARK_OFF 0xffa0a0a0u   /* a lit mark on a muted part */
 #define LANE_CAP_Y       31
 #define LANE_CAP_W       24
 #define LANE_CAP_H       46
 #define LANE_CAP_LINE_W  2
 #define LANE_CAP_LINE_Y  6
+/* The narrowest lane that still gets faders. */
+#define LANE_MIN_FADER_W (MUTE_W + MUTE_GAP + 4 * LANE_CAP_W)
 /* A drag step longer than this is not a finger; see the gesture in wedge.c. */
 #define LANE_JUMP_PX     80
 
@@ -359,8 +355,7 @@ typedef void       (*value_set_t)(void *value, const void *v);
  * logged once at startup. */
 #define WARN_SETTLE_TICKS  44     /* hold before the badge appears: ~1 s  */
 
-#define STEM_LEVEL_MAX   100.0
-#define STEM_LEVEL_MAX_I 100
+#define STEM_LEVEL_MAX   100
 /* N_STEMS lives in ../stem.h -- the audio side needs it for the level array too. */
 
 /* ---- shared state, defined once in state.c -------------------------------
@@ -395,8 +390,8 @@ extern uintptr_t stems_g_edit;           /* the "not as the track came" mark    
 extern uint32_t  stems_g_edit_col;       /* the colour it holds, 0 while hidden        */
 extern uintptr_t stems_g_row;            /* the control strip (a Label as a panel)    */
 extern uintptr_t stems_g_btn_bypass;
-extern uintptr_t stems_g_caption[N_STEMS];
-extern uintptr_t stems_g_controls;       /* BYPASS + captions + wedges                */
+extern uintptr_t stems_g_mute_key[N_STEMS];
+extern uintptr_t stems_g_controls;       /* the switch, MUTE keys and faders          */
 extern uintptr_t stems_g_progress;       /* the processing bar                        */
 extern uintptr_t stems_g_prog_fill, stems_g_prog_text, stems_g_prog_track;
 extern uintptr_t stems_g_prog_mark[N_PROG_BOUND];
@@ -409,9 +404,9 @@ extern uintptr_t stems_g_label_vt[VT_CLONE_WORDS];
 extern uintptr_t stems_g_label_vptr;
 extern uintptr_t stems_g_label_mouseup;  /* stock juce::Label::mouseUp, chained by ours */
 
-/* ---- the wedge's own state (wedge.c) -------------------------------------
- * The three controls and the single gesture they share. Outside wedge.c these
- * are read to draw the captions and written only to reset levels on a track
+/* ---- the faders' own state (wedge.c) -------------------------------------
+ * The three faders, their levels and mutes, and the single gesture the row shares.
+ * row.c writes stems_g_mute; the levels are written here and reset on a track
  * change. */
 extern uintptr_t stems_g_wedge[N_STEMS];
 extern int       stems_g_level[N_STEMS];   /* percent, 0..STEM_LEVEL_MAX */
@@ -419,7 +414,7 @@ extern int       stems_g_mute[N_STEMS];
 extern uintptr_t stems_g_grab;             /* who owns the gesture right now */
 extern uintptr_t stems_g_grab_last;        /* who owned it most recently     */
 extern unsigned  stems_g_ticks;            /* display ticks; the gesture cooldown */
-extern uintptr_t stems_g_icon_vptr;
+extern uintptr_t stems_g_switch_vptr;
 
 /* ---- what each part offers the others ------------------------------------
  * Message thread throughout. Grouped by defining file. */
@@ -445,7 +440,7 @@ void      stems_lane_ink(int w, int *l, int *r);
 int       stems_row_inert(void);
 uint32_t  stems_dim(uint32_t argb, int dim);
 void      stems_frame2(void *g, int x, int y, int w, int h, uint32_t argb);
-int       stems_icon_vt_ready(void);
+int       stems_switch_vt_ready(void);
 int       stems_grab_take(uintptr_t self);
 void      stems_grab_release(void);
 void      stems_repaint(uintptr_t comp);
@@ -469,19 +464,20 @@ int32_t   stems_slot_x(void);
 void      stems_label_paint(void *self, void *g);
 void      stems_label_mousedown(void *self, void *event);
 void      stems_label_mouseup(void *self, void *event);
-uint32_t  stems_bypass_colour(void);
-void      stems_caption_sync(int i);
+void      stems_part_repaint(int i);
 void      stems_mute_blink(void);
 /* What mutes a part. A part is muted while any bit is set. */
-#define STEMS_MUTE_LATCH    1   /* TOGGLE: a caption or pad press */
-#define STEMS_MUTE_CAPTION  2   /* HOLD: a caption is down        */
-#define STEMS_MUTE_PAD      4   /* HOLD: a mute pad is down       */
+#define STEMS_MUTE_LATCH    1   /* TOGGLE: a MUTE key or pad press */
+#define STEMS_MUTE_KEY      2   /* HOLD: a MUTE key is down        */
+#define STEMS_MUTE_PAD      4   /* HOLD: a mute pad is down        */
 /* Written on [message], read by the pad lamps from any thread. */
 extern int stems_g_mute_by[N_STEMS];
-/* The mute blink's phase: 1 on the filled half, and while nothing blinks. */
+/* The mute blink's phase: 1 on the engaged half, and while nothing blinks. */
 extern int stems_g_mute_lit;
 void      stems_mute_hold(int i, int bit, int on);
 void      stems_mute_flip(int i);
+/* Unmute every part and ignore any pad still held until it is released. */
+void      stems_mute_clear_all(void);
 /* Show the snapshot on the bar, or NULL to hand the row back to the controls.
  * Everything drawn is derived from `st` on this call; the only state kept between
  * calls is a cache of what is on screen. */
@@ -489,12 +485,12 @@ void      stems_processing_set(const struct stem_ui_state *st);
 /* Forget what is on the bar. The poll runs only while the row is open, so on reopen
  * the cache may describe a job that has since advanced, finished or been replaced. */
 void      stems_progress_forget(void);
-/* The "waveform cannot follow the levels yet" mark, in wavewait.c. Built into the
- * controls container, not into BYPASS, whose press it would otherwise take. */
-void      stems_wavewait_poll(void);
-/* The glyph's level for the lanes to draw it at, 0 while there is nothing to say. */
+/* wavewait.c: the glyph after each part's name while the waveform cannot follow the
+ * faders. */
 #define WAVEWAIT_W      18
 #define WAVEWAIT_H      16
+void      stems_wavewait_poll(void);
+/* The level to draw the glyph at, 0 while hidden. */
 uint32_t  stems_wavewait_level(void);
 void      stems_wavewait_draw(void *g, int x, int y, uint32_t level);
 /* Percent of the bar -> pixels along it. The fill and the delimiters must both use
@@ -509,6 +505,10 @@ void      stems_lanes_place(void);
 
 /* pads.c: apply the mute pads' presses, which arrive on [deck]. */
 void      stems_pad_poll(void);
+/* Ignore any pad still held until it is released. */
+void      stems_pads_forget(void);
+/* A new track: forget held pads and any settled FAILED state. */
+void      stems_pads_track_changed(void);
 /* A job is on its way (upload, separation, download or a cache read) and nothing has
  * failed. Updated by stems_pad_poll on the display tick. */
 int       stems_loading(void);

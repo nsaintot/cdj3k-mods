@@ -133,7 +133,7 @@ uint32_t mod_colour_press(uint32_t argb, uint32_t q8)
     return g_light_ground ? mod_colour_scale(argb, 256u - q8) : mod_colour_lift(argb, q8);
 }
 
-void mod_checker_lift2(void *g, int x, int y, int w, int h,
+void mod_checker_press2(void *g, int x, int y, int w, int h,
                        uint32_t base, uint32_t alt, uint32_t q8)
 {
     /* Press both after pairing them; draw.h explains why. */
@@ -141,15 +141,15 @@ void mod_checker_lift2(void *g, int x, int y, int w, int h,
                      mod_colour_press(base, q8), mod_colour_press(alt, q8));
 }
 
-void mod_checker_lift(void *g, int x, int y, int w, int h,
+void mod_checker_press(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t q8)
 {
-    mod_checker_lift2(g, x, y, w, h, light, mod_checker_alt(light), q8);
+    mod_checker_press2(g, x, y, w, h, light, mod_checker_alt(light), q8);
 }
 
 void mod_checker(void *g, int x, int y, int w, int h, uint32_t light)
 {
-    mod_checker_lift(g, x, y, w, h, light, 0);
+    mod_checker_press(g, x, y, w, h, light, 0);
 }
 
 void mod_btn_bar(void *g, int x, int y, int w, int h, uint32_t col)
@@ -168,5 +168,5 @@ void mod_checker_plate(void *g, int x, int y, int w, int h,
                  : base == ui->accent  ? ui->accent2
                                        : mod_checker_alt(base);
 
-    mod_checker_lift2(g, x, y, w, h, base, alt, q8);
+    mod_checker_press2(g, x, y, w, h, base, alt, q8);
 }

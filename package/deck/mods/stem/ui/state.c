@@ -32,7 +32,7 @@ uintptr_t stems_g_edit;          /* the edit mark, in the other corner          
 uint32_t  stems_g_edit_col;      /* what it is currently painted, 0 = hidden   */
 uintptr_t stems_g_row;           /* the control strip (a Label, used as a panel) */
 uintptr_t stems_g_btn_bypass;  /* BYPASS, left of the wedges              */
-uintptr_t stems_g_caption[N_STEMS];
+uintptr_t stems_g_mute_key[N_STEMS];
 
 /* The row holds two full-size containers and shows exactly one, so swapping state is
  * two setVisible calls. */

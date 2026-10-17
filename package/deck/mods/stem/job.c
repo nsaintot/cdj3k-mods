@@ -647,10 +647,11 @@ void stem_track_gone(void)
 
 /* ---- the feature's MOD SETTINGS rows --------------------------------------
  *
- * Declared here because they configure the sidecar link, which
- * mods_stem_settings_changed pushes them to. STEM SERVER LOCATION hangs off
- * ENABLE STEMS and the address off MANUAL, so no row can be edited into a state
- * nothing reads. [message] for the callbacks; registration is [init]. */
+ * Declared here because most configure the sidecar link, which
+ * mods_stem_settings_changed pushes them to. STEM MUTE MODE, STEM MUTE PADS and
+ * STEM SERVER LOCATION hang off ENABLE STEMS and the address off MANUAL, so no row
+ * can be edited into a state nothing reads. The mute rows are read by stem/ui/.
+ * [message] for the callbacks; registration is [init]. */
 static const char *const k_stem_where[2] = { "AUTO", "MANUAL" };
 static const char *const k_stem_mute[2]  = { "HOLD", "TOGGLE" };
 

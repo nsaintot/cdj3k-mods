@@ -255,7 +255,9 @@ void mod_draw_ground(int light);
  * inverted 0x61. */
 #define MOD_CHECKER_HOT_Q8   59
 
-/* A colour pressed by q8 (see MOD_CHECKER_HOT_Q8). Use for every press highlight. */
+/* A colour moved away from the ground by q8: toward white on a dark ground, toward the
+ * ink on a light one. Use it for every press highlight (MOD_CHECKER_HOT_Q8) and for
+ * emphasis that must stand out on either ground, such as a lit scale mark. */
 uint32_t mod_colour_press(uint32_t argb, uint32_t q8);
 
 /* Fill a rect with the deck's button surface. Phase is anchored to the rect's own
@@ -273,9 +275,9 @@ void mod_checker(void *g, int x, int y, int w, int h, uint32_t light);
 /* The same surface, pressed by q8 (0 = at rest, MOD_CHECKER_HOT_Q8 = touched).
  *
  * The dark half is derived from the resting light colour, then both halves are
- * lifted. Lifting first and deriving after gives too much contrast: against a held
+ * pressed. Pressing first and deriving after gives too much contrast: against a held
  * stock button the dark half should be #555555, that order gives #474747. */
-void mod_checker_lift(void *g, int x, int y, int w, int h,
+void mod_checker_press(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t q8);
 
 /* The same, for a caller that has the other half instead of deriving it.
@@ -284,7 +286,7 @@ void mod_checker_lift(void *g, int x, int y, int w, int h,
  * because the duotone compresses both its greys (see theme_ui::surface2).
  * mod_checker_alt is the derivation, for states with no authored partner (the lit
  * and refusing plates are chromatic, which the duotone does not touch). */
-void     mod_checker_lift2(void *g, int x, int y, int w, int h,
+void     mod_checker_press2(void *g, int x, int y, int w, int h,
                            uint32_t base, uint32_t alt, uint32_t q8);
 uint32_t mod_checker_alt(uint32_t base);
 
