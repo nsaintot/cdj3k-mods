@@ -55,18 +55,16 @@ The first matters most in a booth: play a track once at home and its stems are
 on the stick, so it loads with no server on the network at all.
 
 **Stems are stored on the same volume as the track.** They are keyed by the
-track's audio content, not by its filename or its position in the browser, so
-renaming files, reorganising folders or re-sorting lists keeps the cache valid,
-and a stick carries its tracks and their stems together. Stems made with a
-different separation model than the one your deck last used are still used, so
-a stick prepared on one deck plays on another.
+track's audio content, so renaming files, reorganising folders or re-sorting lists keeps the cache valid,
+and a stick carries its tracks and their stems together.
+Stems made with a different separation model from the one your deck last used
+still load, so a stick prepared on one deck plays on another.
 
 ### The frame count, for anyone writing entries offline
 
 Half of an entry's key is the deck's own decode length in frames **at
-44.1 kHz**, and the stems inside it must be aligned to that length. It is not
-the length a tag or another decoder reports. Take the container's count, then
-round it up:
+44.1 kHz**, and the stems inside it must be aligned to that length.
+Take the container's count, then round it up:
 
 - **MP3:** the deck's parser frame count × 1152. A LAME/Xing tag frame counts as
   a frame of audio (one frame of silence first, the last frame dropped); an
@@ -84,6 +82,7 @@ length.
 ### Playing from another player's media
 
 When you play a track from a USB stick or SD card in another deck over **PRO DJ LINK**, stems work the same way:
+
 - If the remote stick already has cached stems for that track, they are loaded and used.
 - If not, the track is separated and the stems are kept **in memory only** while the track is loaded. Stems are **never** written to the remote stick.
 
@@ -95,10 +94,9 @@ is open.
 
 ![The play screen with the STEMS button in the quick menu, row closed.](img/stems-button.png)
 
-The row sits under the waveform, drawn like the deck's own panels: an
-**OFF | ON** switch at the far left, then one lane per part (**DRUMS**,
-**HARMONICS**, **VOCALS**). Each lane has a **MUTE** key and a fader: the part's
-name, its level in %, a wedge that rises to the right and a cap.
+The row sits under the waveform: an **OFF | ON** switch at the far left,
+then one lane per part (**DRUMS**, **HARMONICS**, **VOCALS**).
+Each lane has a **MUTE** key and a fader: the part's name, its level in %, a wedge that rises to the right and a cap.
 
 ![The STEMS row open with all three at full.](img/stems-row-unity.png)
 
@@ -109,11 +107,10 @@ current step: **UPLOADING**, **SEPARATING**, **PREPARING**, **DOWNLOADING** or
 | | |
 | --- | --- |
 | **Touch a lane and drag** | Moves that part's level, 0 to 100%, by the distance you drag |
-| **MUTE** | Mutes that part: the key fills with the part's colour and the fader greys. A mute latched in TOGGLE keeps blinking |
+| **MUTE** | Mutes that part: the key fills with the part's colour and the fader greys. In TOGGLE, the key blinks until you unmute |
 | **OFF \| ON** | **OFF** takes the stems out: the track plays exactly as it came. **ON** puts them back |
 
-A touch on a lane grabs the cap where it is and changes nothing; only a drag moves
-the level. There is no dead space along the row: a touch between two controls goes
+Touching a fader does not change its level; only dragging does. There is no dead space along the row: a touch between two controls goes
 to the nearer one. While you drag, the cap lights and the value follows. A muted
 part's fader still moves.
 
@@ -133,7 +130,7 @@ the waveform cannot follow on this track.
 | **HOLD** (default) | Muted while your finger is down |
 | **TOGGLE** | Press to mute, press again to bring the part back |
 
-Un-muting puts the part back at its fader level. Loading another track clears
+Unmuting puts the part back at its fader level. Loading another track clears
 every mute.
 
 ### Mute from the pads
@@ -142,7 +139,7 @@ With **STEM MUTE PADS** on, pads **F**, **G** and **H** mute **DRUMS**,
 **HARMONICS** and **VOCALS**, left to right like the faders, whether the row is
 open or closed. They follow STEM MUTE MODE, like the MUTE keys.
 
-The MUTE keys fold away and each fader is centred in its lane. A muted part shows a
+The MUTE keys are hidden and each fader is centred in its lane. A muted part shows a
 **MUTE** tag after its name, blinking filled and outlined. While the setting is on,
 F, G and H are never hot cues. The X-PAD panel still takes all eight pads while it
 is open.

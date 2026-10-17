@@ -120,7 +120,8 @@ static void stems_ready_poll(void)
                              : "no stems resident -> row inert");
 }
 
-/* Half-cycle of the loading blink, in display ticks: the wave-wait pulse's pace. */
+/* Half-cycle of the loading blink, in display ticks; the same pace as the wave-wait
+ * pulse. */
 #define STEMS_LOAD_BLINK (MOD_BLINK_PERIOD * 3)
 
 /* The mark in the corner of the STEMS button. Blinking slowly: stems are loading or
@@ -298,14 +299,14 @@ static void stems_drc_timer(void *self)
         t0 = -1;
     }
 
-    /* Before the build check: the mute pads are claimed once this has run, and must
-     * work with the row closed or never built. Repaints of unbuilt components are
-     * no-ops. */
+    /* Runs before the build check, because the mute pads must work with the row closed
+     * or never built (they are claimed once this has run). Repainting a component that
+     * was not built does nothing. */
     stems_pad_poll();
     stems_ready_poll();
     stems_mute_blink();
-    /* Again after the blink, so a mute pad flips in the same tick as its MUTE key
-     * or tag. Writes only on a change. */
+    /* Runs again after the blink, so a mute pad changes in the same tick as its MUTE
+     * key or tag. It writes only on a change. */
     cue_led_tick();
 
     if (!stems_g_built)

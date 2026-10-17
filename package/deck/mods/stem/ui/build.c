@@ -39,9 +39,9 @@ void stems_lanes_place(void)
             }
         }
         c[n].comp = stems_g_wedge[i]; c[n].stem = i;
-        /* Beside its key the fader ends the lane; with the keys folded away it is
-         * LANE_PADS_W and centred, so its 100 % end stays clear of the next lane and of
-         * the bezel. */
+        /* Next to its key, the fader fills the rest of the lane. With the keys folded
+         * away, it is LANE_PADS_W wide and centred, so its 100 % end stays clear of the
+         * next lane and of the bezel. */
         c[n].l = g_lane_x[i] + (pads ? (g_lane_w - fw) / 2 : key);
         c[n].r = c[n].l + fw; n++;
     }
@@ -117,7 +117,7 @@ static uintptr_t stems_build_row(void)
      * Caption, then track, then fill, so the fill draws over the track. */
     stems_g_prog_x = ROW_LEFT;
     stems_g_prog_w = panel[2] - ROW_LEFT - ROW_RIGHT;
-    /* Centred in the wedge band, which follows the panel rect and ROW_RISE. */
+    /* Centred in the band below the caption, which follows the panel rect and ROW_RISE. */
     stems_g_prog_y = PROG_Y + (prog_h - PROG_BAR_H) / 2;
     /* Stock roles, not mod_ui()'s: juce paints these Labels and every fill already
      * goes through the theme hook (see mod_ui_stock). Resolved values would be

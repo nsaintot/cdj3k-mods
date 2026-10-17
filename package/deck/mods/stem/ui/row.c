@@ -17,10 +17,10 @@ static int mute_key_index(uintptr_t comp)
     return -1;
 }
 
-/* A MUTE key: the stock FUNCTION button in the part's colour. Off, the dark checker
- * with a 2 px outline in the colour, the word in the theme's text colour and a 3 px
- * bar at the foot in the colour. Muted, the colour's own checker (BEAT LOOP on) with
- * the word and bar white. A latched mute blinks between the two on the mute blink; a
+/* A MUTE key: the stock FUNCTION button in the part's colour. Unmuted: the dark
+ * checker with a 2 px outline in the colour, the word in the theme's text colour and a
+ * 3 px bar at the foot in the colour. Muted: the colour's own checker (as on BEAT LOOP
+ * when on), with the word and bar in white. A latched mute blinks between the two on the mute blink; a
  * held one is steady. */
 static void stems_mute_key_paint(int i, void *g, int ox, int w, int h)
 {
@@ -134,7 +134,7 @@ void stems_mute_hold(int i, int bit, int on)
     stems_mute_apply(i, on ? stems_g_mute_by[i] | bit : stems_g_mute_by[i] & ~bit);
 }
 
-/* TOGGLE: a muted part comes back whatever muted it; otherwise it latches. */
+/* TOGGLE: unmutes a muted part, whatever muted it; otherwise latches a mute. */
 void stems_mute_flip(int i)
 {
     if (i < 0 || i >= N_STEMS) return;
@@ -421,7 +421,7 @@ void stems_label_mousedown(void *self, void *event)
             }
             if (g_stem_mute_toggle) stems_mute_flip(i);
             else                    stems_mute_hold(i, STEMS_MUTE_KEY, 1);
-            stems_repaint(stems_g_mute_key[i]);   /* the touch lift */
+            stems_repaint(stems_g_mute_key[i]);   /* the press highlight */
             return;
         }
     }

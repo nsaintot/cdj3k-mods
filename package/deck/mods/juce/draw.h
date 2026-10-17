@@ -246,7 +246,7 @@ uint32_t mod_colour_lift(uint32_t argb, uint32_t q8);    /* brighter: c + headro
  * the draw kit does not depend on it. */
 void mod_draw_ground(int light);
 /* Pressed state, while the gesture is live: the surface moves away from the ground, toward
- * white on a dark ground and toward the ink on a light one, as the deck's own held
+ * white on a dark ground and toward black on a light one, as the deck's own held
  * buttons do once a light theme inverts them (KEY SHIFT held goes darker under WHITE).
  *
  * 59/256 matches a held stock button: both halves of the grey pair (0x32->0x61,
@@ -255,8 +255,8 @@ void mod_draw_ground(int light);
  * inverted 0x61. */
 #define MOD_CHECKER_HOT_Q8   59
 
-/* A colour moved away from the ground by q8: toward white on a dark ground, toward the
- * ink on a light one. Use it for every press highlight (MOD_CHECKER_HOT_Q8) and for
+/* A colour moved away from the ground by q8: toward white on a dark ground, toward
+ * black on a light one. Use it for every press highlight (MOD_CHECKER_HOT_Q8) and for
  * emphasis that must stand out on either ground, such as a lit scale mark. */
 uint32_t mod_colour_press(uint32_t argb, uint32_t q8);
 
