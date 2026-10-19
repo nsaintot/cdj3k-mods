@@ -26,11 +26,42 @@ void stems_colour(uintptr_t comp, int id, uint32_t argb)
     juce_comp_colour(comp, id, argb);
 }
 
-/* Halfway to white, for marked wedge bars. Same helper as the touch lift, with a
- * different distance than MOD_CHECKER_HOT_Q8. */
-uint32_t stems_lighter(uint32_t argb)
+/* Touch areas wider than the drawing. The row's gaps go to the controls beside them,
+ * so a component can be wider than what it draws; this records where the drawing
+ * sits inside it. */
+#define HIT_MAX (1 + 2 * N_STEMS)   /* the switch, three MUTE keys, three faders */
+static struct { uintptr_t comp; int l, w; } g_hit[HIT_MAX];
+
+void stems_hit_set(uintptr_t comp, int l, int w)
 {
-    return mod_colour_lift(argb, 128u);
+    int i, free_i = -1;
+
+    if (!comp) return;
+    for (i = 0; i < HIT_MAX; i++) {
+        if (g_hit[i].comp == comp) { g_hit[i].l = l; g_hit[i].w = w; return; }
+        if (!g_hit[i].comp && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) {
+        MERR("stems: no room to record a touch area for %#lx\n", (unsigned long)comp);
+        return;
+    }
+    g_hit[free_i].comp = comp;
+    g_hit[free_i].l = l;
+    g_hit[free_i].w = w;
+}
+
+void stems_hit_get(uintptr_t comp, int full_w, int *l, int *w)
+{
+    int i;
+
+    for (i = 0; i < HIT_MAX; i++)
+        if (g_hit[i].comp && g_hit[i].comp == comp) {
+            *l = g_hit[i].l;
+            *w = g_hit[i].w;
+            return;
+        }
+    *l = 0;
+    *w = full_w;
 }
 
 /* Retext a Label we built. juce's ValueSource does not compare, so an unchanged

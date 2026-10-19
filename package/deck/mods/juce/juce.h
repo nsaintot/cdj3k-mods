@@ -155,6 +155,7 @@ void juce_label_text(uintptr_t label, const char *text);
 #define JUCE_JUSTIFY_BOT_L   0x11   /* bottomLeft:   left | bottom             */
 #define JUCE_JUSTIFY_BOT_R   0x12   /* bottomRight:  right | bottom            */
 #define JUCE_JUSTIFY_MID_L   0x21   /* centredLeft:  left | verticallyCentred   */
+#define JUCE_JUSTIFY_MID_R   0x22   /* centredRight: right | verticallyCentred  */
 void juce_label_justify(uintptr_t label, int justification);
 
 /* Copy juce::Label's vtable into `out` (VT_CLONE_WORDS words) with the caller's

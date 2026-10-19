@@ -245,12 +245,20 @@ uint32_t mod_colour_lift(uint32_t argb, uint32_t q8);    /* brighter: c + headro
 /* Whether the ground is light. Set by the theme layer when the selection changes, so
  * the draw kit does not depend on it. */
 void mod_draw_ground(int light);
-/* Pressed state: the surface lifts toward white while the gesture is live.
+/* Pressed state, while the gesture is live: the surface moves away from the ground, toward
+ * white on a dark ground and toward black on a light one, as the deck's own held
+ * buttons do once a light theme inverts them (KEY SHIFT held goes darker under WHITE).
  *
  * 59/256 matches a held stock button: both halves of the grey pair (0x32->0x61,
  * 0x23->0x55) to within a level, and also the lit blue's two halves and both bar
- * greys, all within 1/255. */
+ * greys, all within 1/255. On a light ground the same fraction maps 0xcd to 0x9e, the
+ * inverted 0x61. */
 #define MOD_CHECKER_HOT_Q8   59
+
+/* A colour moved away from the ground by q8: toward white on a dark ground, toward
+ * black on a light one. Use it for every press highlight (MOD_CHECKER_HOT_Q8) and for
+ * emphasis that must stand out on either ground, such as a lit scale mark. */
+uint32_t mod_colour_press(uint32_t argb, uint32_t q8);
 
 /* Fill a rect with the deck's button surface. Phase is anchored to the rect's own
  * top-left, as on stock buttons.
@@ -264,12 +272,12 @@ void mod_checker_pair(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t dark);
 void mod_checker(void *g, int x, int y, int w, int h, uint32_t light);
 
-/* The same surface, lifted by q8 (0 = at rest, MOD_CHECKER_HOT_Q8 = touched).
+/* The same surface, pressed by q8 (0 = at rest, MOD_CHECKER_HOT_Q8 = touched).
  *
  * The dark half is derived from the resting light colour, then both halves are
- * lifted. Lifting first and deriving after gives too much contrast: against a held
+ * pressed. Pressing first and deriving after gives too much contrast: against a held
  * stock button the dark half should be #555555, that order gives #474747. */
-void mod_checker_lift(void *g, int x, int y, int w, int h,
+void mod_checker_press(void *g, int x, int y, int w, int h,
                       uint32_t light, uint32_t q8);
 
 /* The same, for a caller that has the other half instead of deriving it.
@@ -278,7 +286,7 @@ void mod_checker_lift(void *g, int x, int y, int w, int h,
  * because the duotone compresses both its greys (see theme_ui::surface2).
  * mod_checker_alt is the derivation, for states with no authored partner (the lit
  * and refusing plates are chromatic, which the duotone does not touch). */
-void     mod_checker_lift2(void *g, int x, int y, int w, int h,
+void     mod_checker_press2(void *g, int x, int y, int w, int h,
                            uint32_t base, uint32_t alt, uint32_t q8);
 uint32_t mod_checker_alt(uint32_t base);
 

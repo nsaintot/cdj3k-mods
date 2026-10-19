@@ -1,44 +1,58 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * ui/row.c - captions, mute, bypass and the progress bar
+ * ui/row.c - MUTE keys, mute, bypass and the progress bar
  *
  * Part of the STEMS play-screen UI. The shared contract, and the reasoning
  * behind the design, is in ui.h.
  */
 #include "stem/ui/ui.h"
 
-/* The caption's colour, shared by the outline juce::Label draws, the lettering and
- * the rings the paint override adds. paint recomputes it from state rather than
- * calling findColour, which walks a keyed array. */
-static uint32_t stems_caption_colour(int i)
-{
-    if (i < 0 || i >= N_STEMS) return mod_ui()->dead;
-    return !stems_ready()  ? mod_ui()->dead
-           : stems_g_bypass_on ? mod_ui()->text_off
-                           : mod_ui()->stem[i];
-}
-
-/* Which caption a component is, or -1. */
-static int stems_caption_index(uintptr_t comp)
+/* Which MUTE key a component is, or -1. */
+static int mute_key_index(uintptr_t comp)
 {
     int i;
 
     for (i = 0; i < N_STEMS; i++)
-        if (comp && stems_g_caption[i] == comp) return i;
+        if (comp && stems_g_mute_key[i] == comp) return i;
     return -1;
 }
 
+/* A MUTE key: the stock FUNCTION button in the part's colour. Unmuted: the dark
+ * checker with a 2 px outline in the colour, the word in the theme's text colour and a
+ * 3 px bar at the foot in the colour. Muted: the colour's own checker (as on BEAT LOOP
+ * when on), with the word and bar in white. A latched mute blinks between the two on the mute blink; a
+ * held one is steady. */
+static void stems_mute_key_paint(int i, void *g, int ox, int w, int h)
+{
+    const struct theme_ui *ui = mod_ui();
+    int dim = stems_row_inert(), on = stems_g_mute[i];
+    uint32_t stem = ui->stem[i];
+    uint32_t lift = stems_touch_lift(stems_g_mute_key[i]);
+
+    if (on && stems_g_mute_by[i] == STEMS_MUTE_LATCH)
+        on = stems_g_mute_lit;
+
+    if (on)
+        mod_checker_press2(g, ox, 0, w, h, stems_dim(stem, dim),
+                          stems_dim(mod_colour_scale(stem, MUTE_ON_ALT_Q8), dim), lift);
+    else {
+        mod_checker_press2(g, ox, 0, w, h, stems_dim(ui->surface, dim),
+                          stems_dim(mod_colour_stock(COL_SKIN_DARK), dim), lift);
+        stems_frame2(g, ox, 0, w, h, stems_dim(stem, dim));
+    }
+    mod_gfx_text(g, "MUTE", FONT_MUTE, stems_dim(on ? COL_ON_ENGAGED : ui->text, dim),
+                 ox, (h - MUTE_TEXT_H) / 2, w, MUTE_TEXT_H, JUCE_JUSTIFY_CENTRED);
+    mod_gfx_colour(g, stems_dim(on ? COL_ON_ENGAGED : stem, dim));
+    mod_gfx_fill(g, ox + (w - MUTE_BAR_W) / 2, h - MUTE_BAR_B - MUTE_BAR_H, MUTE_BAR_W, MUTE_BAR_H);
+}
+
 /* Paint for every clickable label (they share this vtable): the quick-menu button
- * gets the stipple and the bottom bar, the captions get a thicker edge, anything else
- * paints as a plain Label.
- *
- * Label::paint is chained, and the caption edge is drawn as rings inside Label's
- * one-pixel outline: the bounds are the touch target and the wedge starts on the pixel
- * below, so the edge cannot grow outwards. */
+ * gets the stipple and the bottom bar, the MUTE keys are drawn whole, anything else
+ * paints as a plain Label. */
 void stems_label_paint(void *self, void *g)
 {
     int32_t b[4];
-    int i, k, w, h;
+    int i, w, h;
 
     if (stems_bounds((uintptr_t)self, b) != 0) {
         /* Bracketed: Label paints from colours we set (roles already resolved through
@@ -52,6 +66,15 @@ void stems_label_paint(void *self, void *g)
     w = b[2];
     h = b[3];
 
+    i = mute_key_index((uintptr_t)self);
+    if (i >= 0) {
+        int ox, dw;
+
+        stems_hit_get((uintptr_t)self, w, &ox, &dw);
+        stems_mute_key_paint(i, g, ox, dw, h);
+        return;
+    }
+
     /* The button's surface goes down before Label::paint, which draws background and
      * lettering in one call; a stipple laid afterwards would cover the word. The Label's
      * own background is transparent and stems_g_btn_state gives the state. */
@@ -60,9 +83,9 @@ void stems_label_paint(void *self, void *g)
 
         mod_checker_plate(g, 0, 0, w, h, stems_btn_surface(), lift);
         /* The bar shows whether the panel is up, independent of the plate's refusal red.
-         * A single colour, so it is lifted directly. */
+         * A single colour, so it is pressed directly. */
         mod_btn_bar(g, 0, 0, w, h,
-                    mod_colour_lift(stems_g_row_open ? mod_ui()->bar_on : mod_ui()->bar,
+                    mod_colour_press(stems_g_row_open ? mod_ui()->bar_on : mod_ui()->bar,
                                     lift));
     }
 
@@ -72,97 +95,115 @@ void stems_label_paint(void *self, void *g)
     ((void (*)(void *, void *))LABEL_FN_PAINT)(self, g);
     mod_draw_leave();
 
-    i = stems_caption_index((uintptr_t)self);
-    if (i < 0) return;
-    mod_gfx_colour(g, stems_caption_colour(i));
-    for (k = 1; k < CAPTION_EDGE_W; k++) {
-        if (w <= 2 * k || h <= 2 * k) break;         /* nothing left to draw into */
-        mod_gfx_fill(g, k,         k,         w - 2 * k, 1);           /* top    */
-        mod_gfx_fill(g, k,         h - k - 1, w - 2 * k, 1);           /* bottom */
-        mod_gfx_fill(g, k,         k,         1,         h - 2 * k);   /* left   */
-        mod_gfx_fill(g, w - k - 1, k,         1,         h - 2 * k);   /* right  */
-    }
 }
 
-/* Set the caption's text and colours from the current state. Called wherever that
- * state changes. The outlined plate marks the caption as pressable. */
-void stems_caption_sync(int i)
+/* Repaint a part's MUTE key and fader. */
+void stems_part_repaint(int i)
 {
-    /* The word currently shown, so it is only rewritten on change: setting the text
-     * repaints unconditionally, and this also runs on every bypass toggle. */
-    static int shown[N_STEMS] = { -1, -1, -1 };
-    uint32_t col;
-
-    if (i < 0 || i >= N_STEMS || !stems_g_caption[i]) return;
-    /* While held, the caption reads MUTED instead of the stem name. */
-    if (shown[i] != stems_g_mute[i]) {
-        shown[i] = stems_g_mute[i];
-        stems_text(stems_g_caption[i], stems_g_mute[i] ? "MUTED" : k_stem_name[i]);
-    }
-    /* Outline and lettering in the stem's colour, matching the wedge below. The fill
-     * is left to the mute blink: empty at rest, filled only while held. */
-    col = stems_caption_colour(i);
-    stems_colour(stems_g_caption[i], LBL_COL_BG, 0x00000000u);
-    stems_colour(stems_g_caption[i], LBL_COL_OUTLINE, col);
-    stems_colour(stems_g_caption[i], LBL_COL_TEXT, col);
-}
-
-/* Mute is held, not latched: press mutes, release restores the level the wedge shows.
- * stems_g_level is never touched; stems_publish_gain combines it with the mute. */
-static void stems_mute_set(int i, int on)
-{
-    if (i < 0 || i >= N_STEMS || stems_g_mute[i] == !!on) return;
-    if (on && !stems_ready()) return;      /* nothing to silence */
-    stems_g_mute[i] = !!on;
-    stems_publish_gain(i);
-    stems_caption_sync(i);
+    if (i < 0 || i >= N_STEMS) return;
+    stems_repaint(stems_g_mute_key[i]);
     stems_repaint(stems_g_wedge[i]);
-    MDBG("stems: %s %s\n", k_stem_name[i],
-         on ? "held MUTE" : "released -> level restored");
 }
 
-/* The held-mute blink, on the display tick. Blinking marks the state as momentary.
- * Same period as the warn badge (MOD_BLINK_PERIOD). */
+/* Why each part is muted, as STEMS_MUTE_* bits; the part is muted while any is set.
+ * Unmuting restores the fader's level: stems_g_level is never touched, and
+ * stems_publish_gain combines it with the mute. [message] writes; the pad lamp reads
+ * on [any]. */
+int stems_g_mute_by[N_STEMS];
+
+static void stems_mute_apply(int i, int bits)
+{
+    int on;
+
+    if (i < 0 || i >= N_STEMS) return;
+    if (bits && !stems_ready()) bits = 0;  /* nothing to silence */
+    on = bits != 0;
+    __atomic_store_n(&stems_g_mute_by[i], bits, __ATOMIC_RELAXED);
+    if (stems_g_mute[i] == on) return;
+    stems_g_mute[i] = on;
+    stems_publish_gain(i);
+    stems_part_repaint(i);
+    MDBG("stems: %s %s\n", k_stem_name[i],
+         !on ? "unmuted -> level restored"
+             : (bits & STEMS_MUTE_LATCH) ? "MUTE latched" : "held MUTE");
+}
+
+void stems_mute_hold(int i, int bit, int on)
+{
+    if (i < 0 || i >= N_STEMS) return;
+    stems_mute_apply(i, on ? stems_g_mute_by[i] | bit : stems_g_mute_by[i] & ~bit);
+}
+
+/* TOGGLE: unmutes a muted part, whatever muted it; otherwise latches a mute. */
+void stems_mute_flip(int i)
+{
+    if (i < 0 || i >= N_STEMS) return;
+    stems_mute_apply(i, stems_g_mute_by[i] ? 0 : STEMS_MUTE_LATCH);
+}
+
+void stems_mute_clear_all(void)
+{
+    int i;
+
+    for (i = 0; i < N_STEMS; i++)
+        stems_mute_apply(i, 0);
+    stems_pads_forget();
+}
+
+void stems_mute_mode_changed(void)
+{
+    stems_mute_clear_all();
+}
+
+/* The mute blink's phase, on the display tick, for the pads, the latched MUTE keys and
+ * the lanes' MUTE tag. Same period as the warn badge (MOD_BLINK_PERIOD). It starts on
+ * the engaged half, so a new mute shows at once. [message] writes; the pad lamp reads
+ * on [any]. */
 #define MUTE_BLINK_PERIOD  12
+
+int stems_g_mute_lit = 1;
 
 void stems_mute_blink(void)
 {
     static int phase, lit = -1;
-    /* Log when the mix applies a mute. The caption changes at once but the audio
+    /* Log when the mix applies a mute. The screen changes at once but the audio
      * waits for the quarter, so the press log alone does not show the stem went
      * quiet. [message] reads a counter [audio] adds to; a lost update costs a line. */
     static unsigned said_commits;
     unsigned commits = __atomic_load_n(&g_stem_mute_commits, __ATOMIC_RELAXED);
+    int i, want, any = 0;
 
     if (commits != said_commits) {
         said_commits = commits;
         MDBG("stems: mix applied a mute change (%u since boot)\n", commits);
     }
-    int i, want, any = 0;
 
     for (i = 0; i < N_STEMS; i++)
         if (stems_g_mute[i]) { any = 1; break; }
     if (!any) {
         phase = 0;
         lit = -1;
+        __atomic_store_n(&stems_g_mute_lit, 1, __ATOMIC_RELAXED);
         return;
     }
     want = ((phase++ / MUTE_BLINK_PERIOD) & 1) == 0;
     if (want == lit) return;
     lit = want;
+    __atomic_store_n(&stems_g_mute_lit, want, __ATOMIC_RELAXED);
+    /* The lanes' MUTE tag blinks on this phase while the keys are folded away; the
+     * keys blink for a latched mute while they are shown. */
     for (i = 0; i < N_STEMS; i++) {
         if (!stems_g_mute[i]) continue;
-        /* Alternate between a stem-colour fill with text_on_accent lettering and an
-         * empty plate with stem-colour lettering. The outline does not change. */
-        stems_colour(stems_g_caption[i], LBL_COL_BG,
-                     want ? mod_ui()->stem[i] : 0x00000000u);
-        stems_colour(stems_g_caption[i], LBL_COL_TEXT,
-                     want ? mod_ui()->text_on_accent : mod_ui()->stem[i]);
+        if (g_stem_mute_pads)
+            stems_repaint(stems_g_wedge[i]);
+        else if (stems_g_mute_by[i] & STEMS_MUTE_LATCH)
+            stems_repaint(stems_g_mute_key[i]);
     }
 }
 
 /* BYPASS latches, like an EQ bypass: the levels are kept, so releasing it restores
- * the mix as it was. While on, the wedges are greyed and inert. */
+ * the mix as it was. While on, the faders and MUTE keys draw at 30 % and take no
+ * input. */
 static void stems_bypass_toggle(void)
 {
     int i;
@@ -172,13 +213,11 @@ static void stems_bypass_toggle(void)
         MDBG("stems: no stems resident -> BYPASS ignored\n");
         return;
     }
-    stems_g_bypass_on = !stems_g_bypass_on;
+    __atomic_store_n(&stems_g_bypass_on, !stems_g_bypass_on, __ATOMIC_RELAXED);
     stem_bypass_set(stems_g_bypass_on);
-    stems_repaint(stems_g_btn_bypass);   /* its paint reads the state itself */
-    for (i = 0; i < N_STEMS; i++) {
-        stems_caption_sync(i);
-        stems_repaint(stems_g_wedge[i]);   /* the wedge reads stems_g_bypass_on in its paint */
-    }
+    stems_repaint(stems_g_btn_bypass);
+    for (i = 0; i < N_STEMS; i++)
+        stems_part_repaint(i);
     MDBG("stems: BYPASS %s -- stems %s\n",
          stems_g_bypass_on ? "on" : "off",
          stems_g_bypass_on ? "bypassed, wedges inert" : "back in circuit");
@@ -374,19 +413,18 @@ void stems_label_mousedown(void *self, void *event)
     } else {
         int i;
 
-        for (i = 0; i < N_STEMS; i++)
-            if ((uintptr_t)self == stems_g_caption[i]) { stems_mute_set(i, 1); return; }
+        for (i = 0; i < N_STEMS; i++) {
+            if ((uintptr_t)self != stems_g_mute_key[i]) continue;
+            if (stems_row_inert()) {      /* drawn at 30 %: takes no input */
+                stems_grab_release();
+                return;
+            }
+            if (g_stem_mute_toggle) stems_mute_flip(i);
+            else                    stems_mute_hold(i, STEMS_MUTE_KEY, 1);
+            stems_repaint(stems_g_mute_key[i]);   /* the press highlight */
+            return;
+        }
     }
-}
-
-/* BYPASS's resting fill. The state is shown by the glyph (stems_bypass_paint), so the
- * plate has two appearances: this, and this lifted while touched.
- *
- * No hover tier: on this touchscreen juce sends mouseExit only when the next touch
- * lands elsewhere, so a hover state would stick after release. */
-uint32_t stems_bypass_colour(void)
-{
-    return mod_ui()->surface;
 }
 
 /* Chained: juce::Label overrides mouseUp for its edit-on-click path. */
@@ -394,13 +432,16 @@ void stems_label_mouseup(void *self, void *event)
 {
     int i;
 
-    /* Release every mute, not only this caption's: a gesture that ends off-component
-     * or is stolen would otherwise leave a stem silent. */
+    /* Release every MUTE key hold, not only this key's: a gesture that ends
+     * off-component or is stolen would otherwise leave a part silent. Latched mutes
+     * and held pads stay. */
     for (i = 0; i < N_STEMS; i++)
-        if (stems_g_mute[i]) stems_mute_set(i, 0);
+        if (stems_g_mute_by[i] & STEMS_MUTE_KEY)
+            stems_mute_hold(i, STEMS_MUTE_KEY, 0);
     stems_grab_release();
     /* After the grab is cleared: paint reads the touch highlight from stems_g_grab. */
-    if ((uintptr_t)self == stems_g_btn_bypass || (uintptr_t)self == stems_g_btn_stems)
+    if ((uintptr_t)self == stems_g_btn_bypass || (uintptr_t)self == stems_g_btn_stems ||
+        mute_key_index((uintptr_t)self) >= 0)
         stems_repaint((uintptr_t)self);
     if (stems_g_label_mouseup)
         ((mousedown_t)stems_g_label_mouseup)(self, event);
@@ -420,11 +461,13 @@ void mod_stems_reset_levels(void)
     int i, moved = 0;
 
     for (i = 0; i < N_STEMS; i++) {
-        /* Mutes are cleared too. */
-        if (stems_g_mute[i]) { stems_g_mute[i] = 0; stems_caption_sync(i); moved = 1; }
+        /* Mutes are cleared too, latched ones included. */
+        if (stems_g_mute[i]) moved = 1;
+        stems_mute_apply(i, 0);
         if (stems_g_level[i] != STEM_LEVEL_MAX) { stems_level_set(i, STEM_LEVEL_MAX); moved = 1; }
         stems_publish_gain(i);
     }
+    stems_pads_track_changed();
     if (moved)
         MDBG("stems: track change -> levels back to full mix\n");
 }

@@ -45,6 +45,19 @@ extern int g_stem_manual;
 #define STEM_ADDR_MAX 64
 extern char g_stem_addr[STEM_ADDR_MAX];
 
+/* STEM MUTE MODE: 0 = HOLD (muted while the MUTE key or pad is down), 1 = TOGGLE (a
+ * press mutes, the next press brings the part back). Applies to the MUTE keys and
+ * the mute pads. */
+extern int g_stem_mute_toggle;
+
+/* STEM MUTE PADS: pads F, G and H mute DRUMS, HARMONICS and VOCALS instead of
+ * firing hot cues or groove circuit slots, row open or not. */
+extern int g_stem_mute_pads;
+
+/* Called when STEM MUTE MODE changes: clears every mute, so a latched mute does not
+ * survive a switch to HOLD. [message] */
+void stems_mute_mode_changed(void);
+
 /* The server's identity for its separations (backend, model, preset and stemd
  * version) as one opaque string. It scopes the on-media cache so two models
  * coexist on a stick.
@@ -89,10 +102,10 @@ void mods_stem_settings_changed(void);   /* [message] */
 extern float g_stem_gain[N_STEMS];
 extern int   g_stem_bypass;   /* BYPASS: stems out of circuit */
 
-/* ---- the held MUTE, quantized --------------------------------------------
+/* ---- the MUTE, quantized -------------------------------------------------
  *
- * The caption plate (word, blink, wedge) responds to the press in the same
- * frame; the audio waits for the next quarter beat.
+ * The MUTE key, tag and fader respond to the press in the same frame; the audio
+ * waits for the next quarter beat.
  *
  * `want` is the intent, written by [message]; `live` is what the mix applies,
  * committed by [audio] on the boundary. `unmuted` is the fader's own gain, kept
@@ -111,7 +124,7 @@ extern float g_stem_gain_unmuted[N_STEMS];
  * pending. */
 void stem_mute_commit(void);
 /* [any] How many mutes the mix has applied. The press and the sound happen at
- * different moments, so a caption change does not prove the audio changed.
+ * different moments, so a screen change does not prove the audio changed.
  * [audio] adds, [message] reads. */
 extern unsigned g_stem_mute_commits;
 
@@ -181,6 +194,15 @@ struct stem_ui_state {
 /* Copy the current state consistently. Returns 0 if no writer has published
  * anything yet, in which case *out is left zeroed. */
 int stem_ui_read(struct stem_ui_state *out);   /* [message] */
+
+/* True between the request and the stems being resident. The test lists the stages
+ * it excludes: LOADING is numbered above DONE and FAILED, because our enum extends
+ * the sidecar's wire enum. */
+static inline int stem_stage_busy(int stage)
+{
+    return stage != STEM_STAGE_IDLE && stage != STEM_STAGE_DONE &&
+           stage != STEM_STAGE_FAILED;
+}
 
 /* ---- job.c: the state machine (worker thread) ----------------------------- */
 
@@ -587,6 +609,14 @@ int gc_slot_part(int slot);
  * a runnable slot, else *out is the stem the slot replaces, steady while loaded
  * and blinking while it is the active replacement. */
 int gc_pad_lamp(int pad, struct lamp *out);
+
+/* The pad hue of each part, indexed by STEM_PART_*: red, blue, green. Shared by
+ * the groove circuit and the mute pads. */
+extern const uint8_t k_stem_pad_hue[N_STEMS][3];
+
+/* The mute pads' lamp, for lamp/lamp.c: 0 when `pad` is not a mute pad right
+ * now (setting off, or not F/G/H). [any] */
+int stems_pad_lamp(int pad, struct lamp *out);
 
 /* The armed slot, or -1. `gc_active` also returns the position the loop's phase
  * is measured from: the grid's first downbeat, or the play head on a track with

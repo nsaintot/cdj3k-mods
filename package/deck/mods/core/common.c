@@ -22,6 +22,8 @@ int  g_theme_id;
 int  g_stems_on;
 int  g_stem_manual;
 char g_stem_addr[STEM_ADDR_MAX];
+int  g_stem_mute_toggle;
+int  g_stem_mute_pads;
 char g_stem_sep_id[STEM_SEP_ID_MAX];
 
 static int  g_memfd = -1;     /* /proc/self/mem, O_RDONLY (reads) */
@@ -387,7 +389,10 @@ struct mod_settings_v1 {
     uint8_t  preview_off;              /* from reserved, front */
     /* ENABLE X-PAD. Taken from `reserved`; defaults off, so 0 needs no inversion. */
     uint8_t  xpad;
-    uint8_t  reserved[62];
+    /* STEM MUTE MODE (0 = HOLD) and STEM MUTE PADS. Taken from `reserved`. */
+    uint8_t  stem_mute_toggle;
+    uint8_t  stem_mute_pads;
+    uint8_t  reserved[60];
     uint32_t crc32;                    /* over every byte above                   */
 };
 
@@ -502,15 +507,17 @@ void mods_settings_load(void)
         return;
     }
 
-    g_gate_on     = s.gate ? 1 : 0;
-    g_smart_on    = s.smart ? 1 : 0;
-    g_preview_on  = s.preview_off ? 0 : 1;
-    g_stems_on    = s.stems ? 1 : 0;
-    xpad_g_on     = s.xpad ? 1 : 0;
-    g_stem_manual = s.stem_manual ? 1 : 0;
+    g_gate_on          = s.gate ? 1 : 0;
+    g_smart_on         = s.smart ? 1 : 0;
+    g_preview_on       = s.preview_off ? 0 : 1;
+    g_stems_on         = s.stems ? 1 : 0;
+    xpad_g_on          = s.xpad ? 1 : 0;
+    g_stem_manual      = s.stem_manual ? 1 : 0;
+    g_stem_mute_toggle = s.stem_mute_toggle ? 1 : 0;
+    g_stem_mute_pads   = s.stem_mute_pads ? 1 : 0;
     /* Stored by index, so the registry's order is part of the on-disk format:
      * append themes, never insert or reorder. */
-    g_theme_id    = (s.theme_id < (uint32_t)MOD_THEME_MAX) ? (int)s.theme_id : 0;
+    g_theme_id         = (s.theme_id < (uint32_t)MOD_THEME_MAX) ? (int)s.theme_id : 0;
 
     /* Read from disk: neither is trusted to be terminated. */
     s.sep_id[STEM_SEP_ID_MAX - 1]  = '\0';
@@ -519,9 +526,10 @@ void mods_settings_load(void)
     mods_set_sep_id(s.sep_id);
     memcpy(g_stem_addr, s.stem_addr, STEM_ADDR_MAX);
 
-    MDBG("settings: loaded gate=%d smart=%d preview=%d theme=%d(%s) xpad=%d stems=%d stemloc=%d sepid=\"%s\" stemaddr=\"%s\"\n",
+    MDBG("settings: loaded gate=%d smart=%d preview=%d theme=%d(%s) xpad=%d stems=%d stemloc=%d mutetoggle=%d mutepads=%d sepid=\"%s\" stemaddr=\"%s\"\n",
          g_gate_on, g_smart_on, g_preview_on, g_theme_id, mod_theme_name(g_theme_id),
-         xpad_g_on, g_stems_on, g_stem_manual, g_stem_sep_id, g_stem_addr);
+         xpad_g_on, g_stems_on, g_stem_manual, g_stem_mute_toggle, g_stem_mute_pads,
+         g_stem_sep_id, g_stem_addr);
 }
 
 void mods_settings_save(void)
@@ -532,22 +540,24 @@ void mods_settings_save(void)
     /* Zeroed whole: the CRC covers `reserved`, so it must not hold stack
      * residue. */
     memset(&s, 0, sizeof(s));
-    s.magic       = MOD_SET_MAGIC;
-    s.version     = MOD_SET_VERSION;
-    s.size        = (uint16_t)sizeof(s);
-    s.gate        = g_gate_on ? 1u : 0u;
-    s.smart       = g_smart_on ? 1u : 0u;
-    s.preview_off = g_preview_on ? 0u : 1u;
-    s.xpad        = xpad_g_on ? 1u : 0u;
-    s.stems       = g_stems_on ? 1u : 0u;
-    s.stem_manual = g_stem_manual ? 1u : 0u;
-    s.theme_id    = (uint32_t)g_theme_id;
+    s.magic            = MOD_SET_MAGIC;
+    s.version          = MOD_SET_VERSION;
+    s.size             = (uint16_t)sizeof(s);
+    s.gate             = g_gate_on ? 1u : 0u;
+    s.smart            = g_smart_on ? 1u : 0u;
+    s.preview_off      = g_preview_on ? 0u : 1u;
+    s.xpad             = xpad_g_on ? 1u : 0u;
+    s.stems            = g_stems_on ? 1u : 0u;
+    s.stem_manual      = g_stem_manual ? 1u : 0u;
+    s.stem_mute_toggle = g_stem_mute_toggle ? 1u : 0u;
+    s.stem_mute_pads   = g_stem_mute_pads ? 1u : 0u;
+    s.theme_id         = (uint32_t)g_theme_id;
     /* Copy the string, not the buffer: bytes after the terminator may be left
      * over from a longer earlier value and would change the CRC. The memset
      * above supplies the padding and terminator. */
     memcpy(s.sep_id, g_stem_sep_id, strnlen(g_stem_sep_id, STEM_SEP_ID_MAX - 1));
     memcpy(s.stem_addr, g_stem_addr, strnlen(g_stem_addr, STEM_ADDR_MAX - 1));
-    s.crc32       = mod_crc32(&s, offsetof(struct mod_settings_v1, crc32));
+    s.crc32            = mod_crc32(&s, offsetof(struct mod_settings_v1, crc32));
 
     /* Temp file, fsync, swap: a power cut can lose the new value but never leave a
      * half-written one, and the previous copy stays as .BAK. */
@@ -581,9 +591,10 @@ void mods_settings_save(void)
         unlink(MOD_SET_TMP);
         return;
     }
-    MDBG("settings: saved gate=%d smart=%d preview=%d theme=%d(%s) xpad=%d stems=%d stemloc=%d stemaddr=\"%s\"\n",
+    MDBG("settings: saved gate=%d smart=%d preview=%d theme=%d(%s) xpad=%d stems=%d stemloc=%d mutetoggle=%d mutepads=%d stemaddr=\"%s\"\n",
          g_gate_on, g_smart_on, g_preview_on, g_theme_id, mod_theme_name(g_theme_id),
-         xpad_g_on, g_stems_on, g_stem_manual, g_stem_addr);
+         xpad_g_on, g_stems_on, g_stem_manual, g_stem_mute_toggle, g_stem_mute_pads,
+         g_stem_addr);
 }
 
 /* ================================================================== */

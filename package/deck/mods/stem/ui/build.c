@@ -7,8 +7,80 @@
  */
 #include "stem/ui/ui.h"
 
+/* Where each lane starts and how wide it is, for stems_lanes_place. */
+static int g_lane_x[N_STEMS], g_lane_w, g_lane_y, g_row_w;
+static int g_lanes_placed = -1;    /* the STEM MUTE PADS value the lanes are laid out for */
+
+/* Place each control at its drawn rect and give it a touch area that covers the row:
+ * each blank gap is split at its middle between the ink on either side (the switch's
+ * frame, a MUTE key, a fader's wedge), the switch reaches the left edge and the last
+ * fader the right one. A finger anywhere along the row lands on the nearest control. */
+void stems_lanes_place(void)
+{
+    /* l..r is where the control draws, il..ir its ink. */
+    struct { uintptr_t comp; int stem; int l, r, il, ir; } c[1 + 2 * N_STEMS];
+    int pads = g_stem_mute_pads ? 1 : 0;
+    int key  = MUTE_W + MUTE_GAP;
+    int fw   = pads ? LANE_PADS_W : g_lane_w - key;
+    int i, n = 0;
+
+    if (pads == g_lanes_placed || !g_lane_w || !stems_g_btn_bypass) return;
+    g_lanes_placed = pads;
+
+    /* The drawn rects, left to right. */
+    c[n].comp = stems_g_btn_bypass; c[n].stem = -1;
+    c[n].l = ROW_LEFT; c[n].r = ROW_LEFT + SW_CELL_W; n++;
+    for (i = 0; i < N_STEMS; i++) {
+        if (stems_g_mute_key[i]) {
+            stems_set_visible(stems_g_mute_key[i], !pads);
+            if (!pads) {
+                c[n].comp = stems_g_mute_key[i]; c[n].stem = -1;
+                c[n].l = g_lane_x[i]; c[n].r = g_lane_x[i] + MUTE_W; n++;
+            }
+        }
+        c[n].comp = stems_g_wedge[i]; c[n].stem = i;
+        /* Next to its key, the fader fills the rest of the lane. With the keys folded
+         * away, it is LANE_PADS_W wide and centred, so its 100 % end stays clear of the
+         * next lane and of the bezel. */
+        c[n].l = g_lane_x[i] + (pads ? (g_lane_w - fw) / 2 : key);
+        c[n].r = c[n].l + fw; n++;
+    }
+    for (i = 0; i < n; i++) {
+        c[i].il = c[i].l;
+        c[i].ir = c[i].r;
+        if (c[i].comp == stems_g_btn_bypass) {      /* the switch's frame */
+            c[i].il = c[i].l + (SW_CELL_W - SW_W) / 2;
+            c[i].ir = c[i].il + SW_W;
+        }
+        if (c[i].stem >= 0) {
+            int il, ir;
+
+            stems_lane_ink(c[i].r - c[i].l, &il, &ir);
+            c[i].il = c[i].l + il;
+            c[i].ir = c[i].l + ir;
+        }
+    }
+
+    for (i = 0; i < n; i++) {
+        int hl = i == 0     ? 0       : (c[i - 1].ir + c[i].il + 1) / 2;
+        int hr = i == n - 1 ? g_row_w : (c[i].ir + c[i + 1].il + 1) / 2;
+
+        MDBG("stems: touch %d..%d for ink %d..%d\n", hl, hr, c[i].il, c[i].ir);
+        if (c[i].stem >= 0) {
+            stems_wedge_place(c[i].stem, hl, g_lane_y, hr - hl, LANE_H,
+                              c[i].l - hl, c[i].r - c[i].l);
+        } else if (c[i].comp) {
+            ((bounds_t)FN_SET_BOUNDS)((void *)c[i].comp, hl, g_lane_y, hr - hl, LANE_H);
+            stems_hit_set(c[i].comp, c[i].l - hl, c[i].r - c[i].l);
+            stems_repaint(c[i].comp);
+        }
+    }
+    MDBG("stems: MUTE keys %s, touch areas cover 0..%d\n",
+         pads ? "folded away (the pads mute)" : "shown", g_row_w);
+}
+
 /* The control row takes the stock panel rect inside the waveform view, with its top
- * raised by ROW_RISE; the bottom stays, so the extra height goes to the wedges.
+ * raised by ROW_RISE; the bottom stays, so the controls sit on the stock rect.
  *
  * The lift is applied only here: kit_band_rect() keeps the stock rect because the kit
  * identifies the app's own panels by comparing bounds against it. Our strip is
@@ -18,11 +90,10 @@ static uintptr_t stems_build_row(void)
     const int32_t *panel = kit_band_rect();
     /* The same boundaries that weight the fill. */
     static const int k_prog_bound[N_PROG_BOUND] = PROG_BOUND_LIST;
-    int usable, wedge_w, x, i;
+    int usable, lane_w, x, i;
     int row_y   = panel[1] - ROW_RISE;
     int row_h   = panel[3] + ROW_RISE;
-    int wedge_h = row_h - WEDGE_Y - ROW_PAD / 2;
-    int btn_w   = wedge_h;                    /* BYPASS is square; see ui.h */
+    int prog_h  = row_h - PROG_Y - ROW_PAD / 2;
     uintptr_t band, row;
 
     /* `band` is the strip covering the panel rect and is returned, since it is what
@@ -46,14 +117,14 @@ static uintptr_t stems_build_row(void)
      * Caption, then track, then fill, so the fill draws over the track. */
     stems_g_prog_x = ROW_LEFT;
     stems_g_prog_w = panel[2] - ROW_LEFT - ROW_RIGHT;
-    /* Centred in the wedge band, which follows the panel rect and ROW_RISE. */
-    stems_g_prog_y = WEDGE_Y + (wedge_h - PROG_BAR_H) / 2;
+    /* Centred in the band below the caption, which follows the panel rect and ROW_RISE. */
+    stems_g_prog_y = PROG_Y + (prog_h - PROG_BAR_H) / 2;
     /* Stock roles, not mod_ui()'s: juce paints these Labels and every fill already
      * goes through the theme hook (see mod_ui_stock). Resolved values would be
      * resolved twice, e.g. #ffffff on #ffffff under WHITE. */
     stems_g_prog_text = stems_label(stems_g_progress, "", FONT_CAPTION, 0x00000000u,
                               mod_ui_stock()->text, 0,
-                              stems_g_prog_x, ROW_PAD / 2, stems_g_prog_w, CAPTION_H);
+                              stems_g_prog_x, ROW_PAD / 2, stems_g_prog_w, PROG_CAPTION_H);
     stems_g_prog_track = stems_label(stems_g_progress, "", FONT_CAPTION,
                                mod_ui_stock()->track, mod_ui_stock()->track, 0,
                                stems_g_prog_x, stems_g_prog_y, stems_g_prog_w, PROG_BAR_H);
@@ -71,38 +142,40 @@ static uintptr_t stems_build_row(void)
     stems_set_visible(stems_g_progress, 0);
 
     row = stems_g_controls;   /* everything below hangs off the controls container */
-    /* BYPASS: a square icon button (see ui.h). */
-    stems_g_btn_bypass = stems_label(row, "", FONT_CAPTION, mod_ui()->surface, mod_ui()->text, 1,
-                                 ROW_LEFT, WEDGE_Y, btn_w, wedge_h);
-    if (stems_g_btn_bypass && stems_icon_vt_ready())
-        *(uintptr_t *)stems_g_btn_bypass = stems_g_icon_vptr;
+    /* The controls sit on the band's own rect, below the row's raised top. */
+    g_lane_y = row_h - panel[3];
+    g_row_w  = panel[2];
+    /* The STEMS switch (BYPASS's button). */
+    stems_g_btn_bypass = stems_label(row, "", FONT_CAPTION, 0x00000000u, mod_ui()->text, 1,
+                                 ROW_LEFT, g_lane_y, SW_CELL_W, LANE_H);
+    if (stems_g_btn_bypass && stems_switch_vt_ready())
+        *(uintptr_t *)stems_g_btn_bypass = stems_g_switch_vptr;
 
-    /* The wavewait mark goes in the free caption cell above BYPASS. */
-    stems_wavewait_build(row, ROW_LEFT, ROW_PAD / 2, btn_w, CAPTION_H);
-
-    /* One gap between neighbours, so N wedges leave N-1 gaps inside the free span. */
-    x        = ROW_LEFT + btn_w + ROW_GAP;
+    /* One gap between neighbours, so N lanes leave N-1 gaps inside the free span. */
+    x        = ROW_LEFT + SW_CELL_W - SW_OVERLAP + ROW_GAP;
     usable   = panel[2] - x - ROW_RIGHT;
-    wedge_w  = (usable - (N_STEMS - 1) * ROW_GAP) / N_STEMS;
-    if (wedge_w < 40) {
-        MDBG("stems: only %dpx left for the wedges -> row too narrow, skipping them\n",
+    lane_w   = (usable - (N_STEMS - 1) * ROW_GAP) / N_STEMS;
+    if (lane_w < LANE_MIN_FADER_W) {
+        MDBG("stems: only %dpx left for the lanes -> row too narrow, skipping them\n",
              usable);
         return band;
     }
+    g_lane_w = lane_w;
 
-    for (i = 0; i < N_STEMS; i++, x += wedge_w + ROW_GAP) {
-        /* Narrower than the wedge and centred over it, so it reads as a button. */
-        stems_g_caption[i] = stems_label(row, k_stem_name[i], FONT_CAPTION, mod_ui()->surface,
-                                   mod_ui()->text_dim, 1, x + (wedge_w - CAPTION_W) / 2,
-                                   ROW_PAD / 2, CAPTION_W, CAPTION_H);
-        stems_caption_sync(i);
-        if (!stems_wedge(row, x, WEDGE_Y, wedge_w, wedge_h, i))
-            MDBG("stems: wedge %s failed to build\n", k_stem_name[i]);
+    for (i = 0; i < N_STEMS; i++, x += g_lane_w + ROW_GAP) {
+        g_lane_x[i] = x;
+        /* The MUTE key; placed and shown by stems_lanes_place. */
+        stems_g_mute_key[i] = stems_label(row, "", FONT_CAPTION, 0x00000000u,
+                                         mod_ui()->text, 1, x, g_lane_y, MUTE_W, LANE_H);
+        if (!stems_wedge(row, x, g_lane_y, g_lane_w, LANE_H, i))
+            MDBG("stems: lane %s failed to build\n", k_stem_name[i]);
     }
-    MDBG("stems: row {%d,%d,%d,%d} (+%d over the panel rect) + BYPASS %dpx + "
-         "%d wedges of %dx%d\n",
+    g_lanes_placed = -1;
+    stems_lanes_place();
+    MDBG("stems: row {%d,%d,%d,%d} (+%d over the panel rect) + STEMS switch %dpx + "
+         "%d lanes of %dx%d\n",
          panel[0], row_y, panel[2], row_h, ROW_RISE,
-         btn_w, N_STEMS, wedge_w, wedge_h);
+         SW_CELL_W, N_STEMS, g_lane_w, LANE_H);
     return band;
 }
 

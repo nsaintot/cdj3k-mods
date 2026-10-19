@@ -2,8 +2,9 @@
 /*
  * ui.h - the contract between the parts of the STEMS play-screen UI.
  *
- * The quick-menu button and the stem control row. The settings are in menu/
- * (ENABLE STEMS / STEM SERVER LOCATION / STEM SERVER ADDRESS). Nothing here touches audio.
+ * The quick-menu button and the stem control row. The settings rows are in
+ * stem/job.c (ENABLE STEMS, STEM MUTE MODE, STEM MUTE PADS, STEM SERVER
+ * LOCATION, STEM SERVER ADDRESS). Nothing here touches audio.
  *
  * Approach
  * --------
@@ -30,27 +31,29 @@
  *     a flat button. To make one clickable the Label vtable is cloned into a
  *     writable array with mouseDown (+0x28) replaced; only our instances point at
  *     the clone.
- *   - the level controls (wedges) are Labels with a second cloned vtable that
- *     also replaces paint and the mouse slots; see wedge.c.
+ *   - the faders are Labels with a second cloned vtable that also
+ *     replaces paint and the mouse slots; see wedge.c.
  *
  * The Component pointers below are shared by every part of this UI. They are
- * declared here and defined in state.c (the app's tree) or wedge.c (the wedges).
+ * declared here and defined in state.c (the app's tree) or wedge.c (the faders).
  *
  * File layout under mods/stem/ui/:
  *
  *   state.c    the shared Component pointers and flags, defined once
  *   widgets.c  juce primitives, and the Label vtable clone that makes a button
- *   wedge.c    the three level controls: paint, gesture, level maths
+ *   wedge.c    the three faders and the STEMS switch: paint, gesture, level maths
  *   panel.c    the row's visibility, and claiming/handing back the waveform band
- *   row.c      captions, mute, bypass, and the progress bar that replaces them
- *   wavewait.c the mark shown while the waveform cannot follow the levels yet
+ *   row.c      MUTE keys, mute, bypass, and the progress bar that replaces them
+ *   pads.c     pads F, G, H as mutes, and their lamps
+ *   wavewait.c the glyph shown while the waveform cannot follow the levels yet
  *   build.c    constructing the button and the row against the anchor
  *   hooks.c    the anchor hooks, the polls they drive, and install
  *
  * Finding the stock quick-menu panel and snapshotting it is in kit/band.c.
  *
  * Everything here runs on the juce message thread, which is also the only repaint
- * tick (see stem.h). Nothing in this directory may block.
+ * tick (see stem.h), except in pads.c: its cue handler runs on [deck] and its lamp on
+ * [any]. Nothing in this directory may block.
  */
 #ifndef EP122_MODS_STEM_UI_H
 #define EP122_MODS_STEM_UI_H
@@ -203,40 +206,114 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define QM_SLOT_W        KIT_BAND_SLOT_W
 #define QM_SLOT_H        KIT_BAND_SLOT_H
 
-/* How far the row's top edge sits above the stock panel rect, to balance the margins.
- * With a loop set and the row open:
- *
- *   loop indicator ends   y 371      caption starts  y 383   ->  11 px above
- *   wedge ends            y 466      footer starts   y 475   ->   8 px below
- *
- * The band's bottom does not move, so the three extra pixels go to the wedge height.
- *
- * Not the ten PANEL_GAP would suggest: the loop indicator draws in the band above,
- * only while a loop is set, and ten collides with it. Check any change with a loop
- * set. */
+/* How far the row's top edge sits above the stock panel rect. The controls sit on the
+ * stock rect; the extra pixels give the progress caption room. A larger value collides
+ * with the loop indicator, which draws just above the row while a loop is set. Check
+ * any change with a loop set. */
 #define ROW_RISE         3
 #define ROW_PAD          0
 /* The row's outer margins.
  *
- * LEFT aligns the BYPASS button with the stock PLAYER box beneath it.
+ * LEFT aligns the STEMS switch with the stock PLAYER box beneath it.
  *
- * RIGHT keeps the last wedge's full-level edge away from the bezel, where touches are
- * often lost; at 8px, setting VOCALS to 100% was unreliable. */
+ * RIGHT ends the row on the footer's last column (x 1264). */
 #define ROW_LEFT         20
-#define ROW_RIGHT        36
-#define ROW_GAP          12
-/* BYPASS is a square icon button, so the wedges get the width. Its width is not a
- * constant: it follows the row's content height (see stems_build_row). It gets no
- * bottom bar because mod_btn_bar refuses a rect narrower than the stock 56px mark;
- * the bar is for title-bar buttons. */
-#define CAPTION_H        36
-#define CAPTION_W        150   /* fits HARMONICS at FONT_CAPTION with room to be a plate */
-/* juce::Label draws a single-pixel outline with no width setting. The caption is a
- * hold-to-mute target, so the paint override adds rings inside Label's outline to
- * make its edge visible. This is a count of rings, not a pixel width. */
-#define CAPTION_EDGE_W   2
-/* The wedge takes the full height under the caption. */
-#define WEDGE_Y          (CAPTION_H + ROW_PAD / 2)
+#define ROW_RIGHT        16
+#define ROW_GAP          20    /* after the switch and between lanes */
+/* The progress bar's caption band and the top of the band the bar is centred in. */
+#define PROG_CAPTION_H   36
+#define PROG_Y           (PROG_CAPTION_H + ROW_PAD / 2)
+
+/* ---- the controls, drawn like the stock panel ----
+ *
+ * Every control is the stock panel height (84 px) and sits on the band's own rect,
+ * aligned to the stock footer's columns. The STEMS switch
+ * (OFF | ON, BYPASS inverted) comes first. Each lane is a MUTE key and the fader
+ * beside it; with STEM MUTE PADS on, the keys fold away and the fader takes the lane.
+ * The art reuses the stock buttons:
+ *
+ *   OFF       surface / COL_SKIN_DARK checker, 2 px COL_SKIN_GREY outline
+ *   ON        COL_SKIN_GREY / COL_SKIN_ON2 checker, 2 px white outline (a held cap)
+ *   FUNCTION  dark checker, 2 px outline in the function colour (a MUTE key);
+ *             engaged, the colour's own checker (BEAT LOOP on)
+ *   DISABLED  the same art at 30 % (no stems, or BYPASS on) */
+#define COL_SKIN_GREY    0xff7d7d7du   /* outline, greyed strip and name */
+#define COL_SKIN_DARK    0xff191919u   /* the OFF checker's dark half */
+#define COL_SKIN_ON2     0xff646464u   /* the ON checker's dark half */
+#define COL_SKIN_BLACK   0xff000000u   /* the page switch's well and its lit lettering */
+/* Lettering and the foot bar on an engaged colour checker (a muted MUTE key). White in
+ * every theme, as on the stock BEAT LOOP when on; a light theme's text colour is dark
+ * and would read black on the colour. */
+#define COL_ON_ENGAGED   0xffffffffu
+#define LANE_DISABLED_Q8 77            /* the stock disabled art: 77/256, about 30 % */
+/* The darker half of an engaged checker: #ff7323 -> #e15a0f on BEAT LOOP. */
+#define MUTE_ON_ALT_Q8   205
+
+#define LANE_H           84
+#define MUTE_W           80
+#define MUTE_GAP         16
+#define MUTE_TEXT_H      24
+#define MUTE_BAR_W       40
+#define MUTE_BAR_H       3
+#define MUTE_BAR_B       2    /* the bar's gap to the key's bottom edge */
+/* With the keys folded away (STEM MUTE PADS on): the fader's width, centred in its lane.
+ * Narrower than the lane so a fader's 100 % end is ~66 px from the next one's start. */
+#define LANE_PADS_W      320
+
+/* The STEMS switch's cell, and the stock page switch drawn centred in it: a 2 px
+ * frame, and a 40 px block on OFF or ON 4 px inside. The cell overlaps the gap after it
+ * by SW_OVERLAP, so the lanes start on the footer's column (x 126). */
+#define SW_CELL_W        88
+#define SW_OVERLAP       2
+#define SW_W             86
+#define SW_H             48
+#define SW_FRAME         2
+#define SW_INSET         4
+#define SW_BLOCK         40
+
+/* The fader, in its own coordinates. The header line spans the wedge: the name is
+ * flush with the first bar and the value with the last. */
+#define LANE_HEAD_Y      1
+#define LANE_HEAD_H      26
+#define LANE_NAME_DY     2     /* puts the name's baseline on the value's */
+/* The name's line, which the tag is centred on. */
+#define LANE_NAME_MID    (LANE_HEAD_Y + LANE_NAME_DY + LANE_HEAD_H / 2)
+#define LANE_HEAD_GAP    8
+/* The names' widths at FONT_LANE_NAME: DRUMS, HARMONICS, VOCALS. */
+#define LANE_NAME_W      { 63, 107, 72 }
+#define LANE_TAG_W       46
+#define LANE_TAG_H       20
+#define LANE_VALUE_W     40
+#define LANE_PCT_W       9     /* the % glyph at FONT_LANE_PCT, right-aligned */
+#define LANE_PCT_GAP     2
+#define LANE_PCT_DROP    4     /* lifts the % box so its baseline meets the figures' */
+/* The wedge: bars every 9 px rising from FLOOR to H, bottoms on one line. Marks (both
+ * ends and the thirds) are 5 px and lighter, the other bars 4 px. */
+#define LANE_WEDGE_Y     34
+#define LANE_WEDGE_H     40
+#define LANE_WEDGE_FLOOR 8
+#define LANE_BAR_W       5
+#define LANE_BAR_THIN    4
+#define LANE_BAR_GAP     4
+#define LANE_BAR_PITCH   (LANE_BAR_W + LANE_BAR_GAP)
+#define LANE_MARK_Q8     72    /* a lit mark: the part's colour away from the ground, #e03a3a -> #ec7272 */
+#define COL_SKIN_MARK_OFF 0xffa0a0a0u   /* a lit mark on a muted part */
+#define LANE_CAP_Y       31
+#define LANE_CAP_W       24
+#define LANE_CAP_H       46
+#define LANE_CAP_LINE_W  2
+#define LANE_CAP_LINE_Y  6
+/* The narrowest lane that still gets faders. */
+#define LANE_MIN_FADER_W (MUTE_W + MUTE_GAP + 4 * LANE_CAP_W)
+/* A drag step longer than this is treated as a jump; see the gesture in wedge.c. */
+#define LANE_JUMP_PX     80
+
+#define FONT_LANE_NAME   17.0f
+#define FONT_LANE_VALUE  22.0f
+#define FONT_LANE_PCT    13.0f
+#define FONT_LANE_TAG    13.0f
+#define FONT_MUTE        20.0f
+#define FONT_SWITCH      15.0f
 #define FONT_QUICKMENU   24.0f  /* matches the baked BEAT LOOP / KEY SHIFT lettering */
 #define FONT_BUTTON      28.0f
 #define FONT_CAPTION     18.0f
@@ -269,29 +346,6 @@ typedef void       (*value_set_t)(void *value, const void *v);
 #define COL_ROW_BG       0x00000000u
 #define COL_OUTLINE      0x00000000u   /* Label draws an outline rect; keep it invisible */
 
-/* ---- the wedge, as a row of steps ----
- *
- * Vertical bars rising left to right, not a solid triangle:
- *
- *   - a diagonal needs antialiasing and there is no antialiased primitive; axis-aligned
- *     bars are pixel-exact with fillRect.
- *   - a triangle's tip has no area; the shortest bar has a minimum height, so the low
- *     end of the range stays visible.
- *
- * Bar and gap match the stock KEY SHIFT step strip: 5px lit, 4px dark, and
- * #323232 for an unlit step. */
-#define WEDGE_BAR_W      5     /* the marked bars keep the stock width */
-#define WEDGE_BAR_GAP    4
-/* Unmarked bars are a pixel narrower, so marks stand out by width as well as shade.
- * The pitch stays WEDGE_BAR_W + WEDGE_BAR_GAP; a thin bar leaves the extra pixel as
- * gap, so left edges stay on a regular grid. */
-#define WEDGE_BAR_THIN   4
-/* Minimum height of the leftmost bar. The paint derives a whole-pixel rise per bar, so
- * the shortest bar ends up at this height or slightly above. */
-#define WEDGE_MIN_H      8
-/* Every WEDGE_TICK-th bar is a scale mark, since the control shows no number. At the
- * current panel width the marks land on the ends and at the thirds. */
-#define WEDGE_TICK       14
 /* The warn badge is amber, not red: nothing is broken, there is just no usable
  * server. Red on this deck means an error the DJ has to act on.
  * A refused press turns the button red for the duration of the flash only. */
@@ -301,7 +355,7 @@ typedef void       (*value_set_t)(void *value, const void *v);
  * logged once at startup. */
 #define WARN_SETTLE_TICKS  44     /* hold before the badge appears: ~1 s  */
 
-#define STEM_LEVEL_MAX   100.0
+#define STEM_LEVEL_MAX   100
 /* N_STEMS lives in ../stem.h -- the audio side needs it for the level array too. */
 
 /* ---- shared state, defined once in state.c -------------------------------
@@ -336,8 +390,8 @@ extern uintptr_t stems_g_edit;           /* the "not as the track came" mark    
 extern uint32_t  stems_g_edit_col;       /* the colour it holds, 0 while hidden        */
 extern uintptr_t stems_g_row;            /* the control strip (a Label as a panel)    */
 extern uintptr_t stems_g_btn_bypass;
-extern uintptr_t stems_g_caption[N_STEMS];
-extern uintptr_t stems_g_controls;       /* BYPASS + captions + wedges                */
+extern uintptr_t stems_g_mute_key[N_STEMS];
+extern uintptr_t stems_g_controls;       /* the switch, MUTE keys and faders          */
 extern uintptr_t stems_g_progress;       /* the processing bar                        */
 extern uintptr_t stems_g_prog_fill, stems_g_prog_text, stems_g_prog_track;
 extern uintptr_t stems_g_prog_mark[N_PROG_BOUND];
@@ -350,9 +404,9 @@ extern uintptr_t stems_g_label_vt[VT_CLONE_WORDS];
 extern uintptr_t stems_g_label_vptr;
 extern uintptr_t stems_g_label_mouseup;  /* stock juce::Label::mouseUp, chained by ours */
 
-/* ---- the wedge's own state (wedge.c) -------------------------------------
- * The three controls and the single gesture they share. Outside wedge.c these
- * are read to draw the captions and written only to reset levels on a track
+/* ---- the faders' own state (wedge.c) -------------------------------------
+ * The three faders, their levels and mutes, and the single gesture the row shares.
+ * row.c writes stems_g_mute; the levels are written here and reset on a track
  * change. */
 extern uintptr_t stems_g_wedge[N_STEMS];
 extern int       stems_g_level[N_STEMS];   /* percent, 0..STEM_LEVEL_MAX */
@@ -360,7 +414,7 @@ extern int       stems_g_mute[N_STEMS];
 extern uintptr_t stems_g_grab;             /* who owns the gesture right now */
 extern uintptr_t stems_g_grab_last;        /* who owned it most recently     */
 extern unsigned  stems_g_ticks;            /* display ticks; the gesture cooldown */
-extern uintptr_t stems_g_icon_vptr;
+extern uintptr_t stems_g_switch_vptr;
 
 /* ---- what each part offers the others ------------------------------------
  * Message thread throughout. Grouped by defining file. */
@@ -369,16 +423,24 @@ extern uintptr_t stems_g_icon_vptr;
 void      stems_set_visible(uintptr_t comp, int visible);
 int       stems_bounds(uintptr_t comp, int32_t out[4]);
 void      stems_colour(uintptr_t comp, int id, uint32_t argb);
-uint32_t  stems_lighter(uint32_t argb);
 void      stems_text(uintptr_t label, const char *text);
 int       stems_label_vt_ready(void);
+/* Where a control's drawing sits inside its touch area: x offset and width. A
+ * component without an entry draws across its whole width. */
+void      stems_hit_set(uintptr_t comp, int l, int w);
+void      stems_hit_get(uintptr_t comp, int full_w, int *l, int *w);
 uintptr_t stems_label(uintptr_t parent, const char *text, float font_h,
                       uint32_t bg, uint32_t fg, int clickable,
                       int x, int y, int w, int h);
 
 /* wedge.c */
 uintptr_t stems_wedge(uintptr_t parent, int x, int y, int w, int h, int stem);
-int       stems_icon_vt_ready(void);
+void      stems_wedge_place(int stem, int x, int y, int w, int h, int dl, int dw);
+void      stems_lane_ink(int w, int *l, int *r);
+int       stems_row_inert(void);
+uint32_t  stems_dim(uint32_t argb, int dim);
+void      stems_frame2(void *g, int x, int y, int w, int h, uint32_t argb);
+int       stems_switch_vt_ready(void);
 int       stems_grab_take(uintptr_t self);
 void      stems_grab_release(void);
 void      stems_repaint(uintptr_t comp);
@@ -402,9 +464,20 @@ int32_t   stems_slot_x(void);
 void      stems_label_paint(void *self, void *g);
 void      stems_label_mousedown(void *self, void *event);
 void      stems_label_mouseup(void *self, void *event);
-uint32_t  stems_bypass_colour(void);
-void      stems_caption_sync(int i);
+void      stems_part_repaint(int i);
 void      stems_mute_blink(void);
+/* What mutes a part. A part is muted while any bit is set. */
+#define STEMS_MUTE_LATCH    1   /* TOGGLE: a MUTE key or pad press */
+#define STEMS_MUTE_KEY      2   /* HOLD: a MUTE key is down        */
+#define STEMS_MUTE_PAD      4   /* HOLD: a mute pad is down        */
+/* Written on [message], read by the pad lamps from any thread. */
+extern int stems_g_mute_by[N_STEMS];
+/* The mute blink's phase: 1 on the engaged half, and while nothing blinks. */
+extern int stems_g_mute_lit;
+void      stems_mute_hold(int i, int bit, int on);
+void      stems_mute_flip(int i);
+/* Unmute every part and ignore any pad still held until it is released. */
+void      stems_mute_clear_all(void);
 /* Show the snapshot on the bar, or NULL to hand the row back to the controls.
  * Everything drawn is derived from `st` on this call; the only state kept between
  * calls is a cache of what is on screen. */
@@ -412,16 +485,33 @@ void      stems_processing_set(const struct stem_ui_state *st);
 /* Forget what is on the bar. The poll runs only while the row is open, so on reopen
  * the cache may describe a job that has since advanced, finished or been replaced. */
 void      stems_progress_forget(void);
-/* The "waveform cannot follow the levels yet" mark, in wavewait.c. Built into the
- * controls container, not into BYPASS, whose press it would otherwise take. */
-uintptr_t stems_wavewait_build(uintptr_t parent, int x, int y, int w, int h);
+/* wavewait.c: the glyph after each part's name while the waveform cannot follow the
+ * faders. */
+#define WAVEWAIT_W      18
+#define WAVEWAIT_H      16
 void      stems_wavewait_poll(void);
+/* The level to draw the glyph at, 0 while hidden. */
+uint32_t  stems_wavewait_level(void);
+void      stems_wavewait_draw(void *g, int x, int y, uint32_t level);
 /* Percent of the bar -> pixels along it. The fill and the delimiters must both use
  * this so they line up. */
 int       stems_prog_px(int pct);
 
 /* build.c */
 void      stems_build(uintptr_t anchor);
+/* Fold the MUTE keys away or bring them back after STEM MUTE PADS changed. No-op
+ * when nothing changed. */
+void      stems_lanes_place(void);
+
+/* pads.c: apply the mute pads' presses, which arrive on [deck]. */
+void      stems_pad_poll(void);
+/* Ignore any pad still held until it is released. */
+void      stems_pads_forget(void);
+/* A new track: forget held pads and any settled FAILED state. */
+void      stems_pads_track_changed(void);
+/* A job is on its way (upload, separation, download or a cache read) and nothing has
+ * failed. Updated by stems_pad_poll on the display tick. */
+int       stems_loading(void);
 
 /* hooks.c */
 void      stems_progress_poll(void);

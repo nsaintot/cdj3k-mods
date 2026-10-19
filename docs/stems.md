@@ -55,18 +55,16 @@ The first matters most in a booth: play a track once at home and its stems are
 on the stick, so it loads with no server on the network at all.
 
 **Stems are stored on the same volume as the track.** They are keyed by the
-track's audio content, not by its filename or its position in the browser, so
-renaming files, reorganising folders or re-sorting lists keeps the cache valid,
-and a stick carries its tracks and their stems together. Stems made with a
-different separation model than the one your deck last used are still used, so
-a stick prepared on one deck plays on another.
+track's audio content, so renaming files, reorganising folders or re-sorting lists keeps the cache valid,
+and a stick carries its tracks and their stems together.
+Stems made with a different separation model from the one your deck last used
+still load, so a stick prepared on one deck plays on another.
 
 ### The frame count, for anyone writing entries offline
 
 Half of an entry's key is the deck's own decode length in frames **at
-44.1 kHz**, and the stems inside it must be aligned to that length. It is not
-the length a tag or another decoder reports. Take the container's count, then
-round it up:
+44.1 kHz**, and the stems inside it must be aligned to that length.
+Take the container's count, then round it up:
 
 - **MP3:** the deck's parser frame count × 1152. A LAME/Xing tag frame counts as
   a frame of audio (one frame of silence first, the last frame dropped); an
@@ -84,6 +82,7 @@ length.
 ### Playing from another player's media
 
 When you play a track from a USB stick or SD card in another deck over **PRO DJ LINK**, stems work the same way:
+
 - If the remote stick already has cached stems for that track, they are loaded and used.
 - If not, the track is separated and the stems are kept **in memory only** while the track is loaded. Stems are **never** written to the remote stick.
 
@@ -95,8 +94,9 @@ is open.
 
 ![The play screen with the STEMS button in the quick menu, row closed.](img/stems-button.png)
 
-The row sits under the waveform: three controls, one per part (**DRUMS**,
-**HARMONICS**, **VOCALS**), with a small square **BYPASS** icon at the far left.
+The row sits under the waveform: an **OFF | ON** switch at the far left,
+then one lane per part (**DRUMS**, **HARMONICS**, **VOCALS**).
+Each lane has a **MUTE** key and a fader: the part's name, its level in %, a wedge that rises to the right and a cap.
 
 ![The STEMS row open with all three at full.](img/stems-row-unity.png)
 
@@ -106,16 +106,63 @@ current step: **UPLOADING**, **SEPARATING**, **PREPARING**, **DOWNLOADING** or
 
 | | |
 | --- | --- |
-| **Drag a fader** | Sets that part's level, 0 to 100% |
-| **Hold the name above it** | Mutes that part while held; the label blinks **MUTED** |
-| **BYPASS** | Turns the feature off: the track plays exactly as it came |
+| **Touch a lane and drag** | Moves that part's level, 0 to 100%, by the distance you drag |
+| **MUTE** | Mutes that part: the key fills with the part's colour and the fader greys. In TOGGLE, the key blinks until you unmute |
+| **OFF \| ON** | **OFF** takes the stems out: the track plays exactly as it came. **ON** puts them back |
 
-![DRUMS muted: its caption reads MUTED, its fader greys out, and the waveform above has lost the drum transients.](img/stems-row-muted.png)
+Touching a fader does not change its level; only dragging does. There is no dead space along the row: a touch between two controls goes
+to the nearer one. While you drag, the cap lights and the value follows. A muted
+part's fader still moves.
+
+With the switch on **OFF**, the **OFF** half lights orange and everything else dims
+and takes no input. An amber wave glyph after a part's name means the waveform does not follow
+the faders yet: it pulses for a few seconds after the stems land, and stays dim if
+the waveform cannot follow on this track.
+
+![DRUMS muted: its MUTE key fills red, its fader greys out, and the waveform above has lost the drum transients.](img/stems-row-muted.png)
+
+### Muting
+
+**STEM MUTE MODE** in [MOD SETTINGS](mod-settings.md) sets how a mute works:
+
+| STEM MUTE MODE | Press **MUTE** |
+| --- | --- |
+| **HOLD** (default) | Muted while your finger is down |
+| **TOGGLE** | Press to mute, press again to bring the part back |
+
+Unmuting puts the part back at its fader level. Loading another track clears
+every mute.
+
+### Mute from the pads
+
+With **STEM MUTE PADS** on, pads **F**, **G** and **H** mute **DRUMS**,
+**HARMONICS** and **VOCALS**, left to right like the faders, whether the row is
+open or closed. They follow STEM MUTE MODE, like the MUTE keys.
+
+The MUTE keys are hidden and each fader is centred in its lane. A muted part shows a
+**MUTE** tag after its name, blinking filled and outlined. While the setting is on,
+F, G and H are never hot cues. The X-PAD panel still takes all eight pads while it
+is open.
+
+| Pad | Meaning |
+| --- | --- |
+| Lit, part colour | The part plays |
+| Blinking white / part colour | Muted, in time with the **MUTE** key or tag on screen |
+| Blinking dim white | Stems are loading or separating. The pad does nothing |
+| Orange | The stems failed, or there is no server and they are not on the stick. The pad does nothing |
+| Dark | Nothing to mute: no track, or the switch on OFF. The pad does nothing |
+
+- With the row closed, the
+  [dot on the STEMS button](#the-dot-on-the-stems-button) also shows a mute.
+- If a part is replaced by a [groove circuit](groove-circuit.md) loop, muting
+  the part silences the loop.
+- A groove circuit line on slot 6, 7 or 8 does nothing while STEM MUTE PADS is
+  on: the mute takes the pad.
 
 ### All three at 100% is the untouched track
 
 With every fader at full, the output is the **original mix, bit for bit**: the
-mixing is skipped and the track's own audio plays. **BYPASS** does the same in
+mixing is skipped and the track's own audio plays. **OFF** does the same in
 one press.
 
 So having stems loaded costs nothing if you do not use them.
@@ -148,6 +195,10 @@ The overview waveform does not follow the faders.
 A small dot in the corner of the STEMS button means **the track is not playing
 as it came**: a fader is below full, or [groove circuit](groove-circuit.md) is
 replacing a stem.
+
+The same dot **blinking slowly** means the stems are on their way (uploading,
+separating, downloading or loading from the stick). If they fail, or no server is
+available, the amber **!** shows instead.
 
 ![The row closed, with the dot showing in the corner of the STEMS button: something is still off unity underneath.](img/stems-dot.png)
 
